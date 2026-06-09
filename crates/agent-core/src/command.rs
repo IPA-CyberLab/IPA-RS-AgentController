@@ -60,6 +60,7 @@ impl CommandRunner {
             .open(path)
             .await?;
         file.write_all(content.as_bytes()).await?;
+        file.sync_all().await?;
         Ok(())
     }
 }
@@ -87,7 +88,7 @@ pub(crate) fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{shell_join, shell_quote};
+    use super::{shell_join, shell_quote, CommandRunner};
 
     #[test]
     fn shell_join_quotes_spaces_and_quotes() {
@@ -100,5 +101,23 @@ mod tests {
     #[test]
     fn shell_quote_escapes_single_quotes() {
         assert_eq!(shell_quote("shell's dev"), "'shell'\\''s dev'");
+    }
+
+    #[tokio::test]
+    async fn append_to_file_creates_parent_and_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logs/session.log");
+
+        CommandRunner::append_to_file(&path, "first\n")
+            .await
+            .unwrap();
+        CommandRunner::append_to_file(&path, "second\n")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "first\nsecond\n"
+        );
     }
 }
