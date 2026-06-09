@@ -8,6 +8,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     require_privileged_test_environment();
 
     run(&["agentctl", "init", "--agentfs", "/agentfs"]);
+    assert_agentfs_layout_initialized();
     run(&[
         "agentctl", "base", "freeze", "--name", "base-001", "--from", "/",
     ]);
@@ -299,6 +300,22 @@ fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
     assert_eq!(status["env"]["id"], id);
     assert_eq!(status["env"]["base_id"], base_id);
     assert_eq!(status["env"]["state"], state);
+}
+
+fn assert_agentfs_layout_initialized() {
+    for dir in [
+        "/agentfs/bases",
+        "/agentfs/envs",
+        "/agentfs/cache/apt",
+        "/agentfs/cache/compiler",
+        "/agentfs/cache/package",
+        "/agentfs/cache/ddc",
+        "/agentfs/runtime/pty",
+        "/agentfs/runtime/machines",
+        "/agentfs/runtime/sockets",
+    ] {
+        assert!(Path::new(dir).is_dir(), "{dir} was not initialized");
+    }
 }
 
 fn assert_env_list_contains_running(env_ids: &[&str]) {
