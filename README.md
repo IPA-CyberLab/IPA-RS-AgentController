@@ -102,8 +102,16 @@ Child environments are not separate VMs. They are privileged development roots i
 
 ## Test Notes
 
-Unit tests cover command generation, schema-adjacent metadata behavior, and export delta logic. The ignored Rust integration test in `crates/agentctl/tests/privileged_sequence.rs` covers the full goal sequence and must be run inside a privileged Btrfs/systemd-nspawn Project VM:
+Unit tests cover command generation, schema-adjacent metadata behavior, and export delta logic. The ignored Rust integration test in `crates/agentctl/tests/privileged_sequence.rs` covers the full goal sequence and must be run as root inside a privileged Btrfs/systemd-nspawn Project VM. See `tests/environment-requirements.md` for the machine requirements and run the non-destructive preflight first:
 
 ```bash
-cargo test -p agentctl --test privileged_sequence -- --ignored
+sudo tests/check-privileged-environment.sh
+```
+
+Then run:
+
+```bash
+sudo --preserve-env=PATH,CARGO_HOME,RUSTUP_HOME \
+  env PATH="$PATH" \
+  cargo test -p agentctl --test privileged_sequence -- --ignored --nocapture
 ```
