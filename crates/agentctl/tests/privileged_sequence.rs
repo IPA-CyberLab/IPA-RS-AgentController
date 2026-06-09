@@ -891,7 +891,7 @@ fn assert_btrfs_qgroup_removed(qgroup_id: &str, filesystem: &str) {
 }
 
 fn assert_btrfs_qgroup_has_referenced_limit(qgroup_id: &str, path: &str) {
-    let qgroups = text(&["btrfs", "qgroup", "show", "-breF", path]);
+    let qgroups = text(&["btrfs", "qgroup", "show", "--raw", "-r", "-e", "-F", path]);
     let mut lines = qgroups.lines();
     let header = lines
         .next()
