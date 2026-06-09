@@ -414,6 +414,11 @@ mod tests {
                 "log_path",
             ],
         );
+        assert_schema_array(
+            include_str!("../../../schemas/env.schema.json"),
+            &["properties", "network_policy", "required"],
+            &["egress_proxy", "allowlist"],
+        );
     }
 
     #[test]
