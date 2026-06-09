@@ -495,6 +495,49 @@ mod tests {
     }
 
     #[test]
+    fn env_create_forwards_all_resource_overrides() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::Env {
+                command: EnvCommand::Create {
+                    env_id: "codex-1".to_string(),
+                    base: "base-001".to_string(),
+                    profile: Some("privileged-dev".to_string()),
+                    cpu_max: Some("800%".to_string()),
+                    memory_max: Some("32G".to_string()),
+                    pids_max: Some(8192),
+                    disk_max: Some("200G".to_string()),
+                    network: Some("private".to_string()),
+                    idle_timeout: Some("30m".to_string()),
+                    max_runtime: Some("6h".to_string()),
+                },
+            },
+        };
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::EnvCreate {
+                id,
+                base,
+                profile,
+                limits,
+            } => {
+                assert_eq!(id, "codex-1");
+                assert_eq!(base, "base-001");
+                assert_eq!(profile, "privileged-dev");
+                assert_eq!(limits.cpu_max.as_deref(), Some("800%"));
+                assert_eq!(limits.memory_max.as_deref(), Some("32G"));
+                assert_eq!(limits.pids_max, Some(8192));
+                assert_eq!(limits.disk_max.as_deref(), Some("200G"));
+                assert_eq!(limits.network.as_deref(), Some("private"));
+                assert_eq!(limits.idle_timeout.as_deref(), Some("30m"));
+                assert_eq!(limits.max_runtime.as_deref(), Some("6h"));
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
     fn shell_command_maps_to_shell_request() {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
