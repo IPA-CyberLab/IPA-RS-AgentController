@@ -12,18 +12,8 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(Path::new("/agentfs/bases/base-001/rootfs").exists());
     assert!(Path::new("/agentfs/bases/base-001/manifest.json").exists());
     assert!(Path::new("/agentfs/bases/base-001/dpkg.list").exists());
-    assert_eq!(
-        text(&[
-            "btrfs",
-            "property",
-            "get",
-            "-ts",
-            "/agentfs/bases/base-001/rootfs",
-            "ro"
-        ])
-        .trim(),
-        "ro=true"
-    );
+    assert_btrfs_subvolume("/agentfs/bases/base-001/rootfs");
+    assert_btrfs_readonly("/agentfs/bases/base-001/rootfs", true);
 
     run(&[
         "agentctl",
@@ -64,6 +54,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         codex_status["env"]["rootfs_path"],
         claude_status["env"]["rootfs_path"]
     );
+    assert_btrfs_subvolume("/agentfs/envs/codex-1/rootfs");
+    assert_btrfs_subvolume("/agentfs/envs/claude-1/rootfs");
+    assert_btrfs_readonly("/agentfs/envs/codex-1/rootfs", false);
+    assert_btrfs_readonly("/agentfs/envs/claude-1/rootfs", false);
 
     run(&["agentctl", "exec", "codex-1", "--", "sudo", "apt", "update"]);
     run(&[
@@ -150,6 +144,18 @@ fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
     assert_eq!(status["env"]["id"], id);
     assert_eq!(status["env"]["base_id"], base_id);
     assert_eq!(status["env"]["state"], state);
+}
+
+fn assert_btrfs_subvolume(path: &str) {
+    run(&["btrfs", "subvolume", "show", path]);
+}
+
+fn assert_btrfs_readonly(path: &str, readonly: bool) {
+    let expected = if readonly { "ro=true" } else { "ro=false" };
+    assert_eq!(
+        text(&["btrfs", "property", "get", "-ts", path, "ro"]).trim(),
+        expected
+    );
 }
 
 fn json(command: &[&str]) -> Value {
