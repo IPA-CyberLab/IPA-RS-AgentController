@@ -2,7 +2,9 @@ use crate::btrfs::Btrfs;
 use crate::command::{shell_join, CommandRunner};
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
-use crate::model::{machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, SessionState};
+use crate::model::{
+    machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, Session, SessionState,
+};
 use crate::nspawn::Nspawn;
 use crate::protocol::{Request, Response};
 use crate::session::TmuxSessionBackend;
@@ -475,7 +477,7 @@ impl AgentService {
     }
 
     pub async fn session_list(&self, env_id: &str) -> Result<Vec<crate::model::Session>> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
         let live_sessions = if env.state == EnvState::Running {
             self.sessions.list(&env).await?
         } else {
@@ -489,6 +491,9 @@ impl AgentService {
                 crate::model::SessionState::Stopped
             };
             self.layout.write_session(session).await?;
+        }
+        if sync_env_session_index(&mut env, &sessions) {
+            self.layout.write_env(&env).await?;
         }
         Ok(sessions)
     }
@@ -701,6 +706,21 @@ fn should_reject_session_create(metadata_exists: bool, running: bool) -> bool {
     metadata_exists && running
 }
 
+fn sync_env_session_index(env: &mut Env, sessions: &[Session]) -> bool {
+    let mut session_ids = sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<Vec<_>>();
+    session_ids.sort();
+    session_ids.dedup();
+    if env.sessions == session_ids {
+        false
+    } else {
+        env.sessions = session_ids;
+        true
+    }
+}
+
 async fn read_session_log_file(path: &Path) -> Result<String> {
     match tokio::fs::read_to_string(path).await {
         Ok(text) => Ok(text),
@@ -757,10 +777,10 @@ mod tests {
         cleanup_failed_base_dir, cleanup_failed_env_dir, ensure_running_env,
         read_offline_session_log, read_session_log_file, remove_path_if_exists, should_check_quota,
         should_mark_stopped, should_refresh_live_state, should_reject_session_create,
-        validate_child_rootfs_requirements, AgentService,
+        sync_env_session_index, validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
-    use crate::model::{machine_name, Env, EnvState, Limits};
+    use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
     use chrono::Utc;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -835,6 +855,20 @@ mod tests {
         assert!(should_reject_session_create(true, true));
         assert!(!should_reject_session_create(true, false));
         assert!(!should_reject_session_create(false, false));
+    }
+
+    #[test]
+    fn session_list_repairs_env_session_index() {
+        let mut env = test_env(EnvState::Running);
+        env.sessions = vec!["stale".to_string()];
+        let sessions = vec![
+            test_session("codex-1", "dev"),
+            test_session("codex-1", "codex"),
+        ];
+
+        assert!(sync_env_session_index(&mut env, &sessions));
+        assert_eq!(env.sessions, vec!["codex".to_string(), "dev".to_string()]);
+        assert!(!sync_env_session_index(&mut env, &sessions));
     }
 
     #[tokio::test]
@@ -1004,6 +1038,18 @@ mod tests {
             created_at: Utc::now(),
             limits: Limits::default(),
             sessions: Vec::new(),
+        }
+    }
+
+    fn test_session(env_id: &str, session_id: &str) -> Session {
+        Session {
+            id: session_id.to_string(),
+            env_id: env_id.to_string(),
+            command: "bash".to_string(),
+            state: SessionState::Running,
+            created_at: Utc::now(),
+            session_type: SessionType::Pty,
+            log_path: format!("/agentfs/envs/{env_id}/logs/sessions/{session_id}.log").into(),
         }
     }
 }
