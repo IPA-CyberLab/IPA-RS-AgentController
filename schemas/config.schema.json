@@ -6,14 +6,14 @@
   "properties": {
     "agentfs": { "type": "string" },
     "socket_path": { "type": "string" },
-    "default_profile": { "type": "string" },
+    "default_profile": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
     "profiles": {
       "type": "array",
       "items": {
         "type": "object",
         "required": ["name", "limits"],
         "properties": {
-          "name": { "type": "string" },
+          "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
           "limits": {
             "type": "object",
             "required": ["cpu_max", "memory_max", "pids_max", "disk_max", "network", "idle_timeout", "max_runtime"],
