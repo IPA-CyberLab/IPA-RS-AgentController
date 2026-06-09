@@ -3,7 +3,10 @@ use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
+
+static WRITE_JSON_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -298,20 +301,51 @@ impl Layout {
 }
 
 pub async fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp = path.with_extension("tmp");
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("json path {} has no parent", path.display()))?;
+    tokio::fs::create_dir_all(parent).await?;
+    let tmp = unique_tmp_path(path);
     let bytes = serde_json::to_vec_pretty(value)?;
-    let mut file = tokio::fs::File::create(&tmp).await?;
-    file.write_all(&bytes).await?;
+    if let Err(error) = write_json_tmp_and_rename(path, parent, &tmp, &bytes).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn write_json_tmp_and_rename(
+    path: &Path,
+    parent: &Path,
+    tmp: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    let mut file = tokio::fs::File::create(tmp).await?;
+    file.write_all(bytes).await?;
     file.write_all(b"\n").await?;
     file.sync_all().await?;
     drop(file);
-    tokio::fs::rename(&tmp, path)
+    tokio::fs::rename(tmp, path)
         .await
         .with_context(|| format!("failed to replace {}", path.display()))?;
+    std::fs::File::open(parent)
+        .with_context(|| format!("failed to open metadata dir {}", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("failed to sync metadata dir {}", parent.display()))?;
     Ok(())
+}
+
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    let counter = WRITE_JSON_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("metadata.json");
+    path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        counter
+    ))
 }
 
 pub async fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -337,11 +371,12 @@ pub fn validate_id(id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_json, Layout};
+    use super::{unique_tmp_path, write_json, Layout};
     use crate::model::{
         machine_name, Base, Env, EnvState, Limits, Session, SessionState, SessionType,
     };
     use chrono::Utc;
+    use serde_json::json;
 
     #[tokio::test]
     async fn storage_rejects_path_traversal_ids() {
@@ -352,6 +387,61 @@ mod tests {
         assert!(layout.read_env("../env").await.is_err());
         assert!(layout.read_session("codex-1", "../session").await.is_err());
         assert!(layout.list_sessions("../env").await.is_err());
+    }
+
+    #[test]
+    fn write_json_uses_unique_temp_paths_next_to_target() {
+        let target = std::path::Path::new("/agentfs/envs/codex-1/meta.json");
+        let first = unique_tmp_path(target);
+        let second = unique_tmp_path(target);
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), target.parent());
+        assert_eq!(second.parent(), target.parent());
+        assert!(first
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".tmp"));
+    }
+
+    #[tokio::test]
+    async fn write_json_allows_overlapping_writes_without_tmp_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata/meta.json");
+        let first_path = path.clone();
+        let second_path = path.clone();
+
+        let first = tokio::spawn(async move {
+            for value in 0..25 {
+                write_json(&first_path, &json!({ "writer": "first", "value": value }))
+                    .await
+                    .unwrap();
+            }
+        });
+        let second = tokio::spawn(async move {
+            for value in 0..25 {
+                write_json(&second_path, &json!({ "writer": "second", "value": value }))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        first.await.unwrap();
+        second.await.unwrap();
+
+        let text = tokio::fs::read_to_string(&path).await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(matches!(value["writer"].as_str(), Some("first" | "second")));
+
+        let mut entries = tokio::fs::read_dir(path.parent().unwrap()).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            assert!(
+                !entry.file_name().to_string_lossy().ends_with(".tmp"),
+                "temporary metadata file was left behind: {}",
+                entry.path().display()
+            );
+        }
     }
 
     #[tokio::test]
