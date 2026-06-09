@@ -176,6 +176,12 @@ fn response_allowed_fields(message_type: &str) -> Option<&'static [&'static str]
 
 #[cfg(test)]
 mod tests {
+    use crate::model::{
+        machine_name, Env, EnvState, EnvStatus, LimitOverrides, Limits, Session, SessionState,
+        SessionType,
+    };
+    use chrono::Utc;
+
     use super::{parse_request_json, parse_response_json, Request, Response};
 
     #[test]
@@ -202,5 +208,155 @@ mod tests {
             parse_response_json(r#"{"type":"ok"}"#).unwrap(),
             Response::Ok
         ));
+    }
+
+    #[test]
+    fn strict_request_parser_covers_all_variants() {
+        for request in sample_requests() {
+            let json = serde_json::to_string(&request).unwrap();
+            parse_request_json(&json).unwrap_or_else(|error| {
+                panic!("strict request parser rejected {json}: {error}");
+            });
+        }
+    }
+
+    #[test]
+    fn strict_response_parser_covers_all_variants() {
+        for response in sample_responses() {
+            let json = serde_json::to_string(&response).unwrap();
+            parse_response_json(&json).unwrap_or_else(|error| {
+                panic!("strict response parser rejected {json}: {error}");
+            });
+        }
+    }
+
+    fn sample_requests() -> Vec<Request> {
+        vec![
+            Request::Init {
+                agentfs: "/agentfs".into(),
+            },
+            Request::BaseFreeze {
+                name: "base-001".to_string(),
+                from: "/".into(),
+            },
+            Request::EnvCreate {
+                id: "codex-1".to_string(),
+                base: "base-001".to_string(),
+                profile: "privileged-dev".to_string(),
+                limits: LimitOverrides::default(),
+            },
+            Request::EnvStart {
+                id: "codex-1".to_string(),
+            },
+            Request::EnvStop {
+                id: "codex-1".to_string(),
+            },
+            Request::EnvDestroy {
+                id: "codex-1".to_string(),
+            },
+            Request::EnvList,
+            Request::EnvStatus {
+                id: "codex-1".to_string(),
+            },
+            Request::Exec {
+                id: "codex-1".to_string(),
+                command: vec!["bash".to_string()],
+            },
+            Request::Shell {
+                id: "codex-1".to_string(),
+            },
+            Request::SessionCreate {
+                env_id: "codex-1".to_string(),
+                session_id: "dev".to_string(),
+                command: vec!["bash".to_string()],
+            },
+            Request::SessionAttach {
+                env_id: "codex-1".to_string(),
+                session_id: "dev".to_string(),
+            },
+            Request::SessionDetach {
+                env_id: "codex-1".to_string(),
+                session_id: "dev".to_string(),
+            },
+            Request::SessionKill {
+                env_id: "codex-1".to_string(),
+                session_id: "dev".to_string(),
+            },
+            Request::SessionList {
+                env_id: "codex-1".to_string(),
+            },
+            Request::SessionLogs {
+                env_id: "codex-1".to_string(),
+                session_id: "dev".to_string(),
+            },
+            Request::Diff {
+                env_id: "codex-1".to_string(),
+            },
+            Request::Export {
+                env_id: "codex-1".to_string(),
+                export_type: "dpkg-delta".to_string(),
+            },
+            Request::Ping,
+        ]
+    }
+
+    fn sample_responses() -> Vec<Response> {
+        let env_status = EnvStatus {
+            env: sample_env(),
+            disk_used: Some("1G".to_string()),
+        };
+        vec![
+            Response::Ok,
+            Response::Text {
+                text: "ok".to_string(),
+            },
+            Response::Exec {
+                status: 0,
+                stdout: "out".to_string(),
+                stderr: String::new(),
+            },
+            Response::Envs {
+                envs: vec![env_status.clone()],
+            },
+            Response::EnvStatus {
+                status: Box::new(env_status),
+            },
+            Response::Sessions {
+                sessions: vec![sample_session()],
+            },
+            Response::Attach {
+                machine_name: "af-codex-1".to_string(),
+                session_id: "dev".to_string(),
+            },
+            Response::Error {
+                message: "error".to_string(),
+            },
+        ]
+    }
+
+    fn sample_env() -> Env {
+        Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
+            machine_name: machine_name("codex-1"),
+            state: EnvState::Running,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: vec!["dev".to_string()],
+        }
+    }
+
+    fn sample_session() -> Session {
+        Session {
+            id: "dev".to_string(),
+            env_id: "codex-1".to_string(),
+            command: "bash".to_string(),
+            state: SessionState::Running,
+            created_at: Utc::now(),
+            session_type: SessionType::Pty,
+            log_path: "/agentfs/envs/codex-1/logs/sessions/dev.log".into(),
+        }
     }
 }
