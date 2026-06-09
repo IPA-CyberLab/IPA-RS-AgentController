@@ -272,8 +272,10 @@ impl AgentService {
 
     pub async fn env_status(&self, id: &str) -> Result<EnvStatus> {
         let mut env = self.layout.read_env(id).await?;
-        self.nspawn.refresh_state(&mut env).await?;
-        if self.btrfs.quota_exceeded(&env.rootfs_path).await? {
+        if should_refresh_live_state(&env.state) {
+            self.nspawn.refresh_state(&mut env).await?;
+        }
+        if should_check_quota(&env.state) && self.btrfs.quota_exceeded(&env.rootfs_path).await? {
             env.state = EnvState::QuotaExceeded;
         }
         self.layout.write_env(&env).await?;
@@ -533,6 +535,17 @@ impl AgentService {
     }
 }
 
+fn should_refresh_live_state(state: &EnvState) -> bool {
+    matches!(
+        state,
+        EnvState::Created | EnvState::Running | EnvState::Stopped
+    )
+}
+
+fn should_check_quota(state: &EnvState) -> bool {
+    !matches!(state, EnvState::Failed | EnvState::QuotaExceeded)
+}
+
 fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
     let mut missing = Vec::new();
     for (name, candidates) in [
@@ -561,8 +574,12 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_child_rootfs_requirements, AgentService};
+    use super::{
+        should_check_quota, should_refresh_live_state, validate_child_rootfs_requirements,
+        AgentService,
+    };
     use crate::config::AgentConfig;
+    use crate::model::EnvState;
     use std::fs;
 
     #[test]
@@ -586,6 +603,24 @@ mod tests {
         assert!(message.contains("sudo"));
         assert!(message.contains("apt"));
         assert!(message.contains("tmux"));
+    }
+
+    #[test]
+    fn terminal_env_states_are_not_overwritten_by_status_refresh() {
+        assert!(should_refresh_live_state(&EnvState::Created));
+        assert!(should_refresh_live_state(&EnvState::Running));
+        assert!(should_refresh_live_state(&EnvState::Stopped));
+        assert!(!should_refresh_live_state(&EnvState::Failed));
+        assert!(!should_refresh_live_state(&EnvState::QuotaExceeded));
+    }
+
+    #[test]
+    fn terminal_env_states_skip_quota_rechecks() {
+        assert!(should_check_quota(&EnvState::Created));
+        assert!(should_check_quota(&EnvState::Running));
+        assert!(should_check_quota(&EnvState::Stopped));
+        assert!(!should_check_quota(&EnvState::Failed));
+        assert!(!should_check_quota(&EnvState::QuotaExceeded));
     }
 
     #[tokio::test]
