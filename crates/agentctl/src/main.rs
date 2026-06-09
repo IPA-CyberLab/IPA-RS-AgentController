@@ -151,9 +151,17 @@ impl ExportKind {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let request = to_request(&cli);
-    let config = AgentConfig::load_or_default(cli.config.as_deref(), cli.agentfs.clone()).await?;
+    let config =
+        AgentConfig::load_or_default(cli.config.as_deref(), effective_agentfs(&cli)).await?;
     let response = call(&config.socket_path, request).await?;
     print_response(response)
+}
+
+fn effective_agentfs(cli: &Cli) -> PathBuf {
+    match &cli.command {
+        Command::Init(args) => args.agentfs.clone().unwrap_or_else(|| cli.agentfs.clone()),
+        _ => cli.agentfs.clone(),
+    }
 }
 
 fn to_request(cli: &Cli) -> Request {
@@ -323,5 +331,29 @@ fn print_response(response: Response) -> Result<()> {
             std::process::exit(status.code().unwrap_or(128));
         }
         Response::Error { message } => Err(anyhow!(message)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{effective_agentfs, to_request, Cli, Command, InitArgs};
+    use agent_core::protocol::Request;
+    use std::path::PathBuf;
+
+    #[test]
+    fn init_agentfs_override_controls_request_and_socket_base() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::Init(InitArgs {
+                agentfs: Some(PathBuf::from("/custom-agentfs")),
+            }),
+        };
+
+        assert_eq!(effective_agentfs(&cli), PathBuf::from("/custom-agentfs"));
+        match to_request(&cli) {
+            Request::Init { agentfs } => assert_eq!(agentfs, PathBuf::from("/custom-agentfs")),
+            other => panic!("unexpected request {other:?}"),
+        }
     }
 }
