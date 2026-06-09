@@ -74,6 +74,14 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "/agentfs/bases/base-001/rootfs",
         "/agentfs/envs/claude-1/rootfs",
     );
+    assert_eq!(
+        text(&["agentctl", "exec", "codex-1", "--", "hostname"]).trim(),
+        "af-codex-1"
+    );
+    assert_eq!(
+        text(&["agentctl", "exec", "claude-1", "--", "hostname"]).trim(),
+        "af-claude-1"
+    );
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
     assert_btrfs_qgroup_has_referenced_limit(&codex_qgroup, "/agentfs/envs/codex-1/rootfs");
     assert_child_cannot_see_project_vm_state("codex-1");
