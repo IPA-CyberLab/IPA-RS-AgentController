@@ -94,13 +94,15 @@ impl Layout {
     }
 
     pub async fn write_base(&self, base: &Base) -> Result<()> {
-        validate_id(&base.id)?;
+        self.validate_base_metadata(base, Some(&base.id))?;
         write_json(&self.base_dir(&base.id).join("manifest.json"), base).await
     }
 
     pub async fn read_base(&self, id: &str) -> Result<Base> {
         validate_id(id)?;
-        read_json(&self.base_dir(id).join("manifest.json")).await
+        let base: Base = read_json(&self.base_dir(id).join("manifest.json")).await?;
+        self.validate_base_metadata(&base, Some(id))?;
+        Ok(base)
     }
 
     pub async fn write_env(&self, env: &Env) -> Result<()> {
@@ -116,8 +118,7 @@ impl Layout {
     }
 
     pub async fn write_session(&self, session: &Session) -> Result<()> {
-        validate_id(&session.env_id)?;
-        validate_id(&session.id)?;
+        self.validate_session_metadata(session, Some(&session.env_id), Some(&session.id))?;
         write_json(
             &self
                 .sessions_dir(&session.env_id)
@@ -130,7 +131,10 @@ impl Layout {
     pub async fn read_session(&self, env_id: &str, session_id: &str) -> Result<Session> {
         validate_id(env_id)?;
         validate_id(session_id)?;
-        read_json(&self.sessions_dir(env_id).join(format!("{session_id}.json"))).await
+        let session: Session =
+            read_json(&self.sessions_dir(env_id).join(format!("{session_id}.json"))).await?;
+        self.validate_session_metadata(&session, Some(env_id), Some(session_id))?;
+        Ok(session)
     }
 
     pub async fn list_envs(&self) -> Result<Vec<Env>> {
@@ -159,11 +163,48 @@ impl Layout {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
-                sessions.push(read_json(&path).await?);
+                let session: Session = read_json(&path).await?;
+                self.validate_session_metadata(&session, Some(env_id), None)?;
+                sessions.push(session);
             }
         }
         sessions.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(sessions)
+    }
+
+    fn validate_base_metadata(&self, base: &Base, expected_id: Option<&str>) -> Result<()> {
+        validate_id(&base.id)?;
+        if let Some(expected_id) = expected_id {
+            if base.id != expected_id {
+                return Err(anyhow!(
+                    "base metadata id {} does not match requested id {}",
+                    base.id,
+                    expected_id
+                ));
+            }
+        }
+        if !base.readonly {
+            return Err(anyhow!("base {} metadata is not readonly", base.id));
+        }
+        let expected_rootfs = self.base_rootfs(&base.id);
+        if base.rootfs_path != expected_rootfs {
+            return Err(anyhow!(
+                "base {} has rootfs_path {}, expected {}",
+                base.id,
+                base.rootfs_path.display(),
+                expected_rootfs.display()
+            ));
+        }
+        let expected_manifest = self.base_dir(&base.id).join("dpkg.list");
+        if base.dpkg_manifest != expected_manifest {
+            return Err(anyhow!(
+                "base {} has dpkg_manifest {}, expected {}",
+                base.id,
+                base.dpkg_manifest.display(),
+                expected_manifest.display()
+            ));
+        }
+        Ok(())
     }
 
     fn validate_env_metadata(&self, env: &Env, expected_id: Option<&str>) -> Result<()> {
@@ -199,6 +240,47 @@ impl Layout {
                 env.id,
                 env.rootfs_path.display(),
                 expected_rootfs.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_session_metadata(
+        &self,
+        session: &Session,
+        expected_env_id: Option<&str>,
+        expected_session_id: Option<&str>,
+    ) -> Result<()> {
+        validate_id(&session.env_id)?;
+        validate_id(&session.id)?;
+        if let Some(expected_env_id) = expected_env_id {
+            if session.env_id != expected_env_id {
+                return Err(anyhow!(
+                    "session metadata env_id {} does not match requested env_id {}",
+                    session.env_id,
+                    expected_env_id
+                ));
+            }
+        }
+        if let Some(expected_session_id) = expected_session_id {
+            if session.id != expected_session_id {
+                return Err(anyhow!(
+                    "session metadata id {} does not match requested id {}",
+                    session.id,
+                    expected_session_id
+                ));
+            }
+        }
+        let expected_log_path = self
+            .session_logs(&session.env_id)
+            .join(format!("{}.log", session.id));
+        if session.log_path != expected_log_path {
+            return Err(anyhow!(
+                "session {}/{} has log_path {}, expected {}",
+                session.env_id,
+                session.id,
+                session.log_path.display(),
+                expected_log_path.display()
             ));
         }
         Ok(())
@@ -246,7 +328,9 @@ pub fn validate_id(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{write_json, Layout};
-    use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
+    use crate::model::{
+        machine_name, Base, Env, EnvState, Limits, Session, SessionState, SessionType,
+    };
     use chrono::Utc;
 
     #[tokio::test]
@@ -290,6 +374,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_rejects_base_metadata_with_mismatched_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let mut base = test_base(&layout, "base-001");
+
+        layout.write_base(&base).await.unwrap();
+        assert_eq!(layout.read_base("base-001").await.unwrap().id, "base-001");
+
+        base.rootfs_path = dir.path().join("bases/other/rootfs");
+        assert!(layout.write_base(&base).await.is_err());
+
+        base = test_base(&layout, "base-001");
+        base.dpkg_manifest = dir.path().join("bases/other/dpkg.list");
+        assert!(layout.write_base(&base).await.is_err());
+
+        base = test_base(&layout, "base-001");
+        base.readonly = false;
+        assert!(layout.write_base(&base).await.is_err());
+    }
+
+    #[tokio::test]
     async fn storage_rejects_env_metadata_with_mismatched_identity() {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout::new(dir.path().to_path_buf());
@@ -324,6 +429,73 @@ mod tests {
             .contains("does not match requested id"));
     }
 
+    #[tokio::test]
+    async fn storage_rejects_tampered_base_metadata_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let mut base = test_base(&layout, "base-001");
+        base.id = "other".to_string();
+        write_json(&layout.base_dir("base-001").join("manifest.json"), &base)
+            .await
+            .unwrap();
+
+        assert!(layout
+            .read_base("base-001")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not match requested id"));
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_session_metadata_with_mismatched_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let mut session = test_session(&layout, "codex-1", "dev");
+
+        layout.write_session(&session).await.unwrap();
+        assert_eq!(
+            layout.read_session("codex-1", "dev").await.unwrap().id,
+            "dev"
+        );
+
+        session.env_id = "other".to_string();
+        assert!(layout.write_session(&session).await.is_err());
+
+        session = test_session(&layout, "codex-1", "dev");
+        session.log_path = dir.path().join("envs/codex-1/logs/sessions/other.log");
+        assert!(layout.write_session(&session).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_tampered_session_metadata_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let mut session = test_session(&layout, "codex-1", "dev");
+        session.id = "other".to_string();
+        write_json(&layout.sessions_dir("codex-1").join("dev.json"), &session)
+            .await
+            .unwrap();
+
+        assert!(layout
+            .read_session("codex-1", "dev")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not match requested id"));
+    }
+
+    fn test_base(layout: &Layout, id: &str) -> Base {
+        Base {
+            id: id.to_string(),
+            rootfs_path: layout.base_rootfs(id),
+            readonly: true,
+            created_at: Utc::now(),
+            source: "/".to_string(),
+            dpkg_manifest: layout.base_dir(id).join("dpkg.list"),
+        }
+    }
+
     fn test_env(layout: &Layout, id: &str) -> Env {
         Env {
             id: id.to_string(),
@@ -335,6 +507,20 @@ mod tests {
             created_at: Utc::now(),
             limits: Limits::default(),
             sessions: Vec::new(),
+        }
+    }
+
+    fn test_session(layout: &Layout, env_id: &str, session_id: &str) -> Session {
+        Session {
+            id: session_id.to_string(),
+            env_id: env_id.to_string(),
+            command: "bash".to_string(),
+            state: SessionState::Running,
+            created_at: Utc::now(),
+            session_type: SessionType::Pty,
+            log_path: layout
+                .session_logs(env_id)
+                .join(format!("{session_id}.log")),
         }
     }
 }
