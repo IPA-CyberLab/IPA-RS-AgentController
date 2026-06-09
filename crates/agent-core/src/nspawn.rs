@@ -231,10 +231,10 @@ fn systemd_limit_properties(env: &Env) -> Vec<String> {
 }
 
 fn is_unlimited_str(value: &str) -> bool {
-    let value = value.trim();
-    value == "0"
-        || value.eq_ignore_ascii_case("unlimited")
-        || value.eq_ignore_ascii_case("infinity")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "unlimited" | "infinity" | "none"
+    )
 }
 
 fn machinectl_reports_missing_machine(stderr: &str) -> bool {
@@ -431,9 +431,9 @@ mod tests {
             sessions: Vec::new(),
         };
         env.limits.cpu_max = "0".to_string();
-        env.limits.memory_max = "0".to_string();
+        env.limits.memory_max = "none".to_string();
         env.limits.pids_max = 0;
-        env.limits.max_runtime = "0".to_string();
+        env.limits.max_runtime = "infinity".to_string();
         let args = Nspawn::start_args(&env, None).unwrap();
         assert!(!args.iter().any(|arg| arg.contains("CPUQuota")));
         assert!(!args.iter().any(|arg| arg.contains("MemoryMax")));
