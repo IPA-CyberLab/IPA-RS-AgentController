@@ -30,6 +30,10 @@ The Project VM must provide Linux, Btrfs, `btrfs-progs`, systemd, `systemd-nspaw
 
 `/agentfs` must be on a Btrfs filesystem. `agentctl base freeze --from /` requires `/` itself to be a Btrfs subvolume. The implementation intentionally fails when that is not true and does not fall back to a full copy.
 
+Base, env, session, and profile IDs are hostname-safe identifiers: ASCII
+letters and numbers with optional interior `-`, such as `base-001` or
+`codex-1`.
+
 ## Usage
 
 ```bash
@@ -88,7 +92,7 @@ JSON schemas live in `schemas/`.
 
 `agent-forkd` and `agentctl` accept `--config /etc/agent-forkd/config.json` or `AGENT_FORKD_CONFIG` for the daemon config schema in `schemas/config.schema.json`.
 
-Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`, scrubs host `/agentfs` state such as `bases`, `envs`, `cache`, and `runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it. Export commands print their output and persist the latest artifact under `/agentfs/envs/<env-id>/exports/`.
+Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`, scrubs host `/agentfs` state, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it. Export commands print their output and persist the latest artifact under `/agentfs/envs/<env-id>/exports/`. The `rootfs-changed-paths` export omits runtime-only trees such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`.
 
 Env start validates that the child rootfs contains `/bin/bash`, `sudo`, `apt` or `apt-get`, `tmux`, and `tee`. If those tools are missing, the env is marked `failed` and nspawn is not launched.
 
