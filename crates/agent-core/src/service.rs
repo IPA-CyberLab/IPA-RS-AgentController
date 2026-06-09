@@ -328,6 +328,13 @@ impl AgentService {
         }
         let mut env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
+        let metadata_exists = self.layout.read_session(env_id, session_id).await.is_ok();
+        let running = metadata_exists && self.sessions.is_running(&env, session_id).await?;
+        if should_reject_session_create(metadata_exists, running) {
+            return Err(anyhow!(
+                "session {session_id} is already running in env {env_id}"
+            ));
+        }
         let log_path = TmuxSessionBackend::log_path(&self.layout.session_logs(env_id), session_id);
         let session = self
             .sessions
@@ -604,6 +611,10 @@ fn ensure_running_env(env: &Env) -> Result<()> {
     }
 }
 
+fn should_reject_session_create(metadata_exists: bool, running: bool) -> bool {
+    metadata_exists && running
+}
+
 async fn read_session_log_file(path: &Path) -> Result<String> {
     match tokio::fs::read_to_string(path).await {
         Ok(text) => Ok(text),
@@ -642,8 +653,8 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 mod tests {
     use super::{
         ensure_running_env, read_session_log_file, remove_path_if_exists, should_check_quota,
-        should_mark_stopped, should_refresh_live_state, validate_child_rootfs_requirements,
-        AgentService,
+        should_mark_stopped, should_refresh_live_state, should_reject_session_create,
+        validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits};
@@ -713,6 +724,13 @@ mod tests {
 
         env.state = EnvState::QuotaExceeded;
         assert!(ensure_running_env(&env).is_err());
+    }
+
+    #[test]
+    fn duplicate_session_create_only_rejects_running_existing_sessions() {
+        assert!(should_reject_session_create(true, true));
+        assert!(!should_reject_session_create(true, false));
+        assert!(!should_reject_session_create(false, false));
     }
 
     #[tokio::test]
