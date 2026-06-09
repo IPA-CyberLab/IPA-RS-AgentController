@@ -45,7 +45,7 @@ impl Exporter {
         }
         let output = self
             .runner
-            .run(
+            .run_checked(
                 "git",
                 vec![
                     "-C".to_string(),
@@ -132,7 +132,10 @@ fn package_versions(path: &Path) -> Result<BTreeMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use super::{ExportType, Exporter};
+    use crate::model::{machine_name, Env, EnvState, Limits};
+    use chrono::Utc;
     use std::fs;
+    use std::process::Command;
 
     #[test]
     fn export_types_have_stable_artifact_names() {
@@ -145,6 +148,31 @@ mod tests {
             "rootfs-changed-paths.txt"
         );
         assert_eq!(ExportType::DpkgDelta.artifact_name(), "dpkg-delta.txt");
+    }
+
+    #[tokio::test]
+    async fn workspace_patch_returns_git_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("rootfs/workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        run_git(&workspace, &["init", "--quiet"]);
+        run_git(
+            &workspace,
+            &["config", "user.email", "test@example.invalid"],
+        );
+        run_git(&workspace, &["config", "user.name", "Test User"]);
+        fs::write(workspace.join("README.md"), "old\n").unwrap();
+        run_git(&workspace, &["add", "README.md"]);
+        run_git(&workspace, &["commit", "--quiet", "-m", "initial"]);
+        fs::write(workspace.join("README.md"), "new\n").unwrap();
+
+        let patch = Exporter::default()
+            .workspace_patch(&test_env(dir.path().join("rootfs")))
+            .await
+            .unwrap();
+
+        assert!(patch.contains("-old"));
+        assert!(patch.contains("+new"));
     }
 
     #[test]
@@ -190,5 +218,30 @@ mod tests {
         assert!(changed.contains("/root/old.txt"));
         assert!(changed.contains("deleted /root/delete.txt"));
         assert!(!changed.contains("/root/same.txt"));
+    }
+
+    fn run_git(workdir: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(workdir)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn test_env(rootfs_path: std::path::PathBuf) -> Env {
+        Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path,
+            machine_name: machine_name("codex-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        }
     }
 }
