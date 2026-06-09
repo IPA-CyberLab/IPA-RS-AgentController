@@ -172,6 +172,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(sessions.contains("dev"));
     assert!(sessions.contains("running"));
     assert_env_sessions("codex-1", &["dev"]);
+    assert_session_metadata("codex-1", "dev", "bash", "running");
 
     run(&[
         "agentctl", "session", "create", "codex-1", "codex", "--", "codex",
@@ -180,6 +181,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(sessions.contains("codex"));
     assert!(sessions.contains("running"));
     assert_env_sessions("codex-1", &["dev", "codex"]);
+    assert_session_metadata("codex-1", "codex", "codex", "running");
     let _ = text(&["agentctl", "session", "logs", "codex-1", "codex"]);
     assert!(Path::new("/agentfs/envs/codex-1/logs/sessions/codex.log").exists());
     run(&["agentctl", "session", "detach", "codex-1", "codex"]);
@@ -346,6 +348,25 @@ fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
     assert!(
         metadata["created_at"].as_str().is_some(),
         "env metadata omitted created_at: {metadata}"
+    );
+}
+
+fn assert_session_metadata(env_id: &str, session_id: &str, command: &str, state: &str) {
+    let metadata = json_file(&format!(
+        "/agentfs/envs/{env_id}/sessions/{session_id}.json"
+    ));
+    assert_eq!(metadata["id"], session_id);
+    assert_eq!(metadata["env_id"], env_id);
+    assert_eq!(metadata["command"], command);
+    assert_eq!(metadata["state"], state);
+    assert_eq!(metadata["type"], "pty");
+    assert_eq!(
+        metadata["log_path"],
+        format!("/agentfs/envs/{env_id}/logs/sessions/{session_id}.log")
+    );
+    assert!(
+        metadata["created_at"].as_str().is_some(),
+        "session metadata omitted created_at: {metadata}"
     );
 }
 
