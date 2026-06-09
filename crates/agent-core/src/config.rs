@@ -152,6 +152,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn config_schema_exposes_network_policy_extension_points() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/config.schema.json")).unwrap();
+        let properties = &schema["properties"]["profiles"]["items"]["properties"];
+        assert!(
+            properties.get("network_policy").is_some(),
+            "config schema omitted network_policy"
+        );
+        assert!(
+            properties["network_policy"]["properties"]
+                .get("egress_proxy")
+                .is_some(),
+            "config schema omitted network_policy.egress_proxy"
+        );
+        assert!(
+            properties["network_policy"]["properties"]
+                .get("allowlist")
+                .is_some(),
+            "config schema omitted network_policy.allowlist"
+        );
+    }
+
     #[tokio::test]
     async fn config_accepts_missing_network_policy_for_backward_compatibility() {
         let dir = tempfile::tempdir().unwrap();
