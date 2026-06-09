@@ -3,6 +3,7 @@ use crate::model::Env;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -113,6 +114,9 @@ fn path_changed(base: &Path, env: &Path) -> Result<bool> {
     let env_meta = fs::symlink_metadata(env)?;
     let base_type = base_meta.file_type();
     let env_type = env_meta.file_type();
+    if metadata_changed(&base_meta, &env_meta) {
+        return Ok(true);
+    }
     if base_type.is_file() && env_type.is_file() {
         return files_differ(base, env);
     }
@@ -122,6 +126,10 @@ fn path_changed(base: &Path, env: &Path) -> Result<bool> {
     Ok(base_type.is_dir() != env_type.is_dir()
         || base_type.is_file() != env_type.is_file()
         || base_type.is_symlink() != env_type.is_symlink())
+}
+
+fn metadata_changed(base: &fs::Metadata, env: &fs::Metadata) -> bool {
+    base.mode() != env.mode() || base.uid() != env.uid() || base.gid() != env.gid()
 }
 
 fn symlink_metadata_if_exists(path: &Path) -> Result<Option<fs::Metadata>> {
@@ -162,6 +170,7 @@ mod tests {
     use chrono::Utc;
     use std::fs;
     use std::os::unix::fs::symlink;
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
     #[test]
@@ -252,6 +261,29 @@ mod tests {
         assert!(changed.contains("/root/added-link"));
         assert!(changed.contains("deleted /root/delete.txt"));
         assert!(!changed.contains("/root/same.txt"));
+    }
+
+    #[test]
+    fn changed_paths_reports_metadata_only_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let env = dir.path().join("env");
+        fs::create_dir_all(base.join("root/mode-dir")).unwrap();
+        fs::create_dir_all(env.join("root/mode-dir")).unwrap();
+        fs::write(base.join("root/mode-file"), "same").unwrap();
+        fs::write(env.join("root/mode-file"), "same").unwrap();
+
+        fs::set_permissions(
+            env.join("root/mode-file"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        fs::set_permissions(env.join("root/mode-dir"), fs::Permissions::from_mode(0o700)).unwrap();
+
+        let changed = Exporter::changed_paths_by_walk(&base, &env).unwrap();
+
+        assert!(changed.contains("/root/mode-file"));
+        assert!(changed.contains("/root/mode-dir"));
     }
 
     fn run_git(workdir: &std::path::Path, args: &[&str]) {
