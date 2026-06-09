@@ -658,7 +658,14 @@ impl AgentService {
     }
 
     async fn cleanup_failed_env_create(&self, rootfs: &Path, env_dir: &Path) {
+        let qgroup_id = self.btrfs.qgroup_id(rootfs).await.ok().flatten();
         let _ = self.btrfs.delete_subvolume(rootfs).await;
+        if let Some(qgroup_id) = qgroup_id {
+            let _ = self
+                .btrfs
+                .destroy_qgroup(&qgroup_id, &self.config.agentfs)
+                .await;
+        }
         cleanup_failed_env_dir(env_dir).await;
     }
 
