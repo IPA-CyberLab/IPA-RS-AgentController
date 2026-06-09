@@ -74,6 +74,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         text(&["agentctl", "exec", "codex-1", "--", "sudo", "whoami"]).trim(),
         "root"
     );
+    assert!(text(&["agentctl", "exec", "codex-1", "--", "tee", "--version"]).contains("tee"));
     run(&["agentctl", "exec", "codex-1", "--", "sudo", "apt", "update"]);
     run(&[
         "agentctl", "exec", "codex-1", "--", "sudo", "apt", "install", "-y", "ripgrep",

@@ -90,7 +90,7 @@ JSON schemas live in `schemas/`.
 
 Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`, scrubs host `/agentfs` state such as `bases`, `envs`, `cache`, and `runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it. Export commands print their output and persist the latest artifact under `/agentfs/envs/<env-id>/exports/`.
 
-Env start validates that the child rootfs contains `/bin/bash`, `sudo`, `apt` or `apt-get`, and `tmux`. If those tools are missing, the env is marked `failed` and nspawn is not launched.
+Env start validates that the child rootfs contains `/bin/bash`, `sudo`, `apt` or `apt-get`, `tmux`, and `tee`. If those tools are missing, the env is marked `failed` and nspawn is not launched.
 
 If nspawn launch fails, the env is marked `failed`. After exec, the daemon checks the Btrfs qgroup and marks the env `quota_exceeded` when the child has reached its disk quota.
 

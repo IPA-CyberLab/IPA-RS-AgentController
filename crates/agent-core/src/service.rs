@@ -800,7 +800,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn rootfs_preflight_requires_sudo_apt_tmux_and_bash() {
+    fn rootfs_preflight_requires_sudo_apt_tmux_tee_and_bash() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("bin")).unwrap();
         fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
