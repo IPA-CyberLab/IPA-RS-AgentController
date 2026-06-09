@@ -61,6 +61,12 @@ impl CommandRunner {
             .await?;
         file.write_all(content.as_bytes()).await?;
         file.sync_all().await?;
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)
+                .with_context(|| format!("failed to open log dir {}", parent.display()))?
+                .sync_all()
+                .with_context(|| format!("failed to sync log dir {}", parent.display()))?;
+        }
         Ok(())
     }
 }
