@@ -210,7 +210,7 @@ impl Btrfs {
                 [
                     "qgroup",
                     "show",
-                    "-b",
+                    "--raw",
                     "-r",
                     "-e",
                     "-F",
