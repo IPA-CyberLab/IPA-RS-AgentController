@@ -1,6 +1,8 @@
 use crate::model::Limits;
-use anyhow::{Context, Result};
+use crate::storage::validate_id;
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,12 +34,7 @@ impl AgentConfig {
             .with_context(|| format!("failed to read config {}", path.display()))?;
         let config: Self = serde_json::from_slice(&bytes)
             .with_context(|| format!("invalid config json {}", path.display()))?;
-        for profile in &config.profiles {
-            profile
-                .limits
-                .validate()
-                .with_context(|| format!("invalid limits for profile {}", profile.name))?;
-        }
+        config.validate()?;
         Ok(config)
     }
 
@@ -46,6 +43,30 @@ impl AgentConfig {
             Some(path) => Self::load(path).await,
             None => Ok(Self::new(agentfs)),
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_id(&self.default_profile)
+            .with_context(|| format!("invalid default_profile {}", self.default_profile))?;
+        let mut names = BTreeSet::new();
+        for profile in &self.profiles {
+            validate_id(&profile.name)
+                .with_context(|| format!("invalid profile {}", profile.name))?;
+            if !names.insert(profile.name.clone()) {
+                return Err(anyhow!("duplicate profile {}", profile.name));
+            }
+            profile
+                .limits
+                .validate()
+                .with_context(|| format!("invalid limits for profile {}", profile.name))?;
+        }
+        if !names.contains(&self.default_profile) {
+            return Err(anyhow!(
+                "default_profile {} does not match any configured profile",
+                self.default_profile
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -124,6 +145,90 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("invalid limits for profile privileged-dev"));
+    }
+
+    #[tokio::test]
+    async fn config_rejects_missing_default_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "missing",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "400%",
+        "memory_max": "16G",
+        "pids_max": 4096,
+        "disk_max": "100G",
+        "network": "private-nat",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
+
+        assert!(AgentConfig::load(&path)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not match any configured profile"));
+    }
+
+    #[tokio::test]
+    async fn config_rejects_duplicate_profile_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "privileged-dev",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "400%",
+        "memory_max": "16G",
+        "pids_max": 4096,
+        "disk_max": "100G",
+        "network": "private-nat",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      }
+    },
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "800%",
+        "memory_max": "32G",
+        "pids_max": 8192,
+        "disk_max": "200G",
+        "network": "private",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
+
+        assert!(AgentConfig::load(&path)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate profile privileged-dev"));
     }
 }
 
