@@ -190,11 +190,12 @@ impl Nspawn {
                 ["show", &env.machine_name, "-p", "State", "--value"],
             )
             .await?;
-        env.state = if output.status == 0 && output.stdout.trim() == "running" {
-            EnvState::Running
-        } else {
-            EnvState::Stopped
-        };
+        env.state = machinectl_show_state_result(
+            output.status,
+            &output.stdout,
+            &output.stderr,
+            &env.machine_name,
+        )?;
         Ok(())
     }
 }
@@ -229,6 +230,27 @@ fn is_unlimited_str(value: &str) -> bool {
 fn machinectl_reports_missing_machine(stderr: &str) -> bool {
     let stderr = stderr.to_ascii_lowercase();
     stderr.contains("no machine") || stderr.contains("not exist") || stderr.contains("not found")
+}
+
+fn machinectl_show_state_result(
+    status: i32,
+    stdout: &str,
+    stderr: &str,
+    machine_name: &str,
+) -> Result<EnvState> {
+    if status == 0 {
+        return Ok(if stdout.trim() == "running" {
+            EnvState::Running
+        } else {
+            EnvState::Stopped
+        });
+    }
+    if machinectl_reports_missing_machine(stderr) {
+        return Ok(EnvState::Stopped);
+    }
+    Err(anyhow!(
+        "machinectl show {machine_name} exited with {status}: {stdout}{stderr}"
+    ))
 }
 
 fn shell_join(command: &[String]) -> String {
@@ -343,6 +365,33 @@ mod tests {
             "Machine af-codex-1 does not exist"
         ));
         assert!(!machinectl_reports_missing_machine("Access denied"));
+    }
+
+    #[test]
+    fn machinectl_show_state_maps_missing_machine_to_stopped() {
+        assert_eq!(
+            machinectl_show_state_result(0, "running\n", "", "af-codex-1").unwrap(),
+            EnvState::Running
+        );
+        assert_eq!(
+            machinectl_show_state_result(0, "closing\n", "", "af-codex-1").unwrap(),
+            EnvState::Stopped
+        );
+        assert_eq!(
+            machinectl_show_state_result(1, "", "No machine 'af-codex-1' known", "af-codex-1")
+                .unwrap(),
+            EnvState::Stopped
+        );
+    }
+
+    #[test]
+    fn machinectl_show_state_reports_unexpected_failures() {
+        let error = machinectl_show_state_result(1, "", "Access denied", "af-codex-1")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("machinectl show af-codex-1 exited with 1"));
+        assert!(error.contains("Access denied"));
     }
 
     #[tokio::test]
