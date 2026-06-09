@@ -4,7 +4,7 @@ use agent_core::AgentService;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{error, info};
 
@@ -45,15 +45,35 @@ async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> 
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
     while let Some(line) = lines.next_line().await? {
-        let request: Request = serde_json::from_str(&line)?;
+        let request = match parse_request_line(&line) {
+            Ok(request) => request,
+            Err(response) => {
+                write_response(&mut write, &response).await?;
+                break;
+            }
+        };
         let response = service.handle(request).await;
-        let bytes = serde_json::to_vec(&response)?;
-        write.write_all(&bytes).await?;
-        write.write_all(b"\n").await?;
+        write_response(&mut write, &response).await?;
         if matches!(response, Response::Error { .. }) {
             break;
         }
     }
+    Ok(())
+}
+
+fn parse_request_line(line: &str) -> std::result::Result<Request, Response> {
+    serde_json::from_str(line).map_err(|error| Response::Error {
+        message: format!("invalid request json: {error}"),
+    })
+}
+
+async fn write_response<W>(write: &mut W, response: &Response) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let bytes = serde_json::to_vec(response)?;
+    write.write_all(&bytes).await?;
+    write.write_all(b"\n").await?;
     Ok(())
 }
 
@@ -77,7 +97,8 @@ async fn prepare_socket_path(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_socket_path;
+    use super::{parse_request_line, prepare_socket_path};
+    use agent_core::protocol::Response;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -101,5 +122,17 @@ mod tests {
 
         assert!(error.to_string().contains("already accepting connections"));
         assert!(socket.exists());
+    }
+
+    #[test]
+    fn invalid_request_line_returns_error_response() {
+        let response = parse_request_line("{not json").unwrap_err();
+
+        match response {
+            Response::Error { message } => {
+                assert!(message.contains("invalid request json"));
+            }
+            other => panic!("unexpected response {other:?}"),
+        }
     }
 }
