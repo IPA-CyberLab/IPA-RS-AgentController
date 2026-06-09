@@ -434,7 +434,11 @@ impl AgentService {
                 .logs(&env, session_id, &session.log_path)
                 .await?
         } else {
-            read_session_log_file(&session.log_path).await?
+            read_offline_session_log(
+                &TmuxSessionBackend::host_transcript_path(&env, session_id),
+                &session.log_path,
+            )
+            .await?
         };
         self.log_lifecycle(env_id, &format!("session {session_id} logs synced"))
             .await?;
@@ -705,6 +709,22 @@ async fn read_session_log_file(path: &Path) -> Result<String> {
     }
 }
 
+async fn read_offline_session_log(child_transcript: &Path, agentfs_log: &Path) -> Result<String> {
+    match tokio::fs::read_to_string(child_transcript).await {
+        Ok(text) => {
+            if let Some(parent) = agentfs_log.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(agentfs_log, &text).await?;
+            Ok(text)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            read_session_log_file(agentfs_log).await
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
     let mut missing = Vec::new();
     for (name, candidates) in [
@@ -734,9 +754,10 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_failed_base_dir, cleanup_failed_env_dir, ensure_running_env, read_session_log_file,
-        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
-        should_reject_session_create, validate_child_rootfs_requirements, AgentService,
+        cleanup_failed_base_dir, cleanup_failed_env_dir, ensure_running_env,
+        read_offline_session_log, read_session_log_file, remove_path_if_exists, should_check_quota,
+        should_mark_stopped, should_refresh_live_state, should_reject_session_create,
+        validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits};
@@ -928,6 +949,48 @@ mod tests {
                 .unwrap(),
             ""
         );
+    }
+
+    #[tokio::test]
+    async fn offline_session_logs_sync_from_child_rootfs_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let child_transcript = dir
+            .path()
+            .join("rootfs/var/log/agent-forkd/sessions/dev.log");
+        let agentfs_log = dir
+            .path()
+            .join("agentfs/envs/codex-1/logs/sessions/dev.log");
+        fs::create_dir_all(child_transcript.parent().unwrap()).unwrap();
+        fs::write(&child_transcript, "persisted in child rootfs\n").unwrap();
+
+        let logs = read_offline_session_log(&child_transcript, &agentfs_log)
+            .await
+            .unwrap();
+
+        assert_eq!(logs, "persisted in child rootfs\n");
+        assert_eq!(
+            fs::read_to_string(agentfs_log).unwrap(),
+            "persisted in child rootfs\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_session_logs_fall_back_to_agentfs_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let child_transcript = dir
+            .path()
+            .join("rootfs/var/log/agent-forkd/sessions/dev.log");
+        let agentfs_log = dir
+            .path()
+            .join("agentfs/envs/codex-1/logs/sessions/dev.log");
+        fs::create_dir_all(agentfs_log.parent().unwrap()).unwrap();
+        fs::write(&agentfs_log, "already synced\n").unwrap();
+
+        let logs = read_offline_session_log(&child_transcript, &agentfs_log)
+            .await
+            .unwrap();
+
+        assert_eq!(logs, "already synced\n");
     }
 
     fn test_env(state: EnvState) -> Env {

@@ -92,6 +92,11 @@ impl TmuxSessionBackend {
         format!("/var/log/agent-forkd/sessions/{session_id}.log")
     }
 
+    pub fn host_transcript_path(env: &Env, session_id: &str) -> PathBuf {
+        env.rootfs_path
+            .join(Self::child_transcript_path(session_id).trim_start_matches('/'))
+    }
+
     pub fn child_create_command(session_id: &str, command: &[String]) -> String {
         let tmux = Self::child_tmux_name(session_id);
         let transcript = Self::child_transcript_path(session_id);
@@ -331,6 +336,31 @@ mod tests {
         let path = TmuxSessionBackend::child_transcript_path("codex");
         assert_eq!(path, "/var/log/agent-forkd/sessions/codex.log");
         assert!(!path.starts_with("/agentfs"));
+    }
+
+    #[test]
+    fn host_transcript_path_resolves_inside_env_rootfs() {
+        use crate::model::{machine_name, Env, EnvState, Limits};
+        use chrono::Utc;
+
+        let env = Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
+            machine_name: machine_name("codex-1"),
+            state: EnvState::Stopped,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: vec!["dev".to_string()],
+        };
+
+        assert_eq!(
+            TmuxSessionBackend::host_transcript_path(&env, "dev"),
+            std::path::PathBuf::from(
+                "/agentfs/envs/codex-1/rootfs/var/log/agent-forkd/sessions/dev.log"
+            )
+        );
     }
 
     #[test]
