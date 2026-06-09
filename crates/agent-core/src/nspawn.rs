@@ -196,6 +196,10 @@ impl Nspawn {
     }
 
     pub async fn exec(&self, env: &Env, command: &[String], log_path: &Path) -> Result<CmdOutput> {
+        let command_text = shell_join(command);
+        let wrapped_command = format!(
+            "{{ {command_text}; }}\nstatus=$?\nprintf '\\n__AGENT_FORKD_EXIT:%s\\n' \"$status\"\nexit 0"
+        );
         let mut args = vec![
             "--quiet".to_string(),
             "shell".to_string(),
@@ -203,14 +207,12 @@ impl Nspawn {
             "/bin/bash".to_string(),
             "-lc".to_string(),
         ];
-        args.push(shell_join(command));
-        let output = self.runner.run("machinectl", args).await?;
+        args.push(wrapped_command);
+        let mut output = self.runner.run("machinectl", args).await?;
+        output.status = parse_child_exit_status(&mut output.stdout).unwrap_or(output.status);
         let log = format!(
             "$ {}\n[exit:{}]\n--- stdout ---\n{}--- stderr ---\n{}\n",
-            shell_join(command),
-            output.status,
-            output.stdout,
-            output.stderr
+            command_text, output.status, output.stdout, output.stderr
         );
         CommandRunner::append_to_file(log_path, &log).await?;
         Ok(output)
@@ -355,6 +357,19 @@ fn machinectl_show_state_result(
     ))
 }
 
+fn parse_child_exit_status(stdout: &mut String) -> Option<i32> {
+    const MARKER: &str = "\n__AGENT_FORKD_EXIT:";
+    let marker_start = stdout.rfind(MARKER)?;
+    let status_start = marker_start + MARKER.len();
+    let status_end = stdout[status_start..]
+        .find('\n')
+        .map(|offset| status_start + offset)
+        .unwrap_or(stdout.len());
+    let status = stdout[status_start..status_end].trim().parse().ok()?;
+    stdout.truncate(marker_start);
+    Some(status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +476,22 @@ mod tests {
         assert!(text.contains("DHCPServer=yes"));
         assert!(text.contains("IPMasquerade=ipv4"));
         assert!(text.contains("IPForward=ipv4"));
+    }
+
+    #[test]
+    fn child_exit_status_marker_is_removed_from_stdout() {
+        let mut stdout = "hello\n__AGENT_FORKD_EXIT:7\n".to_string();
+
+        assert_eq!(parse_child_exit_status(&mut stdout), Some(7));
+        assert_eq!(stdout, "hello");
+    }
+
+    #[test]
+    fn missing_child_exit_status_marker_keeps_machinectl_status() {
+        let mut stdout = "hello\n".to_string();
+
+        assert_eq!(parse_child_exit_status(&mut stdout), None);
+        assert_eq!(stdout, "hello\n");
     }
 
     #[test]
