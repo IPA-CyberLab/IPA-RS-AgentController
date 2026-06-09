@@ -69,9 +69,10 @@ pub(crate) fn shell_join(command: &[String]) -> String {
     command
         .iter()
         .map(|arg| {
-            if arg
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_./:=+".contains(&b))
+            if !arg.is_empty()
+                && arg
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_./:=+".contains(&b))
             {
                 arg.clone()
             } else {
@@ -101,6 +102,14 @@ mod tests {
     #[test]
     fn shell_quote_escapes_single_quotes() {
         assert_eq!(shell_quote("shell's dev"), "'shell'\\''s dev'");
+    }
+
+    #[test]
+    fn shell_join_preserves_empty_arguments() {
+        assert_eq!(
+            shell_join(&["bash".into(), "-lc".into(), "".into()]),
+            "bash -lc ''"
+        );
     }
 
     #[tokio::test]
