@@ -1,3 +1,4 @@
 docs/goal.md
 /target/
 **/*.log
+.key
