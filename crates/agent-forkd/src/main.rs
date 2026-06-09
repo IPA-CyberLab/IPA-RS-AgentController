@@ -13,6 +13,8 @@ use tracing::{error, info};
 struct Args {
     #[arg(long, env = "AGENTFS", default_value = "/agentfs")]
     agentfs: PathBuf,
+    #[arg(long, env = "AGENT_FORKD_CONFIG")]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -22,7 +24,7 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let config = AgentConfig::new(args.agentfs);
+    let config = AgentConfig::load_or_default(args.config.as_deref(), args.agentfs).await?;
     let service = AgentService::new(config.clone());
     tokio::fs::create_dir_all(config.socket_path.parent().unwrap()).await?;
     if config.socket_path.exists() {

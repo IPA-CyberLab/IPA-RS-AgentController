@@ -17,6 +17,8 @@ The implementation uses:
 cargo build --release
 sudo install -m 0755 target/release/agent-forkd /usr/local/bin/agent-forkd
 sudo install -m 0755 target/release/agentctl /usr/local/bin/agentctl
+sudo install -d -m 0755 /etc/agent-forkd
+sudo install -m 0644 packaging/agent-forkd/config.json /etc/agent-forkd/config.json
 sudo install -m 0644 packaging/systemd/agent-forkd.service /etc/systemd/system/agent-forkd.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now agent-forkd
@@ -77,6 +79,8 @@ The default `network=private-nat` profile launches nspawn with a veth in the `ag
 ```
 
 JSON schemas live in `schemas/`.
+
+`agent-forkd` and `agentctl` accept `--config /etc/agent-forkd/config.json` or `AGENT_FORKD_CONFIG` for the daemon config schema in `schemas/config.schema.json`.
 
 Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, and `/agentfs/runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it.
 

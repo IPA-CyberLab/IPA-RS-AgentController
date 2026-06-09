@@ -13,6 +13,8 @@ use tokio::net::UnixStream;
 struct Cli {
     #[arg(long, env = "AGENTFS", default_value = "/agentfs", global = true)]
     agentfs: PathBuf,
+    #[arg(long, env = "AGENT_FORKD_CONFIG", global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -147,7 +149,7 @@ impl ExportKind {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let request = to_request(&cli);
-    let config = AgentConfig::new(cli.agentfs.clone());
+    let config = AgentConfig::load_or_default(cli.config.as_deref(), cli.agentfs.clone()).await?;
     let response = call(&config.socket_path, request).await?;
     print_response(response)
 }

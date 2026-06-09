@@ -6,7 +6,8 @@ Requires=systemd-networkd.service systemd-machined.service
 [Service]
 Type=simple
 Environment=AGENTFS=/agentfs
-ExecStart=/usr/local/bin/agent-forkd --agentfs ${AGENTFS}
+Environment=AGENT_FORKD_CONFIG=/etc/agent-forkd/config.json
+ExecStart=/usr/local/bin/agent-forkd --agentfs ${AGENTFS} --config ${AGENT_FORKD_CONFIG}
 Restart=on-failure
 RestartSec=2s
 
