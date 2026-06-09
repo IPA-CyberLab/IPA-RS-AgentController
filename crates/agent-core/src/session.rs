@@ -106,7 +106,7 @@ impl TmuxSessionBackend {
             "/bin/bash".to_string(),
             "-lc".to_string(),
             format!(
-                "exec > >(cat >> {}) 2>&1; exec {command}",
+                "exec > >(tee -a {}) 2>&1; exec {command}",
                 shell_quote(&transcript)
             ),
         ]);
@@ -324,6 +324,7 @@ mod tests {
         );
         assert!(command.contains("tmux new-session -d -s 'dev'"));
         assert!(command.contains("/var/log/agent-forkd/sessions/dev.log"));
+        assert!(command.contains("tee -a"));
         assert!(command.contains("exec > >("));
         assert!(!command.contains("machinectl"));
     }

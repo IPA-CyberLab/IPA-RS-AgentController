@@ -763,6 +763,7 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
         ("bash", &["bin/bash"][..]),
         ("sudo", &["usr/bin/sudo", "bin/sudo"][..]),
         ("tmux", &["usr/bin/tmux", "bin/tmux"][..]),
+        ("tee", &["usr/bin/tee", "bin/tee"][..]),
         ("apt", &["usr/bin/apt", "usr/bin/apt-get"][..]),
     ] {
         if !candidates
@@ -807,6 +808,7 @@ mod tests {
         fs::write(dir.path().join("usr/bin/sudo"), "").unwrap();
         fs::write(dir.path().join("usr/bin/apt-get"), "").unwrap();
         fs::write(dir.path().join("usr/bin/tmux"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/tee"), "").unwrap();
         validate_child_rootfs_requirements(dir.path()).unwrap();
     }
 
@@ -819,6 +821,7 @@ mod tests {
         assert!(message.contains("sudo"));
         assert!(message.contains("apt"));
         assert!(message.contains("tmux"));
+        assert!(message.contains("tee"));
     }
 
     #[test]
@@ -829,6 +832,7 @@ mod tests {
         fs::write(dir.path().join("usr/bin/sudo"), "").unwrap();
         fs::write(dir.path().join("usr/bin/apt"), "").unwrap();
         fs::write(dir.path().join("usr/bin/tmux"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/tee"), "").unwrap();
 
         let error = validate_child_rootfs_requirements(dir.path()).unwrap_err();
 
