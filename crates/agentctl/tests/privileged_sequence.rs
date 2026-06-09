@@ -233,6 +233,19 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_btrfs_qgroup_removed(&codex_qgroup, "/agentfs");
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
     assert_env_status(&claude_status, "claude-1", "base-001", "running");
+    assert_eq!(
+        text(&[
+            "agentctl",
+            "exec",
+            "claude-1",
+            "--",
+            "bash",
+            "-lc",
+            "test ! -e /root/marker.txt && echo sibling-ok",
+        ])
+        .trim(),
+        "sibling-ok"
+    );
 }
 
 fn require_privileged_test_environment() {
