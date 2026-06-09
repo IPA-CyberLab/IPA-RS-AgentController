@@ -303,7 +303,8 @@ fn parse_tmux_session_names(output: &str) -> Vec<String> {
 }
 
 fn tmux_detach_reports_no_current_client(stderr: &str) -> bool {
-    stderr.to_ascii_lowercase().contains("no current client")
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no current client") || stderr.contains("no clients")
 }
 
 fn tmux_list_reports_no_sessions(stderr: &str) -> bool {
@@ -446,6 +447,7 @@ mod tests {
     fn detach_treats_absent_clients_as_already_detached() {
         assert!(tmux_detach_reports_no_current_client("no current client"));
         assert!(tmux_detach_reports_no_current_client("NO CURRENT CLIENT\n"));
+        assert!(tmux_detach_reports_no_current_client("no clients attached"));
         assert!(!tmux_detach_reports_no_current_client("no server running"));
     }
 
