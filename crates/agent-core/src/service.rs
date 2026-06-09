@@ -281,6 +281,8 @@ impl AgentService {
         }
         if should_check_quota(&env.state) && self.btrfs.quota_exceeded(&env.rootfs_path).await? {
             env.state = EnvState::QuotaExceeded;
+            self.log_lifecycle(id, "quota exceeded during status refresh")
+                .await?;
         }
         self.layout.write_env(&env).await?;
         let disk_used = self.disk_used(&env.rootfs_path).await.ok();

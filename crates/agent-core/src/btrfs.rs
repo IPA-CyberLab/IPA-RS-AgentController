@@ -201,11 +201,20 @@ impl Btrfs {
                 ],
             )
             .await?;
-        if output.status != 0 {
-            return Ok(false);
-        }
-        Ok(qgroup_show_reports_exceeded(&output.stdout))
+        qgroup_show_result(output.status, &output.stdout, &output.stderr, path)
     }
+}
+
+fn qgroup_show_result(status: i32, stdout: &str, stderr: &str, path: &Path) -> Result<bool> {
+    if status != 0 {
+        return Err(anyhow!(
+            "failed to inspect Btrfs qgroup quota for {}: {}{}",
+            path.display(),
+            stdout,
+            stderr
+        ));
+    }
+    Ok(qgroup_show_reports_exceeded(stdout))
 }
 
 fn qgroup_show_reports_exceeded(output: &str) -> bool {
@@ -236,7 +245,8 @@ fn is_unlimited(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_unlimited, qgroup_show_reports_exceeded};
+    use super::{is_unlimited, qgroup_show_reports_exceeded, qgroup_show_result};
+    use std::path::Path;
 
     #[test]
     fn qgroup_unlimited_values_are_recognized() {
@@ -270,5 +280,18 @@ qgroupid         rfer         excl     max_rfer
 ";
         assert!(!qgroup_show_reports_exceeded(below_limit));
         assert!(!qgroup_show_reports_exceeded(unlimited));
+    }
+
+    #[test]
+    fn qgroup_show_failure_is_not_treated_as_below_quota() {
+        let error = qgroup_show_result(
+            1,
+            "",
+            "ERROR: quota support disabled\n",
+            Path::new("/agentfs/envs/codex-1/rootfs"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("failed to inspect Btrfs qgroup"));
     }
 }
