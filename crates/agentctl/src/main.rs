@@ -261,15 +261,20 @@ fn print_response(response: Response) -> Result<()> {
         }
         Response::Envs { envs } => {
             println!("ENV\tBASE\tSTATE\tDISK_USED\tSESSIONS");
-            for env in envs {
+            for status in envs {
+                let env = status.env;
                 let sessions = if env.sessions.is_empty() {
                     "-".to_string()
                 } else {
                     env.sessions.join(",")
                 };
                 println!(
-                    "{}\t{}\t{:?}\t-\t{}",
-                    env.id, env.base_id, env.state, sessions
+                    "{}\t{}\t{:?}\t{}\t{}",
+                    env.id,
+                    env.base_id,
+                    env.state,
+                    status.disk_used.unwrap_or_else(|| "-".to_string()),
+                    sessions
                 );
             }
             Ok(())

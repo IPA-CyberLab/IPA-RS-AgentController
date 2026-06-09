@@ -1,4 +1,4 @@
-use crate::model::{Env, EnvStatus, LimitOverrides, Session};
+use crate::model::{EnvStatus, LimitOverrides, Session};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -77,7 +77,7 @@ pub enum Response {
         stderr: String,
     },
     Envs {
-        envs: Vec<Env>,
+        envs: Vec<EnvStatus>,
     },
     EnvStatus {
         status: Box<EnvStatus>,

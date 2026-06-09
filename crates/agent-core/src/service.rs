@@ -77,7 +77,7 @@ impl AgentService {
                 Ok(Response::Ok)
             }
             Request::EnvList => Ok(Response::Envs {
-                envs: self.layout.list_envs().await?,
+                envs: self.env_list().await?,
             }),
             Request::EnvStatus { id } => Ok(Response::EnvStatus {
                 status: Box::new(self.env_status(&id).await?),
@@ -113,7 +113,7 @@ impl AgentService {
                 })
             }
             Request::SessionList { env_id } => Ok(Response::Sessions {
-                sessions: self.layout.list_sessions(&env_id).await?,
+                sessions: self.session_list(&env_id).await?,
             }),
             Request::SessionLogs { env_id, session_id } => Ok(Response::Text {
                 text: self.session_logs(&env_id, &session_id).await?,
@@ -260,6 +260,15 @@ impl AgentService {
         Ok(EnvStatus { env, disk_used })
     }
 
+    pub async fn env_list(&self) -> Result<Vec<EnvStatus>> {
+        let envs = self.layout.list_envs().await?;
+        let mut statuses = Vec::with_capacity(envs.len());
+        for env in envs {
+            statuses.push(self.env_status(&env.id).await?);
+        }
+        Ok(statuses)
+    }
+
     pub async fn exec(&self, id: &str, command: &[String]) -> Result<crate::command::CmdOutput> {
         if command.is_empty() {
             return Err(anyhow!("exec command cannot be empty"));
@@ -320,6 +329,21 @@ impl AgentService {
         self.log_lifecycle(env_id, &format!("session {session_id} logs synced"))
             .await?;
         Ok(logs)
+    }
+
+    pub async fn session_list(&self, env_id: &str) -> Result<Vec<crate::model::Session>> {
+        let env = self.layout.read_env(env_id).await?;
+        let live_sessions = self.sessions.list(&env).await.unwrap_or_default();
+        let mut sessions = self.layout.list_sessions(env_id).await?;
+        for session in &mut sessions {
+            session.state = if live_sessions.iter().any(|live| live == &session.id) {
+                crate::model::SessionState::Running
+            } else {
+                crate::model::SessionState::Stopped
+            };
+            self.layout.write_session(session).await?;
+        }
+        Ok(sessions)
     }
 
     pub async fn diff(&self, env_id: &str) -> Result<String> {
