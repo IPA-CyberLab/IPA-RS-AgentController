@@ -297,6 +297,15 @@ impl AgentService {
                 .await?;
             return Err(error);
         }
+        if let Err(error) = ensure_child_hostname(&env.rootfs_path, &env.machine_name).await {
+            env.state = EnvState::Failed;
+            self.layout.write_env(&env).await?;
+            self.log_daemon(id, &format!("env start failed hostname setup: {error:#}"))
+                .await?;
+            self.log_lifecycle(id, &format!("failed hostname setup: {error:#}"))
+                .await?;
+            return Err(error);
+        }
         if let Err(error) = self.nspawn.start(&env, Some(&nspawn_log)).await {
             env.state = EnvState::Failed;
             self.layout.write_env(&env).await?;
@@ -926,12 +935,16 @@ async fn ensure_inaccessible_mask_targets(rootfs: &Path) -> Result<()> {
     Ok(())
 }
 
+async fn ensure_child_hostname(rootfs: &Path, hostname: &str) -> Result<()> {
+    write_text_file(&rootfs.join("etc/hostname"), &format!("{hostname}\n")).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_stopped_state, base_source_label, cleanup_failed_base_dir, cleanup_failed_env_dir,
-        default_shell_command, ensure_inaccessible_mask_targets, ensure_running_env,
-        idle_timeout_expired, read_offline_session_log, read_session_log_file,
+        default_shell_command, ensure_child_hostname, ensure_inaccessible_mask_targets,
+        ensure_running_env, idle_timeout_expired, read_offline_session_log, read_session_log_file,
         remove_dir_all_if_exists, remove_path_if_exists, should_check_quota, should_mark_stopped,
         should_refresh_live_state, should_reject_session_create, sync_env_session_index,
         validate_child_rootfs_requirements, AgentService,
@@ -1009,6 +1022,21 @@ mod tests {
         assert!(!dir.path().join("run/agent-forkd.sock").exists());
         assert!(!dir.path().join("run/docker.sock").exists());
         assert!(!dir.path().join("var/run/docker.sock").exists());
+    }
+
+    #[tokio::test]
+    async fn child_hostname_is_written_inside_child_rootfs() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("etc")).unwrap();
+
+        ensure_child_hostname(dir.path(), "af-codex-1")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("etc/hostname")).unwrap(),
+            "af-codex-1\n"
+        );
     }
 
     #[test]
