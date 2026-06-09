@@ -3,7 +3,7 @@ use agent_core::model::LimitOverrides;
 use agent_core::protocol::{Request, Response};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -260,7 +260,17 @@ async fn call(socket_path: &PathBuf, request: Request) -> Result<Response> {
     if line.is_empty() {
         return Err(anyhow!("agent-forkd closed the socket without a response"));
     }
-    Ok(serde_json::from_str(&line)?)
+    parse_response_line(socket_path, &line)
+}
+
+fn parse_response_line(socket_path: &Path, line: &str) -> Result<Response> {
+    serde_json::from_str(line).map_err(|error| {
+        anyhow!(
+            "invalid response json from {}: {error}: {}",
+            socket_path.display(),
+            line.trim_end()
+        )
+    })
 }
 
 fn print_response(response: Response) -> Result<()> {
@@ -336,7 +346,7 @@ fn print_response(response: Response) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_agentfs, to_request, Cli, Command, InitArgs};
+    use super::{effective_agentfs, parse_response_line, to_request, Cli, Command, InitArgs};
     use agent_core::protocol::Request;
     use std::path::PathBuf;
 
@@ -355,5 +365,15 @@ mod tests {
             Request::Init { agentfs } => assert_eq!(agentfs, PathBuf::from("/custom-agentfs")),
             other => panic!("unexpected request {other:?}"),
         }
+    }
+
+    #[test]
+    fn response_parse_errors_include_socket_and_payload() {
+        let error = parse_response_line(&PathBuf::from("/agentfs/runtime/sockets/a.sock"), "{bad")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("/agentfs/runtime/sockets/a.sock"));
+        assert!(error.contains("{bad"));
     }
 }
