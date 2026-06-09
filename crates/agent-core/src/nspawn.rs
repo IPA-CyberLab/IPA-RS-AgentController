@@ -3,6 +3,7 @@ use crate::model::{unit_name, Env, EnvState};
 use crate::storage::write_text_file;
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct Nspawn {
@@ -161,6 +162,7 @@ impl Nspawn {
         self.runner
             .run_checked("systemd-run", Self::start_args(env, log_path)?)
             .await?;
+        self.wait_until_running(env).await?;
         Ok(())
     }
 
@@ -257,6 +259,38 @@ impl Nspawn {
                 output.stderr
             ))
         }
+    }
+
+    async fn wait_until_running(&self, env: &Env) -> Result<()> {
+        let mut last_status = String::new();
+        for _ in 0..50 {
+            let output = self
+                .runner
+                .run(
+                    "machinectl",
+                    ["show", &env.machine_name, "-p", "State", "--value"],
+                )
+                .await?;
+            if output.status == 0 && output.stdout.trim() == "running" {
+                return Ok(());
+            }
+            if output.status != 0 && !machinectl_reports_missing_machine(&output.stderr) {
+                return Err(anyhow!(
+                    "machinectl show {} exited with {} while waiting for start: {}{}",
+                    env.machine_name,
+                    output.status,
+                    output.stdout,
+                    output.stderr
+                ));
+            }
+            last_status = format!("{}{}", output.stdout, output.stderr);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(anyhow!(
+            "machine {} did not reach running state after start: {}",
+            env.machine_name,
+            last_status
+        ))
     }
 }
 
