@@ -81,7 +81,7 @@ agentctl env create codex-1 --from base-001 \
 
 For `cpu_max`, `memory_max`, `pids_max`, `disk_max`, `idle_timeout`, and `max_runtime`, `0` means unlimited. Unlimited systemd properties are omitted, and unlimited disk does not apply a Btrfs qgroup limit. Nonzero `idle_timeout` values are checked during status/list refresh and stop a running env after the recorded `last_active_at` age exceeds the limit.
 
-The default `network=private-nat` profile launches nspawn with a veth in the `agent-forkd` network zone and writes `/etc/systemd/network/80-agent-forkd-private-nat.network` for the `vz-agent-forkd` bridge. Use `--network private` to request an isolated namespace without egress.
+The default `network=private-nat` profile launches nspawn with a veth in the `agent-forkd` network zone and writes `/etc/systemd/network/80-agent-forkd-private-nat.network` for the `vz-agent-forkd` bridge. Child DNS uses `ResolvConf=copy-host` / `--resolv-conf=copy-host` so apt, GitHub, and API egress can resolve names through the Project VM resolver. Use `--network private` to request an isolated namespace without egress.
 Profiles also accept an optional `network_policy` block with `egress_proxy` and `allowlist` fields so proxy or allowlist enforcement can be added without changing the profile schema.
 
 ## Metadata Layout

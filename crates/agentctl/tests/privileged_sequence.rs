@@ -777,6 +777,7 @@ fn assert_nspawn_config_for(env_id: &str) {
     assert_file_contains(&path, "PrivateUsers=yes");
     assert_file_contains(&path, &format!("Hostname=af-{env_id}"));
     assert_file_contains(&path, "ReadOnly=no");
+    assert_file_contains(&path, "ResolvConf=copy-host");
     assert_file_contains(&path, "Inaccessible=/agentfs");
     assert_file_contains(&path, "Inaccessible=/run/agent-forkd.sock");
     assert_file_contains(&path, "Inaccessible=/run/docker.sock");
