@@ -101,6 +101,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_last_active_advances_after_exec("codex-1");
     assert_idle_timeout_stops_env();
     assert_max_runtime_limit_applies();
+    assert_private_network_override_applies();
 
     assert_eq!(
         text(&["agentctl", "exec", "codex-1", "--", "sudo", "whoami"]).trim(),
@@ -497,6 +498,34 @@ fn assert_max_runtime_limit_applies() {
     assert_btrfs_qgroup_removed(&runtime_qgroup, "/agentfs");
 }
 
+fn assert_private_network_override_applies() {
+    run(&[
+        "agentctl",
+        "env",
+        "create",
+        "private-1",
+        "--from",
+        "base-001",
+        "--profile",
+        "privileged-dev",
+        "--network",
+        "private",
+    ]);
+    assert_eq!(
+        json_file("/agentfs/envs/private-1/meta.json")["limits"]["network"],
+        "private"
+    );
+    run(&["agentctl", "env", "start", "private-1"]);
+    let private_status = json(&["agentctl", "env", "status", "private-1"]);
+    assert_env_status(&private_status, "private-1", "base-001", "running");
+    assert_nspawn_private_network_config_for("private-1");
+    let private_qgroup = btrfs_qgroup_id("/agentfs/envs/private-1/rootfs");
+    run(&["agentctl", "env", "destroy", "private-1"]);
+    assert!(!Path::new("/agentfs/envs/private-1").exists());
+    assert!(!Path::new("/etc/systemd/nspawn/af-private-1.nspawn").exists());
+    assert_btrfs_qgroup_removed(&private_qgroup, "/agentfs");
+}
+
 fn assert_base_metadata(base_id: &str) {
     let metadata = json_file(&format!("/agentfs/bases/{base_id}/manifest.json"));
     let created_at = std::fs::read_to_string(format!("/agentfs/bases/{base_id}/created_at"))
@@ -786,6 +815,22 @@ fn assert_nspawn_config_for(env_id: &str) {
     assert_file_contains(&path, "Zone=agent-forkd");
 }
 
+fn assert_nspawn_private_network_config_for(env_id: &str) {
+    let path = format!("/etc/systemd/nspawn/af-{env_id}.nspawn");
+    assert_file_contains(&path, "Boot=yes");
+    assert_file_contains(&path, "PrivateUsers=yes");
+    assert_file_contains(&path, &format!("Hostname=af-{env_id}"));
+    assert_file_contains(&path, "ReadOnly=no");
+    assert_file_contains(&path, "ResolvConf=copy-host");
+    assert_file_contains(&path, "Inaccessible=/agentfs");
+    assert_file_contains(&path, "Inaccessible=/run/agent-forkd.sock");
+    assert_file_contains(&path, "Inaccessible=/run/docker.sock");
+    assert_file_contains(&path, "Inaccessible=/var/run/docker.sock");
+    assert_file_contains(&path, "Private=yes");
+    assert_file_not_contains(&path, "VirtualEthernet=yes");
+    assert_file_not_contains(&path, "Zone=agent-forkd");
+}
+
 fn assert_private_nat_network_config() {
     let path = "/etc/systemd/network/80-agent-forkd-private-nat.network";
     assert_file_contains(path, "Name=vz-agent-forkd");
@@ -1013,6 +1058,16 @@ fn assert_file_contains(path: &str, expected: &str) {
     assert!(
         text.contains(expected),
         "{path} did not contain {expected:?}"
+    );
+}
+
+fn assert_file_not_contains(path: &str, unexpected: &str) {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("failed to read {path}: {error}");
+    });
+    assert!(
+        !text.contains(unexpected),
+        "{path} unexpectedly contained {unexpected:?}"
     );
 }
 
