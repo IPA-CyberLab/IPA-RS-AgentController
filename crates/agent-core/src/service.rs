@@ -955,14 +955,24 @@ async fn ensure_child_network_config(env: &Env) -> Result<()> {
     let network_path = env
         .rootfs_path
         .join("etc/systemd/network/80-agent-forkd-host0.network");
+    let address = format!("10.77.0.{}/24", child_ipv4_octet(&env.id));
     write_text_file(
         &network_path,
-        "[Match]\nName=host0\n\n[Network]\nDHCP=yes\nIPv6AcceptRA=no\n",
+        &format!(
+            "[Match]\nName=host0\n\n[Network]\nAddress={address}\nGateway=10.77.0.1\nDNS=1.1.1.1\nDNS=8.8.8.8\nIPv6AcceptRA=no\n"
+        ),
     )
     .await?;
     enable_child_systemd_unit(&env.rootfs_path, "systemd-networkd.service").await?;
     enable_child_systemd_unit(&env.rootfs_path, "systemd-resolved.service").await?;
     Ok(())
+}
+
+fn child_ipv4_octet(env_id: &str) -> u8 {
+    let hash = env_id
+        .bytes()
+        .fold(0u8, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte));
+    2 + (hash % 253)
 }
 
 async fn enable_child_systemd_unit(rootfs: &Path, unit: &str) -> Result<()> {
@@ -980,13 +990,13 @@ async fn enable_child_systemd_unit(rootfs: &Path, unit: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_stopped_state, base_source_label, cleanup_failed_base_dir, cleanup_failed_env_dir,
-        default_shell_command, ensure_child_hostname, ensure_child_network_config,
-        ensure_inaccessible_mask_targets, ensure_running_env, idle_timeout_expired,
-        read_offline_session_log, read_session_log_file, remove_dir_all_if_exists,
-        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
-        should_reject_session_create, sync_env_session_index, validate_child_rootfs_requirements,
-        AgentService,
+        apply_stopped_state, base_source_label, child_ipv4_octet, cleanup_failed_base_dir,
+        cleanup_failed_env_dir, default_shell_command, ensure_child_hostname,
+        ensure_child_network_config, ensure_inaccessible_mask_targets, ensure_running_env,
+        idle_timeout_expired, read_offline_session_log, read_session_log_file,
+        remove_dir_all_if_exists, remove_path_if_exists, should_check_quota, should_mark_stopped,
+        should_refresh_live_state, should_reject_session_create, sync_env_session_index,
+        validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
@@ -1079,7 +1089,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn private_nat_enables_child_networkd_for_host0_dhcp() {
+    async fn private_nat_enables_child_networkd_for_static_host0_networking() {
         let dir = tempfile::tempdir().unwrap();
         let mut env = test_env(EnvState::Created);
         env.rootfs_path = dir.path().to_path_buf();
@@ -1092,7 +1102,10 @@ mod tests {
                     .join("etc/systemd/network/80-agent-forkd-host0.network")
             )
             .unwrap(),
-            "[Match]\nName=host0\n\n[Network]\nDHCP=yes\nIPv6AcceptRA=no\n"
+            format!(
+                "[Match]\nName=host0\n\n[Network]\nAddress=10.77.0.{}/24\nGateway=10.77.0.1\nDNS=1.1.1.1\nDNS=8.8.8.8\nIPv6AcceptRA=no\n",
+                child_ipv4_octet(&env.id)
+            )
         );
         assert!(fs::symlink_metadata(
             dir.path()
@@ -1104,6 +1117,13 @@ mod tests {
                 .join("etc/systemd/system/multi-user.target.wants/systemd-resolved.service")
         )
         .is_ok());
+    }
+
+    #[test]
+    fn child_ipv4_octet_stays_in_private_nat_host_range() {
+        for id in ["codex-1", "claude-1", "idle-1", "runtime-1"] {
+            assert!((2..=254).contains(&child_ipv4_octet(id)));
+        }
     }
 
     #[test]
