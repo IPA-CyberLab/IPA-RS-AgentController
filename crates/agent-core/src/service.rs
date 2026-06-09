@@ -533,10 +533,7 @@ impl AgentService {
             "agentfs/runtime",
         ] {
             let path = rootfs.join(rel);
-            if path.exists() {
-                let _ = tokio::fs::remove_dir_all(&path).await;
-                let _ = tokio::fs::remove_file(&path).await;
-            }
+            remove_path_if_exists(&path).await?;
             if matches!(rel, "proc" | "sys" | "dev" | "run" | "tmp") {
                 tokio::fs::create_dir_all(&path).await?;
             }
@@ -559,6 +556,20 @@ impl AgentService {
         let line = format!("{} {message}\n", Utc::now().to_rfc3339());
         CommandRunner::append_to_file(path, &line).await
     }
+}
+
+async fn remove_path_if_exists(path: &Path) -> Result<()> {
+    let metadata = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        tokio::fs::remove_dir_all(path).await?;
+    } else {
+        tokio::fs::remove_file(path).await?;
+    }
+    Ok(())
 }
 
 fn should_refresh_live_state(state: &EnvState) -> bool {
@@ -628,8 +639,9 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_running_env, read_session_log_file, should_check_quota, should_mark_stopped,
-        should_refresh_live_state, validate_child_rootfs_requirements, AgentService,
+        ensure_running_env, read_session_log_file, remove_path_if_exists, should_check_quota,
+        should_mark_stopped, should_refresh_live_state, validate_child_rootfs_requirements,
+        AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits};
@@ -733,6 +745,33 @@ mod tests {
         assert!(!dir.path().join("agentfs/envs").exists());
         assert!(!dir.path().join("agentfs/cache").exists());
         assert!(!dir.path().join("agentfs/runtime").exists());
+    }
+
+    #[tokio::test]
+    async fn path_cleanup_removes_files_dirs_and_symlinks_without_following() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        let nested = dir.path().join("nested");
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+
+        fs::write(&file, "file").unwrap();
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("child"), "child").unwrap();
+        fs::write(&target, "target").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        remove_path_if_exists(&file).await.unwrap();
+        remove_path_if_exists(&nested).await.unwrap();
+        remove_path_if_exists(&link).await.unwrap();
+        remove_path_if_exists(&dir.path().join("missing"))
+            .await
+            .unwrap();
+
+        assert!(!file.exists());
+        assert!(!nested.exists());
+        assert!(!link.exists());
+        assert!(target.exists());
     }
 
     #[tokio::test]
