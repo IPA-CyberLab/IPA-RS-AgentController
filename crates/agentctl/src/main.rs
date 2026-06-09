@@ -1,5 +1,5 @@
 use agent_core::config::AgentConfig;
-use agent_core::model::LimitOverrides;
+use agent_core::model::{EnvState, LimitOverrides, SessionState};
 use agent_core::protocol::{parse_response_json, Request, Response};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -299,10 +299,10 @@ fn print_response(response: Response) -> Result<()> {
                     env.sessions.join(",")
                 };
                 println!(
-                    "{}\t{}\t{:?}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}",
                     env.id,
                     env.base_id,
-                    env.state,
+                    env_state_label(&env.state),
                     status.disk_used.unwrap_or_else(|| "-".to_string()),
                     sessions
                 );
@@ -317,10 +317,10 @@ fn print_response(response: Response) -> Result<()> {
             println!("SESSION\tENV\tSTATE\tCOMMAND\tLOG");
             for session in sessions {
                 println!(
-                    "{}\t{}\t{:?}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}",
                     session.id,
                     session.env_id,
-                    session.state,
+                    session_state_label(&session.state),
                     session.command,
                     session.log_path.display()
                 );
@@ -358,12 +358,31 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn env_state_label(state: &EnvState) -> &'static str {
+    match state {
+        EnvState::Created => "created",
+        EnvState::Running => "running",
+        EnvState::Stopped => "stopped",
+        EnvState::Failed => "failed",
+        EnvState::QuotaExceeded => "quota_exceeded",
+    }
+}
+
+fn session_state_label(state: &SessionState) -> &'static str {
+    match state {
+        SessionState::Running => "running",
+        SessionState::Stopped => "stopped",
+        SessionState::Failed => "failed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_agentfs, machinectl_attach_args, parse_response_line, shell_quote,
-        tmux_attach_command, to_request, Cli, Command, InitArgs,
+        effective_agentfs, env_state_label, machinectl_attach_args, parse_response_line,
+        session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command, InitArgs,
     };
+    use agent_core::model::{EnvState, SessionState};
     use agent_core::protocol::Request;
     use std::path::PathBuf;
 
@@ -428,5 +447,13 @@ mod tests {
             tmux_attach_command("shell's dev"),
             "tmux attach-session -t 'shell'\\''s dev'"
         );
+    }
+
+    #[test]
+    fn table_state_labels_match_wire_names() {
+        assert_eq!(env_state_label(&EnvState::Running), "running");
+        assert_eq!(env_state_label(&EnvState::QuotaExceeded), "quota_exceeded");
+        assert_eq!(session_state_label(&SessionState::Running), "running");
+        assert_eq!(session_state_label(&SessionState::Stopped), "stopped");
     }
 }
