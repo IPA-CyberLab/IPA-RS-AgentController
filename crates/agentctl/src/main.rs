@@ -331,12 +331,8 @@ fn print_response(response: Response) -> Result<()> {
             machine_name,
             session_id,
         } => {
-            let command = format!(
-                "tmux attach-session -t '{}'",
-                session_id.replace('\'', "'\\''")
-            );
             let status = StdCommand::new("machinectl")
-                .args(["shell", &machine_name, "/bin/bash", "-lc", &command])
+                .args(machinectl_attach_args(&machine_name, &session_id))
                 .status()?;
             std::process::exit(status.code().unwrap_or(128));
         }
@@ -344,9 +340,30 @@ fn print_response(response: Response) -> Result<()> {
     }
 }
 
+fn machinectl_attach_args(machine_name: &str, session_id: &str) -> Vec<String> {
+    vec![
+        "shell".to_string(),
+        machine_name.to_string(),
+        "/bin/bash".to_string(),
+        "-lc".to_string(),
+        tmux_attach_command(session_id),
+    ]
+}
+
+fn tmux_attach_command(session_id: &str) -> String {
+    format!("tmux attach-session -t {}", shell_quote(session_id))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{effective_agentfs, parse_response_line, to_request, Cli, Command, InitArgs};
+    use super::{
+        effective_agentfs, machinectl_attach_args, parse_response_line, shell_quote,
+        tmux_attach_command, to_request, Cli, Command, InitArgs,
+    };
     use agent_core::protocol::Request;
     use std::path::PathBuf;
 
@@ -388,5 +405,28 @@ mod tests {
 
         assert!(error.contains("invalid response json"));
         assert!(error.contains("unexpected"));
+    }
+
+    #[test]
+    fn attach_args_enter_child_and_attach_tmux_session() {
+        assert_eq!(
+            machinectl_attach_args("af-codex-1", "dev"),
+            vec![
+                "shell".to_string(),
+                "af-codex-1".to_string(),
+                "/bin/bash".to_string(),
+                "-lc".to_string(),
+                "tmux attach-session -t 'dev'".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn attach_command_quotes_session_for_child_shell() {
+        assert_eq!(shell_quote("shell's dev"), "'shell'\\''s dev'");
+        assert_eq!(
+            tmux_attach_command("shell's dev"),
+            "tmux attach-session -t 'shell'\\''s dev'"
+        );
     }
 }
