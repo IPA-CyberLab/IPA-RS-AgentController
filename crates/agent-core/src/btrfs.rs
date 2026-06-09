@@ -190,31 +190,43 @@ impl Btrfs {
             .runner
             .run(
                 "btrfs",
-                ["qgroup", "show", "-reF", &path.display().to_string()],
+                [
+                    "qgroup",
+                    "show",
+                    "-b",
+                    "-r",
+                    "-e",
+                    "-F",
+                    &path.display().to_string(),
+                ],
             )
             .await?;
         if output.status != 0 {
             return Ok(false);
         }
-        for line in output.stdout.lines().skip(2) {
-            let fields = line.split_whitespace().collect::<Vec<_>>();
-            if fields.len() < 4 {
-                continue;
-            }
-            let referenced = fields
-                .get(1)
-                .and_then(|value| value.parse::<u128>().ok())
-                .unwrap_or(0);
-            let max_referenced = fields
-                .last()
-                .and_then(|value| value.parse::<u128>().ok())
-                .unwrap_or(0);
-            if max_referenced > 0 && referenced >= max_referenced {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(qgroup_show_reports_exceeded(&output.stdout))
     }
+}
+
+fn qgroup_show_reports_exceeded(output: &str) -> bool {
+    for line in output.lines().skip(2) {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 4 {
+            continue;
+        }
+        let referenced = fields
+            .get(1)
+            .and_then(|value| value.parse::<u128>().ok())
+            .unwrap_or(0);
+        let max_referenced = fields
+            .last()
+            .and_then(|value| value.parse::<u128>().ok())
+            .unwrap_or(0);
+        if max_referenced > 0 && referenced >= max_referenced {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_unlimited(value: &str) -> bool {
@@ -224,7 +236,7 @@ fn is_unlimited(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_unlimited;
+    use super::{is_unlimited, qgroup_show_reports_exceeded};
 
     #[test]
     fn qgroup_unlimited_values_are_recognized() {
@@ -232,5 +244,31 @@ mod tests {
         assert!(is_unlimited(" unlimited "));
         assert!(is_unlimited("none"));
         assert!(!is_unlimited("100G"));
+    }
+
+    #[test]
+    fn qgroup_show_detects_referenced_limit_boundary() {
+        let output = "\
+qgroupid         rfer         excl     max_rfer
+--------         ----         ----     --------
+0/257            1024         1024     1024
+";
+        assert!(qgroup_show_reports_exceeded(output));
+    }
+
+    #[test]
+    fn qgroup_show_ignores_unlimited_or_below_limit() {
+        let below_limit = "\
+qgroupid         rfer         excl     max_rfer
+--------         ----         ----     --------
+0/257            1023         1023     1024
+";
+        let unlimited = "\
+qgroupid         rfer         excl     max_rfer
+--------         ----         ----     --------
+0/257            1024         1024     0
+";
+        assert!(!qgroup_show_reports_exceeded(below_limit));
+        assert!(!qgroup_show_reports_exceeded(unlimited));
     }
 }
