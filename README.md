@@ -43,6 +43,7 @@ agentctl exec codex-1 -- sudo apt update
 agentctl exec codex-1 -- sudo apt install -y ripgrep
 agentctl session create codex-1 dev -- bash
 agentctl session attach codex-1 dev
+agentctl session logs codex-1 dev
 
 agentctl env list
 agentctl env status codex-1
@@ -77,7 +78,7 @@ JSON schemas live in `schemas/`.
 
 Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, and `/agentfs/runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it.
 
-Session operations invoke `tmux` through `machinectl shell` inside the child nspawn machine. The host-side session log records daemon events under `/agentfs/envs/<env-id>/logs/sessions`, while the child tmux transcript is piped to `/var/log/agent-forkd/sessions/<session-id>.log` inside the child rootfs so `/agentfs` does not need to be bind-mounted into the child.
+Session operations invoke `tmux` through `machinectl shell` inside the child nspawn machine. The child tmux transcript is piped to `/var/log/agent-forkd/sessions/<session-id>.log` inside the child rootfs so `/agentfs` does not need to be bind-mounted into the child. `agentctl session logs` pulls that transcript through `machinectl` and writes it to `/agentfs/envs/<env-id>/logs/sessions/<session-id>.log`.
 
 ## Security Model
 

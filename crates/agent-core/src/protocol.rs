@@ -50,6 +50,10 @@ pub enum Request {
     SessionList {
         env_id: String,
     },
+    SessionLogs {
+        env_id: String,
+        session_id: String,
+    },
     Diff {
         env_id: String,
     },

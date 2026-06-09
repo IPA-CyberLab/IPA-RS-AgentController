@@ -77,6 +77,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
             "agentctl", "session", "create", "codex-1", "codex", "--", "codex",
         ],
         &["agentctl", "session", "list", "codex-1"],
+        &["agentctl", "session", "logs", "codex-1", "codex"],
         &["agentctl", "export", "codex-1", "--type", "dpkg-delta"],
         &[
             "agentctl",

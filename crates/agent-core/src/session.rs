@@ -19,7 +19,7 @@ pub trait SessionBackend {
     async fn kill(&self, env: &Env, session_id: &str) -> Result<()>;
     async fn is_running(&self, env: &Env, session_id: &str) -> Result<bool>;
     async fn list(&self, env: &Env) -> Result<Vec<String>>;
-    async fn logs(&self, log_path: &Path) -> Result<String>;
+    async fn logs(&self, env: &Env, session_id: &str, log_path: &Path) -> Result<String>;
     fn log_path(log_dir: &Path, session_id: &str) -> PathBuf
     where
         Self: Sized;
@@ -70,8 +70,8 @@ impl SessionBackend for TmuxSessionBackend {
         TmuxSessionBackend::list(self, env).await
     }
 
-    async fn logs(&self, log_path: &Path) -> Result<String> {
-        TmuxSessionBackend::logs(self, log_path).await
+    async fn logs(&self, env: &Env, session_id: &str, log_path: &Path) -> Result<String> {
+        TmuxSessionBackend::logs(self, env, session_id, log_path).await
     }
 
     fn log_path(log_dir: &Path, session_id: &str) -> PathBuf {
@@ -230,12 +230,30 @@ impl TmuxSessionBackend {
             .collect())
     }
 
-    pub async fn logs(&self, log_path: &Path) -> Result<String> {
-        match tokio::fs::read_to_string(log_path).await {
-            Ok(text) => Ok(text),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-            Err(error) => Err(error.into()),
+    pub async fn logs(&self, env: &Env, session_id: &str, log_path: &Path) -> Result<String> {
+        let child_path = Self::child_transcript_path(session_id);
+        let command = format!("cat {} 2>/dev/null || true", shell_quote(&child_path));
+        let output = self
+            .runner
+            .run(
+                "machinectl",
+                Self::machinectl_shell_args(&env.machine_name, &command),
+            )
+            .await?;
+        let text = if output.status == 0 {
+            output.stdout
+        } else {
+            match tokio::fs::read_to_string(log_path).await {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => return Err(error.into()),
+            }
+        };
+        if let Some(parent) = log_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
         }
+        tokio::fs::write(log_path, &text).await?;
+        Ok(text)
     }
 
     pub fn log_path(log_dir: &Path, session_id: &str) -> PathBuf {
@@ -286,5 +304,12 @@ mod tests {
         assert!(command.contains("tmux pipe-pane -o -t 'dev'"));
         assert!(command.contains("/var/log/agent-forkd/sessions/dev.log"));
         assert!(!command.contains("machinectl"));
+    }
+
+    #[test]
+    fn child_transcript_path_is_inside_child_not_agentfs() {
+        let path = TmuxSessionBackend::child_transcript_path("codex");
+        assert_eq!(path, "/var/log/agent-forkd/sessions/codex.log");
+        assert!(!path.starts_with("/agentfs"));
     }
 }

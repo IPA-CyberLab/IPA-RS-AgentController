@@ -110,6 +110,9 @@ impl AgentService {
             Request::SessionList { env_id } => Ok(Response::Sessions {
                 sessions: self.layout.list_sessions(&env_id).await?,
             }),
+            Request::SessionLogs { env_id, session_id } => Ok(Response::Text {
+                text: self.session_logs(&env_id, &session_id).await?,
+            }),
             Request::Diff { env_id } => Ok(Response::Text {
                 text: self.diff(&env_id).await?,
             }),
@@ -300,6 +303,18 @@ impl AgentService {
                 .await?;
         }
         self.sessions.attach(&env, session_id).await
+    }
+
+    pub async fn session_logs(&self, env_id: &str, session_id: &str) -> Result<String> {
+        let env = self.layout.read_env(env_id).await?;
+        let session = self.layout.read_session(env_id, session_id).await?;
+        let logs = self
+            .sessions
+            .logs(&env, session_id, &session.log_path)
+            .await?;
+        self.log_lifecycle(env_id, &format!("session {session_id} logs synced"))
+            .await?;
+        Ok(logs)
     }
 
     pub async fn diff(&self, env_id: &str) -> Result<String> {

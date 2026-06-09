@@ -107,6 +107,7 @@ enum SessionCommand {
     Create(SessionCreateArgs),
     Attach { env_id: String, session_id: String },
     List { env_id: String },
+    Logs { env_id: String, session_id: String },
 }
 
 #[derive(Debug, Args)]
@@ -210,6 +211,10 @@ fn to_request(cli: &Cli) -> Request {
             },
             SessionCommand::List { env_id } => Request::SessionList {
                 env_id: env_id.clone(),
+            },
+            SessionCommand::Logs { env_id, session_id } => Request::SessionLogs {
+                env_id: env_id.clone(),
+                session_id: session_id.clone(),
             },
         },
         Command::Diff { env_id } => Request::Diff {
