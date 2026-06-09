@@ -59,6 +59,15 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_btrfs_subvolume("/agentfs/envs/claude-1/rootfs");
     assert_btrfs_readonly("/agentfs/envs/codex-1/rootfs", false);
     assert_btrfs_readonly("/agentfs/envs/claude-1/rootfs", false);
+    assert_btrfs_snapshot_of(
+        "/agentfs/bases/base-001/rootfs",
+        "/agentfs/envs/codex-1/rootfs",
+    );
+    assert_btrfs_snapshot_of(
+        "/agentfs/bases/base-001/rootfs",
+        "/agentfs/envs/claude-1/rootfs",
+    );
+    let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
 
     run(&["agentctl", "exec", "codex-1", "--", "sudo", "apt", "update"]);
     run(&[
@@ -149,6 +158,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(!Path::new("/agentfs/envs/codex-1/rootfs").exists());
     assert!(!Path::new("/agentfs/envs/codex-1").exists());
     assert!(!Path::new("/etc/systemd/nspawn/af-codex-1.nspawn").exists());
+    assert_btrfs_qgroup_removed(&codex_qgroup, "/agentfs");
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
     assert_env_status(&claude_status, "claude-1", "base-001", "running");
 }
@@ -169,6 +179,42 @@ fn assert_btrfs_readonly(path: &str, readonly: bool) {
         text(&["btrfs", "property", "get", "-ts", path, "ro"]).trim(),
         expected
     );
+}
+
+fn assert_btrfs_snapshot_of(parent: &str, child: &str) {
+    let parent_uuid = btrfs_subvolume_field(parent, "UUID");
+    let child_parent_uuid = btrfs_subvolume_field(child, "Parent UUID");
+
+    assert_eq!(
+        child_parent_uuid, parent_uuid,
+        "{child} was not recorded as a snapshot of {parent}"
+    );
+}
+
+fn btrfs_qgroup_id(path: &str) -> String {
+    format!("0/{}", btrfs_subvolume_field(path, "Subvolume ID"))
+}
+
+fn assert_btrfs_qgroup_removed(qgroup_id: &str, filesystem: &str) {
+    let qgroups = text(&["btrfs", "qgroup", "show", "-reF", filesystem]);
+
+    assert!(
+        !qgroups
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(qgroup_id)),
+        "{qgroup_id} still exists in qgroup output:\n{qgroups}"
+    );
+}
+
+fn btrfs_subvolume_field(path: &str, field: &str) -> String {
+    let prefix = format!("{field}:");
+    for line in text(&["btrfs", "subvolume", "show", path]).lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix(&prefix) {
+            return value.trim().to_string();
+        }
+    }
+    panic!("btrfs subvolume show {path} did not contain field {field}");
 }
 
 fn assert_file_contains(path: &str, expected: &str) {
