@@ -545,7 +545,10 @@ fn assert_base_metadata(base_id: &str) {
         metadata["created_at"].as_str().is_some(),
         "base metadata omitted created_at: {metadata}"
     );
-    assert_eq!(metadata["created_at"].as_str().unwrap(), created_at);
+    assert_eq!(
+        normalize_utc_timestamp(metadata["created_at"].as_str().unwrap()),
+        normalize_utc_timestamp(&created_at)
+    );
 }
 
 fn assert_dpkg_manifest(base_id: &str) {
@@ -631,6 +634,14 @@ fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
         metadata["last_active_at"].as_str().is_some(),
         "env metadata omitted last_active_at: {metadata}"
     );
+}
+
+fn normalize_utc_timestamp(timestamp: &str) -> String {
+    let timestamp = timestamp.trim();
+    timestamp
+        .strip_suffix("+00:00")
+        .map(|prefix| format!("{prefix}Z"))
+        .unwrap_or_else(|| timestamp.to_string())
 }
 
 fn assert_session_metadata(env_id: &str, session_id: &str, command: &str, state: &str) {
