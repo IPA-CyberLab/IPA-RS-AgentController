@@ -13,7 +13,8 @@ and writes system configuration under `/etc/systemd`.
 ## Access
 
 - SSH access for the tester user.
-- Passwordless `sudo`, or a root SSH session.
+- A root SSH session, or passwordless `sudo` that can run the whole test under
+  root.
 - Network access from the machine to apt repositories and GitHub.
 - Enough disk space for two rootfs snapshots and package installation. Use at
   least 120 GiB free on the Btrfs filesystem if possible.
@@ -163,7 +164,17 @@ cargo clippy --all-targets -- -D warnings
 git diff --check
 ```
 
-Then run the privileged sequence:
+Then run the privileged sequence as root. This is required because the test
+process itself invokes `chroot`, `btrfs subvolume show`, `btrfs qgroup show`,
+and other host inspection commands:
+
+```bash
+sudo --preserve-env=PATH,CARGO_HOME,RUSTUP_HOME \
+  env PATH="$PATH" \
+  cargo test -p agentctl --test privileged_sequence -- --ignored --nocapture
+```
+
+If running as root directly, the shorter command is also fine:
 
 ```bash
 cargo test -p agentctl --test privileged_sequence -- --ignored --nocapture

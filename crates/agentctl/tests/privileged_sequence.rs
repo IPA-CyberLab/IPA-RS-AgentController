@@ -5,6 +5,8 @@ use std::process::{Command, Output};
 #[test]
 #[ignore = "requires privileged Btrfs/systemd-nspawn Project VM with /agentfs"]
 fn goal_sequence_runs_in_privileged_project_vm() {
+    require_privileged_test_environment();
+
     run(&["agentctl", "init", "--agentfs", "/agentfs"]);
     run(&[
         "agentctl", "base", "freeze", "--name", "base-001", "--from", "/",
@@ -170,6 +172,37 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_btrfs_qgroup_removed(&codex_qgroup, "/agentfs");
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
     assert_env_status(&claude_status, "claude-1", "base-001", "running");
+}
+
+fn require_privileged_test_environment() {
+    assert_eq!(
+        text(&["id", "-u"]).trim(),
+        "0",
+        "run this ignored integration test as root; it invokes chroot and btrfs inspection commands"
+    );
+    for program in [
+        "agentctl",
+        "agent-forkd",
+        "btrfs",
+        "machinectl",
+        "systemd-nspawn",
+        "systemd-run",
+        "tmux",
+    ] {
+        run(&["bash", "-lc", &format!("command -v {program}")]);
+    }
+    assert_eq!(
+        text(&["findmnt", "-n", "-o", "FSTYPE", "--target", "/"]).trim(),
+        "btrfs",
+        "/ must be on Btrfs"
+    );
+    assert_eq!(
+        text(&["findmnt", "-n", "-o", "FSTYPE", "--target", "/agentfs"]).trim(),
+        "btrfs",
+        "/agentfs must be on Btrfs"
+    );
+    run(&["btrfs", "subvolume", "show", "/"]);
+    run(&["systemctl", "is-active", "--quiet", "agent-forkd"]);
 }
 
 fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
