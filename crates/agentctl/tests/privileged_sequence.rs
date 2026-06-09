@@ -819,9 +819,9 @@ fn assert_nspawn_config_for(env_id: &str) {
     assert_file_contains(&path, "ReadOnly=no");
     assert_file_contains(&path, "ResolvConf=copy-host");
     assert_file_contains(&path, "Inaccessible=/agentfs");
-    assert_file_contains(&path, "Inaccessible=/run/agent-forkd.sock");
-    assert_file_contains(&path, "Inaccessible=/run/docker.sock");
-    assert_file_contains(&path, "Inaccessible=/var/run/docker.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/run/agent-forkd.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/run/docker.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/var/run/docker.sock");
     assert_file_contains(&path, "VirtualEthernet=yes");
     assert_file_contains(&path, "Zone=agent-forkd");
 }
@@ -834,9 +834,9 @@ fn assert_nspawn_private_network_config_for(env_id: &str) {
     assert_file_contains(&path, "ReadOnly=no");
     assert_file_contains(&path, "ResolvConf=copy-host");
     assert_file_contains(&path, "Inaccessible=/agentfs");
-    assert_file_contains(&path, "Inaccessible=/run/agent-forkd.sock");
-    assert_file_contains(&path, "Inaccessible=/run/docker.sock");
-    assert_file_contains(&path, "Inaccessible=/var/run/docker.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/run/agent-forkd.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/run/docker.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/var/run/docker.sock");
     assert_file_contains(&path, "Private=yes");
     assert_file_not_contains(&path, "VirtualEthernet=yes");
     assert_file_not_contains(&path, "Zone=agent-forkd");
