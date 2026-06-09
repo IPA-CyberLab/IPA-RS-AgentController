@@ -760,7 +760,7 @@ async fn read_offline_session_log(child_transcript: &Path, agentfs_log: &Path) -
 fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
     let mut missing = Vec::new();
     for (name, candidates) in [
-        ("bash", &["bin/bash", "usr/bin/bash"][..]),
+        ("bash", &["bin/bash"][..]),
         ("sudo", &["usr/bin/sudo", "bin/sudo"][..]),
         ("tmux", &["usr/bin/tmux", "bin/tmux"][..]),
         ("apt", &["usr/bin/apt", "usr/bin/apt-get"][..]),
@@ -819,6 +819,20 @@ mod tests {
         assert!(message.contains("sudo"));
         assert!(message.contains("apt"));
         assert!(message.contains("tmux"));
+    }
+
+    #[test]
+    fn rootfs_preflight_requires_bin_bash_for_machinectl_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        fs::write(dir.path().join("usr/bin/bash"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/sudo"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/apt"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/tmux"), "").unwrap();
+
+        let error = validate_child_rootfs_requirements(dir.path()).unwrap_err();
+
+        assert!(error.to_string().contains("bash"));
     }
 
     #[test]
