@@ -60,6 +60,9 @@ letters and numbers with optional interior `-`, such as `base-001` or
 ## Usage
 
 ```bash
+agentctl new -t codex
+agentctl new -t codex -- echo ready
+
 agentctl init --agentfs /agentfs
 agentctl base freeze --name base-001 --from /
 
@@ -86,6 +89,12 @@ agentctl export codex-1 --type rootfs-changed-paths
 agentctl env stop codex-1
 agentctl env destroy codex-1
 ```
+
+`agentctl new -t <env-id>` is the tmux-style entrypoint. It initializes
+`/agentfs`, creates `base-001` from `/` when that base does not exist, creates
+the target env when needed, starts it, and attaches the persistent `shell`
+session. Supplying a command after `--` performs the same bootstrap and then
+executes that command instead of attaching a shell.
 
 `agentctl shell <env-id>` creates or reuses a persistent `shell` tmux session
 inside the child and attaches the current terminal to it. `agentctl diff`

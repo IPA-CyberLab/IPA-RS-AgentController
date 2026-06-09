@@ -9,6 +9,14 @@ pub enum Request {
     Init {
         agentfs: PathBuf,
     },
+    New {
+        target: String,
+        base: String,
+        from: PathBuf,
+        profile: String,
+        limits: LimitOverrides,
+        command: Vec<String>,
+    },
     BaseFreeze {
         name: String,
         from: PathBuf,
@@ -145,6 +153,7 @@ fn reject_unknown_fields(
 fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]> {
     Some(match message_type {
         "init" => &["type", "agentfs"],
+        "new" => &["type", "target", "base", "from", "profile", "limits", "command"],
         "base_freeze" => &["type", "name", "from"],
         "env_create" => &["type", "id", "base", "profile", "limits"],
         "env_start" | "env_stop" | "env_destroy" | "env_status" | "shell" => &["type", "id"],
@@ -234,6 +243,14 @@ mod tests {
         vec![
             Request::Init {
                 agentfs: "/agentfs".into(),
+            },
+            Request::New {
+                target: "codex".to_string(),
+                base: "base-001".to_string(),
+                from: "/".into(),
+                profile: "privileged-dev".to_string(),
+                limits: LimitOverrides::default(),
+                command: Vec::new(),
             },
             Request::BaseFreeze {
                 name: "base-001".to_string(),

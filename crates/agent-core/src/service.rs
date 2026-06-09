@@ -55,6 +55,17 @@ impl AgentService {
                 AgentService::new(AgentConfig::new(agentfs)).init().await?;
                 Ok(Response::Ok)
             }
+            Request::New {
+                target,
+                base,
+                from,
+                profile,
+                limits,
+                command,
+            } => {
+                self.new_target(&target, &base, &from, &profile, limits, &command)
+                    .await
+            }
             Request::BaseFreeze { name, from } => {
                 self.base_freeze(&name, &from).await?;
                 Ok(Response::Ok)
@@ -150,6 +161,36 @@ impl AgentService {
         self.layout.ensure_agentfs().await?;
         self.btrfs.enable_quota(&self.config.agentfs).await?;
         Ok(())
+    }
+
+    pub async fn new_target(
+        &self,
+        target: &str,
+        base_id: &str,
+        from: &Path,
+        profile_name: &str,
+        limit_overrides: LimitOverrides,
+        command: &[String],
+    ) -> Result<Response> {
+        self.init().await?;
+        self.ensure_base(base_id, from).await?;
+        self.ensure_env(target, base_id, profile_name, limit_overrides)
+            .await?;
+        self.ensure_env_started(target).await?;
+        if command.is_empty() {
+            let (machine_name, session_id) = self.shell_attach_target(target).await?;
+            Ok(Response::Attach {
+                machine_name,
+                session_id,
+            })
+        } else {
+            let output = self.exec(target, command).await?;
+            Ok(Response::Exec {
+                status: output.status,
+                stdout: output.stdout,
+                stderr: output.stderr,
+            })
+        }
     }
 
     pub async fn base_freeze(&self, name: &str, from: &Path) -> Result<Base> {
@@ -330,6 +371,43 @@ impl AgentService {
         self.log_lifecycle(id, "running").await?;
         self.layout.write_env(&env).await?;
         Ok(())
+    }
+
+    async fn ensure_base(&self, base_id: &str, from: &Path) -> Result<Base> {
+        validate_id(base_id)?;
+        let manifest = self.layout.base_dir(base_id).join("manifest.json");
+        if tokio::fs::try_exists(&manifest).await? {
+            return self.layout.read_base(base_id).await;
+        }
+        self.base_freeze(base_id, from).await
+    }
+
+    async fn ensure_env(
+        &self,
+        id: &str,
+        base_id: &str,
+        profile_name: &str,
+        limit_overrides: LimitOverrides,
+    ) -> Result<Env> {
+        validate_id(id)?;
+        let metadata = self.layout.env_dir(id).join("meta.json");
+        if tokio::fs::try_exists(&metadata).await? {
+            return self.layout.read_env(id).await;
+        }
+        self.env_create(id, base_id, profile_name, limit_overrides)
+            .await
+    }
+
+    async fn ensure_env_started(&self, id: &str) -> Result<()> {
+        let status = self.env_status(id).await?;
+        match status.env.state {
+            EnvState::Running => Ok(()),
+            EnvState::Created | EnvState::Stopped => self.env_start(id).await,
+            EnvState::Failed | EnvState::QuotaExceeded => Err(anyhow!(
+                "env {id} is {:?}; fix or destroy it before running new",
+                status.env.state
+            )),
+        }
     }
 
     pub async fn env_stop(&self, id: &str) -> Result<()> {

@@ -28,6 +28,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Init(InitArgs),
+    New(NewArgs),
     Base {
         #[command(subcommand)]
         command: BaseCommand,
@@ -54,6 +55,34 @@ enum Command {
 struct InitArgs {
     #[arg(long)]
     agentfs: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct NewArgs {
+    #[arg(short = 't', long = "target")]
+    target: String,
+    #[arg(long, default_value = "base-001")]
+    base: String,
+    #[arg(long = "from", default_value = "/")]
+    from: PathBuf,
+    #[arg(long)]
+    profile: Option<String>,
+    #[arg(long)]
+    cpu_max: Option<String>,
+    #[arg(long)]
+    memory_max: Option<String>,
+    #[arg(long)]
+    pids_max: Option<u32>,
+    #[arg(long)]
+    disk_max: Option<String>,
+    #[arg(long)]
+    network: Option<String>,
+    #[arg(long)]
+    idle_timeout: Option<String>,
+    #[arg(long)]
+    max_runtime: Option<String>,
+    #[arg(last = true)]
+    command: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -183,6 +212,25 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             }
             Ok(Request::Init { agentfs })
         }
+        Command::New(args) => Ok(Request::New {
+            target: args.target.clone(),
+            base: args.base.clone(),
+            from: args.from.clone(),
+            profile: args
+                .profile
+                .clone()
+                .unwrap_or_else(|| config.default_profile.clone()),
+            limits: LimitOverrides {
+                cpu_max: args.cpu_max.clone(),
+                memory_max: args.memory_max.clone(),
+                pids_max: args.pids_max,
+                disk_max: args.disk_max.clone(),
+                network: args.network.clone(),
+                idle_timeout: args.idle_timeout.clone(),
+                max_runtime: args.max_runtime.clone(),
+            },
+            command: args.command.clone(),
+        }),
         Command::Base { command } => Ok(match command {
             BaseCommand::Freeze { name, from } => Request::BaseFreeze {
                 name: name.clone(),
@@ -412,7 +460,7 @@ mod tests {
     use super::{
         effective_agentfs, env_state_label, machinectl_attach_args, parse_response_line,
         session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command,
-        EnvCommand, ExportArgs, ExportKind, InitArgs,
+        EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
@@ -452,6 +500,99 @@ mod tests {
         assert!(error.contains("does not match daemon config agentfs"));
         assert!(error.contains("/custom-agentfs"));
         assert!(error.contains("/agentfs"));
+    }
+
+    #[test]
+    fn new_command_maps_to_bootstrap_shell_request() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::New(NewArgs {
+                target: "codex".to_string(),
+                base: "base-001".to_string(),
+                from: PathBuf::from("/"),
+                profile: None,
+                cpu_max: None,
+                memory_max: None,
+                pids_max: None,
+                disk_max: None,
+                network: None,
+                idle_timeout: None,
+                max_runtime: None,
+                command: Vec::new(),
+            }),
+        };
+        let mut config = AgentConfig::new(PathBuf::from("/agentfs"));
+        config.default_profile = "custom-dev".to_string();
+        config.profiles.push(Profile {
+            name: "custom-dev".to_string(),
+            limits: Default::default(),
+            network_policy: Default::default(),
+        });
+
+        match to_request(&cli, &config).unwrap() {
+            Request::New {
+                target,
+                base,
+                from,
+                profile,
+                command,
+                ..
+            } => {
+                assert_eq!(target, "codex");
+                assert_eq!(base, "base-001");
+                assert_eq!(from, PathBuf::from("/"));
+                assert_eq!(profile, "custom-dev");
+                assert!(command.is_empty());
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_command_forwards_exec_command_and_limits() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::New(NewArgs {
+                target: "codex".to_string(),
+                base: "base-dev".to_string(),
+                from: PathBuf::from("/"),
+                profile: Some("privileged-dev".to_string()),
+                cpu_max: Some("800%".to_string()),
+                memory_max: Some("32G".to_string()),
+                pids_max: Some(8192),
+                disk_max: Some("200G".to_string()),
+                network: Some("private-nat".to_string()),
+                idle_timeout: Some("30m".to_string()),
+                max_runtime: Some("6h".to_string()),
+                command: vec!["echo".to_string(), "ready".to_string()],
+            }),
+        };
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::New {
+                target,
+                base,
+                profile,
+                limits,
+                command,
+                ..
+            } => {
+                assert_eq!(target, "codex");
+                assert_eq!(base, "base-dev");
+                assert_eq!(profile, "privileged-dev");
+                assert_eq!(limits.cpu_max.as_deref(), Some("800%"));
+                assert_eq!(limits.memory_max.as_deref(), Some("32G"));
+                assert_eq!(limits.pids_max, Some(8192));
+                assert_eq!(limits.disk_max.as_deref(), Some("200G"));
+                assert_eq!(limits.network.as_deref(), Some("private-nat"));
+                assert_eq!(limits.idle_timeout.as_deref(), Some("30m"));
+                assert_eq!(limits.max_runtime.as_deref(), Some("6h"));
+                assert_eq!(command, vec!["echo".to_string(), "ready".to_string()]);
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
     }
 
     #[test]
