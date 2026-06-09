@@ -99,6 +99,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_child_cannot_see_project_vm_state("codex-1");
     assert_last_active_advances_after_exec("codex-1");
     assert_idle_timeout_stops_env();
+    assert_max_runtime_limit_applies();
 
     assert_eq!(
         text(&["agentctl", "exec", "codex-1", "--", "sudo", "whoami"]).trim(),
@@ -452,6 +453,34 @@ fn assert_idle_timeout_stops_env() {
     assert!(!Path::new("/agentfs/envs/idle-1").exists());
     assert!(!Path::new("/etc/systemd/nspawn/af-idle-1.nspawn").exists());
     assert_btrfs_qgroup_removed(&idle_qgroup, "/agentfs");
+}
+
+fn assert_max_runtime_limit_applies() {
+    run(&[
+        "agentctl",
+        "env",
+        "create",
+        "runtime-1",
+        "--from",
+        "base-001",
+        "--profile",
+        "privileged-dev",
+        "--max-runtime",
+        "6h",
+    ]);
+    assert_eq!(
+        json_file("/agentfs/envs/runtime-1/meta.json")["limits"]["max_runtime"],
+        "6h"
+    );
+    run(&["agentctl", "env", "start", "runtime-1"]);
+    let runtime_status = json(&["agentctl", "env", "status", "runtime-1"]);
+    assert_env_status(&runtime_status, "runtime-1", "base-001", "running");
+    let runtime_qgroup = btrfs_qgroup_id("/agentfs/envs/runtime-1/rootfs");
+    assert_systemd_runtime_max("runtime-1", "6h", 21_600_000_000);
+    run(&["agentctl", "env", "destroy", "runtime-1"]);
+    assert!(!Path::new("/agentfs/envs/runtime-1").exists());
+    assert!(!Path::new("/etc/systemd/nspawn/af-runtime-1.nspawn").exists());
+    assert_btrfs_qgroup_removed(&runtime_qgroup, "/agentfs");
 }
 
 fn assert_base_metadata(base_id: &str) {
@@ -908,6 +937,29 @@ fn assert_systemd_cgroup_limits(env_id: &str) {
         tasks_max.trim(),
         "4096",
         "{unit} did not apply TasksMax=4096"
+    );
+}
+
+fn assert_systemd_runtime_max(env_id: &str, expected_label: &str, expected_usec: u128) {
+    let unit = format!("agent-forkd-{env_id}.service");
+    let runtime_max = text(&[
+        "systemctl",
+        "show",
+        &unit,
+        "-p",
+        "RuntimeMaxUSec",
+        "--value",
+    ]);
+    let runtime_max = runtime_max.trim();
+    let numeric_usec = runtime_max
+        .strip_suffix("us")
+        .unwrap_or(runtime_max)
+        .parse::<u128>()
+        .ok();
+
+    assert!(
+        runtime_max == expected_label || numeric_usec == Some(expected_usec),
+        "{unit} did not apply RuntimeMaxSec={expected_label}; RuntimeMaxUSec={runtime_max:?}"
     );
 }
 
