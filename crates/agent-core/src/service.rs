@@ -178,8 +178,9 @@ impl AgentService {
             self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
             return Err(error);
         }
+        let created_at = Utc::now();
         if let Err(error) =
-            write_text_file(&base_dir.join("created_at"), Utc::now().to_rfc3339()).await
+            write_text_file(&base_dir.join("created_at"), created_at.to_rfc3339()).await
         {
             self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
             return Err(error);
@@ -188,7 +189,7 @@ impl AgentService {
             id: name.to_string(),
             rootfs_path: rootfs.clone(),
             readonly: true,
-            created_at: Utc::now(),
+            created_at,
             source: from.display().to_string(),
             dpkg_manifest,
         };
