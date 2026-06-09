@@ -1006,9 +1006,9 @@ mod tests {
         ensure_inaccessible_mask_targets(dir.path()).await.unwrap();
 
         assert!(dir.path().join("agentfs").is_dir());
-        assert!(dir.path().join("run/agent-forkd.sock").is_file());
-        assert!(dir.path().join("run/docker.sock").is_file());
-        assert!(dir.path().join("var/run/docker.sock").is_file());
+        assert!(!dir.path().join("run/agent-forkd.sock").exists());
+        assert!(!dir.path().join("run/docker.sock").exists());
+        assert!(!dir.path().join("var/run/docker.sock").exists());
     }
 
     #[test]

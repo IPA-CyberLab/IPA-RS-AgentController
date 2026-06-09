@@ -24,8 +24,8 @@ impl Default for Nspawn {
 impl Nspawn {
     const PRIVATE_NAT_ZONE: &str = "agent-forkd";
     const PRIVATE_NAT_BRIDGE: &str = "vz-agent-forkd";
-    const INACCESSIBLE_PATHS: &[&str] = &[
-        "/agentfs",
+    const INACCESSIBLE_PATHS: &[&str] = &["/agentfs"];
+    const MASKED_SOCKET_PATHS: &[&str] = &[
         "/run/agent-forkd.sock",
         "/run/docker.sock",
         "/var/run/docker.sock",
@@ -45,10 +45,15 @@ impl Nspawn {
             .iter()
             .map(|path| format!("Inaccessible={path}\n"))
             .collect::<String>();
+        let masked_socket_paths = Self::MASKED_SOCKET_PATHS
+            .iter()
+            .map(|path| format!("BindReadOnly=/dev/null:{path}\n"))
+            .collect::<String>();
         format!(
-            "[Exec]\nBoot=yes\nPrivateUsers=yes\nHostname={machine}\n\n[Files]\nReadOnly=no\nResolvConf=copy-host\n{inaccessible_paths}\n[Network]\n{network}",
+            "[Exec]\nBoot=yes\nPrivateUsers=yes\nHostname={machine}\n\n[Files]\nReadOnly=no\nResolvConf=copy-host\n{inaccessible_paths}{masked_socket_paths}\n[Network]\n{network}",
             machine = env.machine_name,
             inaccessible_paths = inaccessible_paths,
+            masked_socket_paths = masked_socket_paths,
             network = network
         )
     }
@@ -125,6 +130,11 @@ impl Nspawn {
             Self::INACCESSIBLE_PATHS
                 .iter()
                 .map(|path| format!("--inaccessible={path}")),
+        );
+        args.extend(
+            Self::MASKED_SOCKET_PATHS
+                .iter()
+                .map(|path| format!("--bind-ro=/dev/null:{path}")),
         );
         if env.limits.network == "private-nat" {
             args.push("--network-veth".to_string());
@@ -290,8 +300,9 @@ mod tests {
         assert!(text.contains("PrivateUsers=yes"));
         assert!(text.contains("ResolvConf=copy-host"));
         assert!(text.contains("Inaccessible=/agentfs"));
-        assert!(text.contains("Inaccessible=/run/docker.sock"));
-        assert!(text.contains("Inaccessible=/var/run/docker.sock"));
+        assert!(text.contains("BindReadOnly=/dev/null:/run/agent-forkd.sock"));
+        assert!(text.contains("BindReadOnly=/dev/null:/run/docker.sock"));
+        assert!(text.contains("BindReadOnly=/dev/null:/var/run/docker.sock"));
         assert!(text.contains("VirtualEthernet=yes"));
         assert!(text.contains("Zone=agent-forkd"));
         assert!(text.contains("Hostname=af-codex-1"));
@@ -328,8 +339,9 @@ mod tests {
             1
         );
         assert!(args.contains(&"--inaccessible=/agentfs".to_string()));
-        assert!(args.contains(&"--inaccessible=/run/docker.sock".to_string()));
-        assert!(args.contains(&"--inaccessible=/var/run/docker.sock".to_string()));
+        assert!(args.contains(&"--bind-ro=/dev/null:/run/agent-forkd.sock".to_string()));
+        assert!(args.contains(&"--bind-ro=/dev/null:/run/docker.sock".to_string()));
+        assert!(args.contains(&"--bind-ro=/dev/null:/var/run/docker.sock".to_string()));
         assert!(args.contains(&"--property=CPUQuota=400%".to_string()));
         assert!(args.contains(&"--property=MemoryMax=16G".to_string()));
         assert!(args.contains(&"--property=TasksMax=4096".to_string()));
