@@ -33,6 +33,14 @@ your shell PATH:
 curl -fsSL https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.sh | sh
 ```
 
+On Linux, install the binaries to `/usr/local/bin`, install the packaged
+systemd service, and restart the daemon:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.sh |
+  AGENT_INSTALL_SERVICE=1 sh
+```
+
 By default the installer writes `agentctl` and `agent-forkd` to
 `$HOME/.local/bin`. Override the release or destination with environment
 variables:

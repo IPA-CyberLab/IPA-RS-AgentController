@@ -4,6 +4,7 @@ set -eu
 REPO="${AGENT_REPO:-IPA-CyberLab/IPA-RS-IsolatedAgent}"
 VERSION="${AGENT_VERSION:-latest}"
 INSTALL_DIR="${AGENT_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_SERVICE="${AGENT_INSTALL_SERVICE:-0}"
 DRY_RUN="${AGENT_INSTALL_DRY_RUN:-0}"
 
 need() {
@@ -11,6 +12,17 @@ need() {
     echo "error: required command not found: $1" >&2
     exit 1
   }
+}
+
+sudo_cmd() {
+  if [ "$(id -u)" -eq 0 ]; then
+    return 0
+  fi
+  command -v sudo >/dev/null 2>&1 || {
+    echo "error: sudo is required for this install target" >&2
+    exit 1
+  }
+  printf 'sudo'
 }
 
 detect_target() {
@@ -106,9 +118,24 @@ else
   url="https://github.com/$REPO/releases/download/$VERSION/$asset"
 fi
 
+if [ "$INSTALL_SERVICE" = "1" ]; then
+  if [ "$target" != "${target%unknown-linux-gnu}" ]; then
+    :
+  else
+    echo "error: AGENT_INSTALL_SERVICE=1 is supported only on Linux" >&2
+    exit 1
+  fi
+  INSTALL_DIR="${AGENT_INSTALL_DIR:-/usr/local/bin}"
+  if [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
+    echo "error: AGENT_INSTALL_SERVICE=1 requires AGENT_INSTALL_DIR=/usr/local/bin" >&2
+    exit 1
+  fi
+fi
+
 echo "Target: $target"
 echo "Release: $VERSION"
 echo "Install dir: $INSTALL_DIR"
+echo "Install service: $INSTALL_SERVICE"
 
 if [ "$DRY_RUN" = "1" ]; then
   echo "Download URL: $url"
@@ -124,13 +151,35 @@ download "$url" "$archive"
 tar -xzf "$archive" -C "$tmp_dir"
 
 payload_dir="$tmp_dir/ipa-rs-isolated-agent-$target"
-mkdir -p "$INSTALL_DIR"
-if [ "$target" = "${target%pc-windows-msvc}" ]; then
-  install -m 0755 "$payload_dir/bin/agentctl" "$INSTALL_DIR/agentctl"
-  install -m 0755 "$payload_dir/bin/agent-forkd" "$INSTALL_DIR/agent-forkd"
+if [ -w "$(dirname "$INSTALL_DIR")" ] || { [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; }; then
+  mkdir -p "$INSTALL_DIR"
+  install_cmd="install"
+  cp_cmd="cp"
 else
-  cp "$payload_dir/bin/agentctl.exe" "$INSTALL_DIR/agentctl.exe"
-  cp "$payload_dir/bin/agent-forkd.exe" "$INSTALL_DIR/agent-forkd.exe"
+  SUDO="$(sudo_cmd)"
+  $SUDO mkdir -p "$INSTALL_DIR"
+  install_cmd="$SUDO install"
+  cp_cmd="$SUDO cp"
+fi
+
+if [ "$target" = "${target%pc-windows-msvc}" ]; then
+  $install_cmd -m 0755 "$payload_dir/bin/agentctl" "$INSTALL_DIR/agentctl"
+  $install_cmd -m 0755 "$payload_dir/bin/agent-forkd" "$INSTALL_DIR/agent-forkd"
+else
+  $cp_cmd "$payload_dir/bin/agentctl.exe" "$INSTALL_DIR/agentctl.exe"
+  $cp_cmd "$payload_dir/bin/agent-forkd.exe" "$INSTALL_DIR/agent-forkd.exe"
+fi
+
+if [ "$INSTALL_SERVICE" = "1" ]; then
+  SUDO="$(sudo_cmd)"
+  $SUDO install -d -m 0755 /etc/agent-forkd
+  $SUDO install -m 0644 "$payload_dir/packaging/agent-forkd/config.json" /etc/agent-forkd/config.json
+  $SUDO install -m 0644 "$payload_dir/packaging/systemd/agent-forkd.service" /etc/systemd/system/agent-forkd.service
+  $SUDO mkdir -p /agentfs
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable agent-forkd >/dev/null
+  $SUDO systemctl restart agent-forkd
+  echo "Installed and restarted agent-forkd.service"
 fi
 
 ensure_shell_path
