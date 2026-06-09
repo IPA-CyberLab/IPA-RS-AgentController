@@ -73,6 +73,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "/agentfs/envs/claude-1/rootfs",
     );
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
+    assert_btrfs_qgroup_has_referenced_limit(&codex_qgroup, "/agentfs/envs/codex-1/rootfs");
     assert_child_cannot_see_project_vm_state("codex-1");
 
     assert_eq!(
@@ -376,6 +377,40 @@ fn assert_btrfs_qgroup_removed(qgroup_id: &str, filesystem: &str) {
             .any(|line| line.split_whitespace().next() == Some(qgroup_id)),
         "{qgroup_id} still exists in qgroup output:\n{qgroups}"
     );
+}
+
+fn assert_btrfs_qgroup_has_referenced_limit(qgroup_id: &str, path: &str) {
+    let qgroups = text(&["btrfs", "qgroup", "show", "-breF", path]);
+    let mut lines = qgroups.lines();
+    let header = lines
+        .next()
+        .unwrap_or_else(|| panic!("qgroup output for {path} was empty"));
+    let headers = header.split_whitespace().collect::<Vec<_>>();
+    let qgroup_index = headers
+        .iter()
+        .position(|field| *field == "qgroupid")
+        .unwrap_or_else(|| panic!("qgroup output for {path} omitted qgroupid:\n{qgroups}"));
+    let max_rfer_index = headers
+        .iter()
+        .position(|field| *field == "max_rfer")
+        .unwrap_or_else(|| panic!("qgroup output for {path} omitted max_rfer:\n{qgroups}"));
+
+    for line in lines {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.get(qgroup_index) != Some(&qgroup_id) {
+            continue;
+        }
+        let max_rfer = fields
+            .get(max_rfer_index)
+            .and_then(|value| value.parse::<u128>().ok())
+            .unwrap_or(0);
+        assert!(
+            max_rfer > 0,
+            "qgroup {qgroup_id} did not have a referenced limit:\n{qgroups}"
+        );
+        return;
+    }
+    panic!("qgroup {qgroup_id} was not present in qgroup output:\n{qgroups}");
 }
 
 fn btrfs_subvolume_field(path: &str, field: &str) -> String {
