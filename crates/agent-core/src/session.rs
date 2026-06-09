@@ -170,12 +170,21 @@ impl TmuxSessionBackend {
             "tmux detach-client -s {}",
             shell_quote(&Self::child_tmux_name(session_id))
         );
-        self.runner
-            .run_checked(
+        let output = self
+            .runner
+            .run(
                 "machinectl",
                 Self::machinectl_shell_args(&env.machine_name, &command),
             )
             .await?;
+        if output.status != 0 && !tmux_detach_reports_no_current_client(&output.stderr) {
+            return Err(anyhow!(
+                "failed to detach tmux session {session_id} in {}: {}{}",
+                env.machine_name,
+                output.stdout,
+                output.stderr
+            ));
+        }
         Ok(())
     }
 
@@ -290,9 +299,15 @@ fn parse_tmux_session_names(output: &str) -> Vec<String> {
         .collect()
 }
 
+fn tmux_detach_reports_no_current_client(stderr: &str) -> bool {
+    stderr.to_ascii_lowercase().contains("no current client")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_tmux_session_names, TmuxSessionBackend};
+    use super::{
+        parse_tmux_session_names, tmux_detach_reports_no_current_client, TmuxSessionBackend,
+    };
 
     #[test]
     fn tmux_name_scopes_by_env() {
@@ -352,5 +367,12 @@ mod tests {
             parse_tmux_session_names("dev\n\n codex \n"),
             vec!["dev".to_string(), "codex".to_string()]
         );
+    }
+
+    #[test]
+    fn detach_treats_absent_clients_as_already_detached() {
+        assert!(tmux_detach_reports_no_current_client("no current client"));
+        assert!(tmux_detach_reports_no_current_client("NO CURRENT CLIENT\n"));
+        assert!(!tmux_detach_reports_no_current_client("no server running"));
     }
 }

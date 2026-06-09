@@ -444,7 +444,14 @@ impl AgentService {
     pub async fn session_detach(&self, env_id: &str, session_id: &str) -> Result<()> {
         let env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
-        let session = self.layout.read_session(env_id, session_id).await?;
+        let mut session = self.layout.read_session(env_id, session_id).await?;
+        if !self.sessions.is_running(&env, &session.id).await? {
+            session.state = SessionState::Stopped;
+            self.layout.write_session(&session).await?;
+            return Err(anyhow!(
+                "session {session_id} in env {env_id} is not running"
+            ));
+        }
         self.sessions.detach(&env, &session.id).await?;
         self.log_lifecycle(env_id, &format!("session {session_id} detached"))
             .await?;
