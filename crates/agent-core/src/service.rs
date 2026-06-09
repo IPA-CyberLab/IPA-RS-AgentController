@@ -2,7 +2,7 @@ use crate::btrfs::Btrfs;
 use crate::command::CommandRunner;
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
-use crate::model::{machine_name, Base, Env, EnvState, EnvStatus};
+use crate::model::{machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides};
 use crate::nspawn::Nspawn;
 use crate::protocol::{Request, Response};
 use crate::session::TmuxSessionBackend;
@@ -55,8 +55,13 @@ impl AgentService {
                 self.base_freeze(&name, &from).await?;
                 Ok(Response::Ok)
             }
-            Request::EnvCreate { id, base, profile } => {
-                self.env_create(&id, &base, &profile).await?;
+            Request::EnvCreate {
+                id,
+                base,
+                profile,
+                limits,
+            } => {
+                self.env_create(&id, &base, &profile, limits).await?;
                 Ok(Response::Ok)
             }
             Request::EnvStart { id } => {
@@ -135,9 +140,12 @@ impl AgentService {
         }
         tokio::fs::create_dir_all(&base_dir).await?;
         let rootfs = self.layout.base_rootfs(name);
-        self.btrfs.snapshot_readonly(from, &rootfs).await?;
+        self.btrfs.snapshot_writable(from, &rootfs).await?;
+        self.clean_runtime_paths(&rootfs).await?;
+        self.btrfs.set_readonly(&rootfs, true).await?;
         let dpkg_manifest = base_dir.join("dpkg.list");
         self.write_dpkg_manifest(&rootfs, &dpkg_manifest).await?;
+        tokio::fs::write(base_dir.join("created_at"), Utc::now().to_rfc3339()).await?;
         let base = Base {
             id: name.to_string(),
             rootfs_path: rootfs,
@@ -150,7 +158,13 @@ impl AgentService {
         Ok(base)
     }
 
-    pub async fn env_create(&self, id: &str, base_id: &str, profile_name: &str) -> Result<Env> {
+    pub async fn env_create(
+        &self,
+        id: &str,
+        base_id: &str,
+        profile_name: &str,
+        limit_overrides: LimitOverrides,
+    ) -> Result<Env> {
         validate_id(id)?;
         validate_id(base_id)?;
         let profile = self
@@ -170,9 +184,8 @@ impl AgentService {
         self.btrfs
             .snapshot_writable(&base.rootfs_path, &rootfs)
             .await?;
-        self.btrfs
-            .set_limit(&profile.limits.disk_max, &rootfs)
-            .await?;
+        let limits = profile.limits.clone().with_overrides(limit_overrides);
+        self.btrfs.set_limit(&limits.disk_max, &rootfs).await?;
         let env = Env {
             id: id.to_string(),
             base_id: base_id.to_string(),
@@ -181,9 +194,11 @@ impl AgentService {
             state: EnvState::Created,
             profile: profile.name.clone(),
             created_at: Utc::now(),
-            limits: profile.limits.clone(),
+            limits,
             sessions: Vec::new(),
         };
+        self.log_daemon(id, "env created").await?;
+        self.log_lifecycle(id, "created").await?;
         self.nspawn.write_config(&env).await?;
         self.layout.write_env(&env).await?;
         Ok(env)
@@ -191,24 +206,36 @@ impl AgentService {
 
     pub async fn env_start(&self, id: &str) -> Result<()> {
         let mut env = self.layout.read_env(id).await?;
-        self.nspawn.start(&env).await?;
+        let nspawn_log = self.layout.nspawn_log(id);
+        self.log_lifecycle(id, "starting").await?;
+        self.nspawn.start(&env, Some(&nspawn_log)).await?;
         env.state = EnvState::Running;
+        self.log_lifecycle(id, "running").await?;
         self.layout.write_env(&env).await?;
         Ok(())
     }
 
     pub async fn env_stop(&self, id: &str) -> Result<()> {
         let mut env = self.layout.read_env(id).await?;
+        self.log_lifecycle(id, "stopping").await?;
         self.nspawn.stop(&env.machine_name).await?;
         env.state = EnvState::Stopped;
+        self.log_lifecycle(id, "stopped").await?;
         self.layout.write_env(&env).await?;
         Ok(())
     }
 
     pub async fn env_destroy(&self, id: &str) -> Result<()> {
         let env = self.layout.read_env(id).await?;
+        self.log_lifecycle(id, "destroying").await?;
         let _ = self.nspawn.stop(&env.machine_name).await;
+        let qgroup_id = self.btrfs.qgroup_id(&env.rootfs_path).await?;
         self.btrfs.delete_subvolume(&env.rootfs_path).await?;
+        if let Some(qgroup_id) = qgroup_id {
+            self.btrfs
+                .destroy_qgroup(&qgroup_id, &self.config.agentfs)
+                .await?;
+        }
         tokio::fs::remove_dir_all(self.layout.env_dir(id)).await?;
         Ok(())
     }
@@ -230,6 +257,8 @@ impl AgentService {
         }
         let env = self.layout.read_env(id).await?;
         let log_path = self.layout.env_logs(id).join("exec.log");
+        self.log_lifecycle(id, &format!("exec {}", command.join(" ")))
+            .await?;
         self.nspawn.exec(&env, command, &log_path).await
     }
 
@@ -255,6 +284,8 @@ impl AgentService {
         }
         self.layout.write_session(&session).await?;
         self.layout.write_env(&env).await?;
+        self.log_lifecycle(env_id, &format!("session {session_id} created"))
+            .await?;
         Ok(())
     }
 
@@ -345,5 +376,34 @@ impl AgentService {
             .next()
             .unwrap_or("-")
             .to_string())
+    }
+
+    async fn clean_runtime_paths(&self, rootfs: &Path) -> Result<()> {
+        for rel in ["proc", "sys", "dev", "run", "tmp", "agentfs/runtime"] {
+            let path = rootfs.join(rel);
+            if path.exists() {
+                let _ = tokio::fs::remove_dir_all(&path).await;
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+            if rel != "agentfs/runtime" {
+                tokio::fs::create_dir_all(&path).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn log_daemon(&self, env_id: &str, message: &str) -> Result<()> {
+        self.append_env_log(&self.layout.daemon_log(env_id), message)
+            .await
+    }
+
+    async fn log_lifecycle(&self, env_id: &str, message: &str) -> Result<()> {
+        self.append_env_log(&self.layout.lifecycle_log(env_id), message)
+            .await
+    }
+
+    async fn append_env_log(&self, path: &Path, message: &str) -> Result<()> {
+        let line = format!("{} {message}\n", Utc::now().to_rfc3339());
+        CommandRunner::append_to_file(path, &line).await
     }
 }

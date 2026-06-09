@@ -74,6 +74,23 @@ impl Btrfs {
         Ok(())
     }
 
+    pub async fn set_readonly(&self, path: &Path, readonly: bool) -> Result<()> {
+        self.runner
+            .run_checked(
+                "btrfs",
+                [
+                    "property",
+                    "set",
+                    "-ts",
+                    &path.display().to_string(),
+                    "ro",
+                    if readonly { "true" } else { "false" },
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn snapshot_writable(&self, from: &Path, to: &Path) -> Result<()> {
         self.runner
             .run_checked(
@@ -107,6 +124,45 @@ impl Btrfs {
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn qgroup_id(&self, path: &Path) -> Result<Option<String>> {
+        let output = self
+            .runner
+            .run("btrfs", ["subvolume", "show", &path.display().to_string()])
+            .await?;
+        if output.status != 0 {
+            return Ok(None);
+        }
+        for line in output.stdout.lines() {
+            let trimmed = line.trim();
+            if let Some(id) = trimmed.strip_prefix("Subvolume ID:") {
+                return Ok(Some(format!("0/{}", id.trim())));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn destroy_qgroup(&self, qgroup_id: &str, filesystem: &Path) -> Result<()> {
+        let output = self
+            .runner
+            .run(
+                "btrfs",
+                [
+                    "qgroup",
+                    "destroy",
+                    qgroup_id,
+                    &filesystem.display().to_string(),
+                ],
+            )
+            .await?;
+        if output.status == 0 || output.stderr.contains("No such file or directory") {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "failed to destroy Btrfs qgroup {qgroup_id}: {}",
+            output.stderr
+        ))
     }
 
     pub async fn changed_paths(&self, base: &Path, env: &Path) -> Result<String> {

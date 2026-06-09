@@ -53,6 +53,13 @@ agentctl env stop codex-1
 agentctl env destroy codex-1
 ```
 
+`agentctl env create` accepts resource overrides for the `privileged-dev` defaults:
+
+```bash
+agentctl env create codex-1 --from base-001 \
+  --cpu-max 800% --memory-max 32G --pids-max 8192 --disk-max 200G
+```
+
 ## Metadata Layout
 
 ```text
@@ -67,6 +74,8 @@ agentctl env destroy codex-1
 ```
 
 JSON schemas live in `schemas/`.
+
+Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, and `/agentfs/runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it.
 
 ## Security Model
 

@@ -27,6 +27,12 @@
               "max_runtime": { "type": "string" }
             },
             "additionalProperties": false
+          },
+          "overridable": {
+            "type": "array",
+            "items": {
+              "enum": ["cpu_max", "memory_max", "pids_max", "disk_max", "network", "idle_timeout", "max_runtime"]
+            }
           }
         },
         "additionalProperties": false

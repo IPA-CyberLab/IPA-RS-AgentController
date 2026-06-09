@@ -35,30 +35,44 @@ impl Nspawn {
         Ok(path)
     }
 
-    pub async fn start(&self, env: &Env) -> Result<()> {
-        self.write_config(env).await?;
+    pub fn start_args(env: &Env, log_path: Option<&Path>) -> Vec<String> {
         let unit = unit_name(&env.id);
+        let mut args = vec![
+            format!("--unit={unit}"),
+            "--collect".to_string(),
+            "--property=Delegate=yes".to_string(),
+            format!("--property=CPUQuota={}", env.limits.cpu_max),
+            format!("--property=MemoryMax={}", env.limits.memory_max),
+            format!("--property=TasksMax={}", env.limits.pids_max),
+        ];
+        if let Some(path) = log_path {
+            args.push(format!(
+                "--property=StandardOutput=append:{}",
+                path.display()
+            ));
+            args.push(format!(
+                "--property=StandardError=append:{}",
+                path.display()
+            ));
+        }
+        args.extend([
+            "systemd-nspawn".to_string(),
+            "--machine".to_string(),
+            env.machine_name.clone(),
+            "--directory".to_string(),
+            env.rootfs_path.display().to_string(),
+            "--boot".to_string(),
+            "--private-users=yes".to_string(),
+            "--private-network".to_string(),
+            "--register=yes".to_string(),
+        ]);
+        args
+    }
+
+    pub async fn start(&self, env: &Env, log_path: Option<&Path>) -> Result<()> {
+        self.write_config(env).await?;
         self.runner
-            .run_checked(
-                "systemd-run",
-                vec![
-                    format!("--unit={unit}"),
-                    "--collect".to_string(),
-                    "--property=Delegate=yes".to_string(),
-                    format!("--property=CPUQuota={}", env.limits.cpu_max),
-                    format!("--property=MemoryMax={}", env.limits.memory_max),
-                    format!("--property=TasksMax={}", env.limits.pids_max),
-                    "systemd-nspawn".to_string(),
-                    "--machine".to_string(),
-                    env.machine_name.clone(),
-                    "--directory".to_string(),
-                    env.rootfs_path.display().to_string(),
-                    "--boot".to_string(),
-                    "--private-users=yes".to_string(),
-                    "--private-network".to_string(),
-                    "--register=yes".to_string(),
-                ],
-            )
+            .run_checked("systemd-run", Self::start_args(env, log_path))
             .await?;
         Ok(())
     }
@@ -154,6 +168,33 @@ mod tests {
         assert!(text.contains("PrivateUsers=yes"));
         assert!(text.contains("Private=yes"));
         assert!(text.contains("Hostname=af-codex-1"));
+    }
+
+    #[test]
+    fn start_args_apply_limits_and_namespaces() {
+        let env = Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
+            machine_name: machine_name("codex-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+        let args = Nspawn::start_args(
+            &env,
+            Some(Path::new("/agentfs/envs/codex-1/logs/nspawn.log")),
+        );
+        assert!(args.contains(&"--private-users=yes".to_string()));
+        assert!(args.contains(&"--private-network".to_string()));
+        assert!(args.contains(&"--property=CPUQuota=400%".to_string()));
+        assert!(args.contains(&"--property=MemoryMax=16G".to_string()));
+        assert!(args.contains(&"--property=TasksMax=4096".to_string()));
+        assert!(args.contains(
+            &"--property=StandardOutput=append:/agentfs/envs/codex-1/logs/nspawn.log".to_string()
+        ));
     }
 
     #[test]

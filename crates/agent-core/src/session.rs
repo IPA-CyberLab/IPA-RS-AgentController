@@ -15,8 +15,11 @@ pub trait SessionBackend {
         log_path: PathBuf,
     ) -> Result<Session>;
     async fn attach(&self, env_id: &str, session_id: &str) -> Result<()>;
+    async fn detach(&self, env_id: &str, session_id: &str) -> Result<()>;
     async fn kill(&self, env_id: &str, session_id: &str) -> Result<()>;
     async fn is_running(&self, env_id: &str, session_id: &str) -> Result<bool>;
+    async fn list(&self, env_id: &str) -> Result<Vec<String>>;
+    async fn logs(&self, log_path: &Path) -> Result<String>;
     fn log_path(log_dir: &Path, session_id: &str) -> PathBuf
     where
         Self: Sized;
@@ -48,15 +51,27 @@ impl SessionBackend for TmuxSessionBackend {
     }
 
     async fn attach(&self, env_id: &str, session_id: &str) -> Result<()> {
-        self.attach(env_id, session_id).await
+        TmuxSessionBackend::attach(self, env_id, session_id).await
+    }
+
+    async fn detach(&self, env_id: &str, session_id: &str) -> Result<()> {
+        TmuxSessionBackend::detach(self, env_id, session_id).await
     }
 
     async fn kill(&self, env_id: &str, session_id: &str) -> Result<()> {
-        self.kill(env_id, session_id).await
+        TmuxSessionBackend::kill(self, env_id, session_id).await
     }
 
     async fn is_running(&self, env_id: &str, session_id: &str) -> Result<bool> {
-        self.is_running(env_id, session_id).await
+        TmuxSessionBackend::is_running(self, env_id, session_id).await
+    }
+
+    async fn list(&self, env_id: &str) -> Result<Vec<String>> {
+        TmuxSessionBackend::list(self, env_id).await
+    }
+
+    async fn logs(&self, log_path: &Path) -> Result<String> {
+        TmuxSessionBackend::logs(self, log_path).await
     }
 
     fn log_path(log_dir: &Path, session_id: &str) -> PathBuf {
@@ -108,6 +123,16 @@ impl TmuxSessionBackend {
         Ok(())
     }
 
+    pub async fn detach(&self, env_id: &str, session_id: &str) -> Result<()> {
+        self.runner
+            .run_checked(
+                "tmux",
+                ["detach-client", "-s", &Self::tmux_name(env_id, session_id)],
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn kill(&self, env_id: &str, session_id: &str) -> Result<()> {
         self.runner
             .run_checked(
@@ -127,6 +152,31 @@ impl TmuxSessionBackend {
             )
             .await?;
         Ok(output.status == 0)
+    }
+
+    pub async fn list(&self, env_id: &str) -> Result<Vec<String>> {
+        let output = self
+            .runner
+            .run("tmux", ["list-sessions", "-F", "#{session_name}"])
+            .await?;
+        if output.status != 0 {
+            return Ok(Vec::new());
+        }
+        let prefix = format!("af-{env_id}-");
+        Ok(output
+            .stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix(&prefix))
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    pub async fn logs(&self, log_path: &Path) -> Result<String> {
+        match tokio::fs::read_to_string(log_path).await {
+            Ok(text) => Ok(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn log_path(log_dir: &Path, session_id: &str) -> PathBuf {

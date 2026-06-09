@@ -55,6 +55,18 @@ impl Layout {
         self.env_dir(id).join("logs")
     }
 
+    pub fn daemon_log(&self, id: &str) -> PathBuf {
+        self.env_logs(id).join("agent-forkd.log")
+    }
+
+    pub fn lifecycle_log(&self, id: &str) -> PathBuf {
+        self.env_logs(id).join("lifecycle.log")
+    }
+
+    pub fn nspawn_log(&self, id: &str) -> PathBuf {
+        self.env_logs(id).join("nspawn.log")
+    }
+
     pub fn session_logs(&self, env_id: &str) -> PathBuf {
         self.env_logs(env_id).join("sessions")
     }

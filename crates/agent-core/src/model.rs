@@ -60,6 +60,44 @@ impl Default for Limits {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LimitOverrides {
+    pub cpu_max: Option<String>,
+    pub memory_max: Option<String>,
+    pub pids_max: Option<u32>,
+    pub disk_max: Option<String>,
+    pub network: Option<String>,
+    pub idle_timeout: Option<String>,
+    pub max_runtime: Option<String>,
+}
+
+impl Limits {
+    pub fn with_overrides(mut self, overrides: LimitOverrides) -> Self {
+        if let Some(value) = overrides.cpu_max {
+            self.cpu_max = value;
+        }
+        if let Some(value) = overrides.memory_max {
+            self.memory_max = value;
+        }
+        if let Some(value) = overrides.pids_max {
+            self.pids_max = value;
+        }
+        if let Some(value) = overrides.disk_max {
+            self.disk_max = value;
+        }
+        if let Some(value) = overrides.network {
+            self.network = value;
+        }
+        if let Some(value) = overrides.idle_timeout {
+            self.idle_timeout = value;
+        }
+        if let Some(value) = overrides.max_runtime {
+            self.max_runtime = value;
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Session {
     pub id: String,

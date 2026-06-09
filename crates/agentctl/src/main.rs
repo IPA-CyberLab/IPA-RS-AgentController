@@ -1,4 +1,5 @@
 use agent_core::config::AgentConfig;
+use agent_core::model::LimitOverrides;
 use agent_core::protocol::{Request, Response};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -64,6 +65,20 @@ enum EnvCommand {
         base: String,
         #[arg(long, default_value = "privileged-dev")]
         profile: String,
+        #[arg(long)]
+        cpu_max: Option<String>,
+        #[arg(long)]
+        memory_max: Option<String>,
+        #[arg(long)]
+        pids_max: Option<u32>,
+        #[arg(long)]
+        disk_max: Option<String>,
+        #[arg(long)]
+        network: Option<String>,
+        #[arg(long)]
+        idle_timeout: Option<String>,
+        #[arg(long)]
+        max_runtime: Option<String>,
     },
     Start {
         env_id: String,
@@ -151,10 +166,26 @@ fn to_request(cli: &Cli) -> Request {
                 env_id,
                 base,
                 profile,
+                cpu_max,
+                memory_max,
+                pids_max,
+                disk_max,
+                network,
+                idle_timeout,
+                max_runtime,
             } => Request::EnvCreate {
                 id: env_id.clone(),
                 base: base.clone(),
                 profile: profile.clone(),
+                limits: LimitOverrides {
+                    cpu_max: cpu_max.clone(),
+                    memory_max: memory_max.clone(),
+                    pids_max: *pids_max,
+                    disk_max: disk_max.clone(),
+                    network: network.clone(),
+                    idle_timeout: idle_timeout.clone(),
+                    max_runtime: max_runtime.clone(),
+                },
             },
             EnvCommand::Start { env_id } => Request::EnvStart { id: env_id.clone() },
             EnvCommand::Stop { env_id } => Request::EnvStop { id: env_id.clone() },

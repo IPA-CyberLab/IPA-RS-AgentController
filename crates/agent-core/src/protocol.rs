@@ -1,4 +1,4 @@
-use crate::model::{Env, EnvStatus, Session};
+use crate::model::{Env, EnvStatus, LimitOverrides, Session};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -16,6 +16,7 @@ pub enum Request {
         id: String,
         base: String,
         profile: String,
+        limits: LimitOverrides,
     },
     EnvStart {
         id: String,
