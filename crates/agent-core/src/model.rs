@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Base {
     pub id: String,
     pub rootfs_path: PathBuf,
@@ -14,6 +15,7 @@ pub struct Base {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Env {
     pub id: String,
     pub base_id: String,
@@ -37,6 +39,7 @@ pub enum EnvState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     pub cpu_max: String,
     pub memory_max: String,
@@ -62,6 +65,7 @@ impl Default for Limits {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct LimitOverrides {
     pub cpu_max: Option<String>,
     pub memory_max: Option<String>,
@@ -261,6 +265,7 @@ mod tests {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Session {
     pub id: String,
     pub env_id: String,
@@ -287,6 +292,7 @@ pub enum SessionType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct EnvStatus {
     pub env: Env,
     pub disk_used: Option<String>,

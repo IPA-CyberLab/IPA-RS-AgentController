@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub agentfs: PathBuf,
     pub socket_path: PathBuf,
@@ -230,9 +231,47 @@ mod tests {
             .to_string()
             .contains("duplicate profile privileged-dev"));
     }
+
+    #[tokio::test]
+    async fn config_rejects_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "privileged-dev",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "400%",
+        "memory_max": "16G",
+        "pids_max": 4096,
+        "disk_max": "100G",
+        "network": "private-nat",
+        "idle_timeout": "0",
+        "max_runtime": "0",
+        "typo": "ignored"
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
+
+        assert!(AgentConfig::load(&path)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid config json"));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     pub name: String,
     pub limits: Limits,

@@ -430,6 +430,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_rejects_unknown_env_metadata_fields_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let env = test_env(&layout, "codex-1");
+        let path = layout.env_dir("codex-1").join("meta.json");
+        write_json(&path, &env).await.unwrap();
+        let mut text = tokio::fs::read_to_string(&path).await.unwrap();
+        text = text.replacen(
+            "\"sessions\"",
+            "\"unexpected_metadata_field\": true,\n  \"sessions\"",
+            1,
+        );
+        tokio::fs::write(&path, text).await.unwrap();
+
+        assert!(layout
+            .read_env("codex-1")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid json"));
+    }
+
+    #[tokio::test]
     async fn storage_rejects_tampered_base_metadata_on_read() {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout::new(dir.path().to_path_buf());
