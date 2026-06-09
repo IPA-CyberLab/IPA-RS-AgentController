@@ -259,8 +259,10 @@ fn qgroup_show_reports_exceeded(output: &str) -> bool {
 }
 
 fn is_unlimited(value: &str) -> bool {
-    let value = value.trim();
-    value == "0" || value.eq_ignore_ascii_case("unlimited") || value.eq_ignore_ascii_case("none")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "unlimited" | "infinity" | "none"
+    )
 }
 
 fn quota_enable_reports_already_enabled(stderr: &str) -> bool {
@@ -298,6 +300,7 @@ mod tests {
     fn qgroup_unlimited_values_are_recognized() {
         assert!(is_unlimited("0"));
         assert!(is_unlimited(" unlimited "));
+        assert!(is_unlimited("infinity"));
         assert!(is_unlimited("none"));
         assert!(!is_unlimited("100G"));
     }
