@@ -235,6 +235,9 @@ impl TmuxSessionBackend {
             )
             .await?;
         if output.status != 0 {
+            if tmux_list_reports_no_sessions(&output.stderr) {
+                return Ok(Vec::new());
+            }
             return Err(anyhow!(
                 "failed to list tmux sessions in {}: {}",
                 env.machine_name,
@@ -285,10 +288,16 @@ fn tmux_detach_reports_no_current_client(stderr: &str) -> bool {
     stderr.to_ascii_lowercase().contains("no current client")
 }
 
+fn tmux_list_reports_no_sessions(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no server running") || stderr.contains("no sessions")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_tmux_session_names, tmux_detach_reports_no_current_client, TmuxSessionBackend,
+        parse_tmux_session_names, tmux_detach_reports_no_current_client,
+        tmux_list_reports_no_sessions, TmuxSessionBackend,
     };
     use crate::command::{shell_join, shell_quote};
 
@@ -399,5 +408,14 @@ mod tests {
         assert!(tmux_detach_reports_no_current_client("no current client"));
         assert!(tmux_detach_reports_no_current_client("NO CURRENT CLIENT\n"));
         assert!(!tmux_detach_reports_no_current_client("no server running"));
+    }
+
+    #[test]
+    fn list_treats_absent_tmux_server_as_empty() {
+        assert!(tmux_list_reports_no_sessions(
+            "no server running on /tmp/tmux-0/default"
+        ));
+        assert!(tmux_list_reports_no_sessions("no sessions"));
+        assert!(!tmux_list_reports_no_sessions("permission denied"));
     }
 }
