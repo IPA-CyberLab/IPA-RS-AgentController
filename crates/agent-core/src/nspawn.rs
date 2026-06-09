@@ -132,7 +132,6 @@ impl Nspawn {
             "--boot".to_string(),
             "--resolv-conf=copy-host".to_string(),
             "--register=yes".to_string(),
-            "--tmpfs=/run".to_string(),
             "--tmpfs=/tmp".to_string(),
         ]);
         if env.backend == RootfsBackend::Btrfs {
@@ -439,7 +438,6 @@ mod tests {
         assert!(args.contains(&"--private-users=pick".to_string()));
         assert!(args.contains(&"--private-users-ownership=map".to_string()));
         assert!(args.contains(&"--resolv-conf=copy-host".to_string()));
-        assert!(args.contains(&"--tmpfs=/run".to_string()));
         assert!(args.contains(&"--tmpfs=/tmp".to_string()));
         assert!(args.contains(&"--hostname=af-codex-1".to_string()));
         assert!(args.contains(&"--network-veth".to_string()));
