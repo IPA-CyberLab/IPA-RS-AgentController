@@ -7,7 +7,7 @@ use chrono::Utc;
 use std::path::{Path, PathBuf};
 
 #[async_trait]
-pub trait SessionBackend {
+pub trait SessionBackend: Send + Sync {
     async fn create(
         &self,
         env: &Env,
@@ -323,7 +323,8 @@ fn tmux_has_session_reports_missing(stderr: &str) -> bool {
 mod tests {
     use super::{
         parse_tmux_session_names, tmux_detach_reports_no_current_client,
-        tmux_has_session_reports_missing, tmux_list_reports_no_sessions, TmuxSessionBackend,
+        tmux_has_session_reports_missing, tmux_list_reports_no_sessions, SessionBackend,
+        TmuxSessionBackend,
     };
     use crate::command::shell_join;
 
@@ -333,6 +334,13 @@ mod tests {
             TmuxSessionBackend::tmux_name("codex-1", "dev"),
             "af-codex-1-dev"
         );
+    }
+
+    #[test]
+    fn tmux_backend_satisfies_session_backend_contract() {
+        fn assert_backend<T: SessionBackend + Send + Sync>() {}
+
+        assert_backend::<TmuxSessionBackend>();
     }
 
     #[test]
