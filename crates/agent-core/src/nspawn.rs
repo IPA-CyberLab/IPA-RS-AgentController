@@ -50,7 +50,7 @@ impl Nspawn {
             .map(|path| format!("BindReadOnly=/dev/null:{path}\n"))
             .collect::<String>();
         format!(
-            "[Exec]\nBoot=yes\nPrivateUsers=yes\nHostname={machine}\n\n[Files]\nReadOnly=no\nResolvConf=copy-host\n{inaccessible_paths}{masked_socket_paths}\n[Network]\n{network}",
+            "[Exec]\nBoot=yes\nPrivateUsers=pick\nPrivateUsersOwnership=map\nHostname={machine}\n\n[Files]\nReadOnly=no\nResolvConf=copy-host\n{inaccessible_paths}{masked_socket_paths}\n[Network]\n{network}",
             machine = env.machine_name,
             inaccessible_paths = inaccessible_paths,
             masked_socket_paths = masked_socket_paths,
@@ -123,7 +123,8 @@ impl Nspawn {
             "--directory".to_string(),
             env.rootfs_path.display().to_string(),
             "--boot".to_string(),
-            "--private-users=yes".to_string(),
+            "--private-users=pick".to_string(),
+            "--private-users-ownership=map".to_string(),
             "--resolv-conf=copy-host".to_string(),
             "--register=yes".to_string(),
         ]);
@@ -342,7 +343,8 @@ mod tests {
             sessions: Vec::new(),
         };
         let text = Nspawn::config_text(&env);
-        assert!(text.contains("PrivateUsers=yes"));
+        assert!(text.contains("PrivateUsers=pick"));
+        assert!(text.contains("PrivateUsersOwnership=map"));
         assert!(text.contains("ResolvConf=copy-host"));
         assert!(text.contains("Inaccessible=/agentfs"));
         assert!(text.contains("BindReadOnly=/dev/null:/run/agent-forkd.sock"));
@@ -373,7 +375,8 @@ mod tests {
             Some(Path::new("/agentfs/envs/codex-1/logs/nspawn.log")),
         )
         .unwrap();
-        assert!(args.contains(&"--private-users=yes".to_string()));
+        assert!(args.contains(&"--private-users=pick".to_string()));
+        assert!(args.contains(&"--private-users-ownership=map".to_string()));
         assert!(args.contains(&"--resolv-conf=copy-host".to_string()));
         assert!(args.contains(&"--hostname=af-codex-1".to_string()));
         assert!(args.contains(&"--network-veth".to_string()));

@@ -814,7 +814,8 @@ fn assert_session_stopped(env_id: &str, session_id: &str) {
 fn assert_nspawn_config_for(env_id: &str) {
     let path = format!("/etc/systemd/nspawn/af-{env_id}.nspawn");
     assert_file_contains(&path, "Boot=yes");
-    assert_file_contains(&path, "PrivateUsers=yes");
+    assert_file_contains(&path, "PrivateUsers=pick");
+    assert_file_contains(&path, "PrivateUsersOwnership=map");
     assert_file_contains(&path, &format!("Hostname=af-{env_id}"));
     assert_file_contains(&path, "ReadOnly=no");
     assert_file_contains(&path, "ResolvConf=copy-host");
@@ -829,7 +830,8 @@ fn assert_nspawn_config_for(env_id: &str) {
 fn assert_nspawn_private_network_config_for(env_id: &str) {
     let path = format!("/etc/systemd/nspawn/af-{env_id}.nspawn");
     assert_file_contains(&path, "Boot=yes");
-    assert_file_contains(&path, "PrivateUsers=yes");
+    assert_file_contains(&path, "PrivateUsers=pick");
+    assert_file_contains(&path, "PrivateUsersOwnership=map");
     assert_file_contains(&path, &format!("Hostname=af-{env_id}"));
     assert_file_contains(&path, "ReadOnly=no");
     assert_file_contains(&path, "ResolvConf=copy-host");
