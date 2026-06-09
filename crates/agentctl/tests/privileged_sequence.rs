@@ -545,6 +545,11 @@ fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
     assert_eq!(metadata["limits"]["network"], "private-nat");
     assert_eq!(metadata["limits"]["idle_timeout"], "0");
     assert_eq!(metadata["limits"]["max_runtime"], "0");
+    assert_eq!(metadata["network_policy"]["egress_proxy"], Value::Null);
+    assert!(metadata["network_policy"]["allowlist"]
+        .as_array()
+        .unwrap_or_else(|| panic!("env metadata network_policy.allowlist was not an array"))
+        .is_empty());
     assert!(metadata["sessions"].as_array().unwrap().is_empty());
     assert!(
         metadata["created_at"].as_str().is_some(),

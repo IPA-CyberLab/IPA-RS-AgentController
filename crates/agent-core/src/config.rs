@@ -1,4 +1,4 @@
-use crate::model::Limits;
+use crate::model::{Limits, NetworkPolicy};
 use crate::storage::validate_id;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,8 @@ impl AgentConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentConfig, NetworkPolicy};
+    use super::AgentConfig;
+    use crate::model::NetworkPolicy;
 
     #[tokio::test]
     async fn config_loads_from_json_file() {
@@ -505,33 +506,5 @@ impl Profile {
             limits: Limits::default(),
             network_policy: NetworkPolicy::default(),
         }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct NetworkPolicy {
-    pub egress_proxy: Option<String>,
-    #[serde(default)]
-    pub allowlist: Vec<String>,
-}
-
-impl NetworkPolicy {
-    pub fn validate(&self) -> Result<()> {
-        if let Some(proxy) = &self.egress_proxy {
-            if !(proxy.starts_with("http://") || proxy.starts_with("https://")) {
-                anyhow::bail!("egress_proxy must start with http:// or https://");
-            }
-        }
-        let mut seen = BTreeSet::new();
-        for entry in &self.allowlist {
-            if entry.trim().is_empty() {
-                anyhow::bail!("allowlist entries must not be empty");
-            }
-            if !seen.insert(entry) {
-                anyhow::bail!("allowlist entries must be unique");
-            }
-        }
-        Ok(())
     }
 }

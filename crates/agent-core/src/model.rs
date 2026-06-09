@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
@@ -28,6 +29,8 @@ pub struct Env {
     #[serde(default = "Utc::now")]
     pub last_active_at: DateTime<Utc>,
     pub limits: Limits,
+    #[serde(default)]
+    pub network_policy: NetworkPolicy,
     pub sessions: Vec<String>,
 }
 
@@ -77,6 +80,34 @@ pub struct LimitOverrides {
     pub network: Option<String>,
     pub idle_timeout: Option<String>,
     pub max_runtime: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicy {
+    pub egress_proxy: Option<String>,
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+}
+
+impl NetworkPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(proxy) = &self.egress_proxy {
+            if !(proxy.starts_with("http://") || proxy.starts_with("https://")) {
+                bail!("egress_proxy must start with http:// or https://");
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for entry in &self.allowlist {
+            if entry.trim().is_empty() {
+                bail!("allowlist entries must not be empty");
+            }
+            if !seen.insert(entry) {
+                bail!("allowlist entries must be unique");
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Limits {
@@ -216,7 +247,10 @@ fn is_unlimited(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Base, Env, EnvState, LimitOverrides, Limits, Session, SessionState, SessionType};
+    use super::{
+        Base, Env, EnvState, LimitOverrides, Limits, NetworkPolicy, Session, SessionState,
+        SessionType,
+    };
     use chrono::Utc;
     use serde_json::Value;
     use std::path::PathBuf;
@@ -364,6 +398,7 @@ mod tests {
                 "created_at",
                 "last_active_at",
                 "limits",
+                "network_policy",
                 "sessions",
             ],
         );
@@ -444,6 +479,7 @@ mod tests {
             profile: "privileged-dev".to_string(),
             created_at: Utc::now(),
             last_active_at: Utc::now(),
+            network_policy: NetworkPolicy::default(),
             limits: Limits::default(),
             sessions: vec!["dev".to_string()],
         };
@@ -459,6 +495,7 @@ mod tests {
                 "created_at",
                 "last_active_at",
                 "limits",
+                "network_policy",
                 "sessions",
             ],
         );

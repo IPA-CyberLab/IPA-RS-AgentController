@@ -508,6 +508,7 @@ mod tests {
             profile: "privileged-dev".to_string(),
             created_at: Utc::now(),
             last_active_at: Utc::now(),
+            network_policy: Default::default(),
             limits: Limits::default(),
             sessions: Vec::new(),
         };
@@ -715,6 +716,7 @@ mod tests {
             profile: "privileged-dev".to_string(),
             created_at: Utc::now(),
             last_active_at: Utc::now(),
+            network_policy: Default::default(),
             limits: Limits::default(),
             sessions: Vec::new(),
         }
