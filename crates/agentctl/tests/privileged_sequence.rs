@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -21,6 +22,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_btrfs_subvolume("/agentfs/bases/base-001/rootfs");
     assert_btrfs_readonly("/agentfs/bases/base-001/rootfs", true);
     assert_base_metadata("base-001");
+    assert_base_runtime_paths_scrubbed("base-001");
 
     run(&[
         "agentctl",
@@ -347,6 +349,34 @@ fn assert_base_metadata(base_id: &str) {
         "base metadata omitted created_at: {metadata}"
     );
     assert_eq!(metadata["created_at"].as_str().unwrap(), created_at);
+}
+
+fn assert_base_runtime_paths_scrubbed(base_id: &str) {
+    let rootfs = format!("/agentfs/bases/{base_id}/rootfs");
+    for rel in ["proc", "sys", "dev", "run", "tmp", "agentfs"] {
+        let path = format!("{rootfs}/{rel}");
+        assert!(Path::new(&path).is_dir(), "{path} was not recreated");
+    }
+    assert_eq!(
+        std::fs::metadata(format!("{rootfs}/tmp"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o1777
+    );
+    for rel in [
+        "agentfs/bases",
+        "agentfs/envs",
+        "agentfs/cache",
+        "agentfs/runtime",
+    ] {
+        let path = format!("{rootfs}/{rel}");
+        assert!(
+            !Path::new(&path).exists(),
+            "{path} leaked host agentfs state into base"
+        );
+    }
 }
 
 fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
