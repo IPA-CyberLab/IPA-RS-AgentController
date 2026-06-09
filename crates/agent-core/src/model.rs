@@ -80,6 +80,11 @@ impl Limits {
                 self.network
             );
         }
+        validate_cpu_max(&self.cpu_max)?;
+        validate_size_limit("memory_max", &self.memory_max)?;
+        validate_size_limit("disk_max", &self.disk_max)?;
+        validate_duration_limit("idle_timeout", &self.idle_timeout)?;
+        validate_duration_limit("max_runtime", &self.max_runtime)?;
         Ok(())
     }
 
@@ -107,6 +112,77 @@ impl Limits {
         }
         self
     }
+}
+
+fn validate_cpu_max(value: &str) -> Result<()> {
+    let value = value.trim();
+    if is_unlimited(value) {
+        return Ok(());
+    }
+    let Some(percent) = value.strip_suffix('%') else {
+        bail!("cpu_max must be a positive percentage or 0/unlimited");
+    };
+    validate_positive_decimal("cpu_max", percent)
+}
+
+fn validate_size_limit(name: &str, value: &str) -> Result<()> {
+    let value = value.trim();
+    if is_unlimited(value) {
+        return Ok(());
+    }
+    let Some((number, unit)) = split_number_unit(value) else {
+        bail!("{name} must be a positive size with a unit or 0/unlimited");
+    };
+    if !matches!(
+        unit.to_ascii_lowercase().as_str(),
+        "b" | "k" | "kb" | "m" | "mb" | "g" | "gb" | "t" | "tb"
+    ) {
+        bail!("{name} has unsupported unit {unit}");
+    }
+    validate_positive_decimal(name, number)
+}
+
+fn validate_duration_limit(name: &str, value: &str) -> Result<()> {
+    let value = value.trim();
+    if is_unlimited(value) {
+        return Ok(());
+    }
+    let Some((number, unit)) = split_number_unit(value) else {
+        bail!("{name} must be a positive duration with a unit or 0/unlimited");
+    };
+    if !matches!(
+        unit.to_ascii_lowercase().as_str(),
+        "s" | "sec" | "m" | "min" | "h" | "hr" | "d" | "day"
+    ) {
+        bail!("{name} has unsupported unit {unit}");
+    }
+    validate_positive_decimal(name, number)
+}
+
+fn split_number_unit(value: &str) -> Option<(&str, &str)> {
+    let split_at = value.find(|c: char| c.is_ascii_alphabetic())?;
+    let (number, unit) = value.split_at(split_at);
+    if number.is_empty() || unit.is_empty() || !unit.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    Some((number, unit))
+}
+
+fn validate_positive_decimal(name: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.starts_with('-')
+        || value.parse::<f64>().map_or(true, |number| number <= 0.0)
+    {
+        bail!("{name} must be positive");
+    }
+    Ok(())
+}
+
+fn is_unlimited(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "unlimited" | "infinity" | "none"
+    )
 }
 
 #[cfg(test)]
@@ -142,6 +218,45 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsupported network mode"));
+    }
+
+    #[test]
+    fn limits_reject_malformed_resource_values() {
+        for (field, error) in [
+            ("cpu_max", "cpu_max must be a positive percentage"),
+            ("memory_max", "memory_max must be a positive size"),
+            ("disk_max", "disk_max has unsupported unit"),
+            ("idle_timeout", "idle_timeout must be positive"),
+            ("max_runtime", "max_runtime has unsupported unit"),
+        ] {
+            let mut limits = Limits::default();
+            match field {
+                "cpu_max" => limits.cpu_max = "four".to_string(),
+                "memory_max" => limits.memory_max = "16".to_string(),
+                "disk_max" => limits.disk_max = "100Q".to_string(),
+                "idle_timeout" => limits.idle_timeout = "-1s".to_string(),
+                "max_runtime" => limits.max_runtime = "1fortnight".to_string(),
+                _ => unreachable!(),
+            }
+            assert!(
+                limits.validate().unwrap_err().to_string().contains(error),
+                "expected {field} error to contain {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn limits_accept_unlimited_resource_values() {
+        let limits = Limits {
+            cpu_max: "unlimited".to_string(),
+            memory_max: "infinity".to_string(),
+            disk_max: "none".to_string(),
+            idle_timeout: "0".to_string(),
+            max_runtime: "0".to_string(),
+            ..Limits::default()
+        };
+
+        limits.validate().unwrap();
     }
 }
 
