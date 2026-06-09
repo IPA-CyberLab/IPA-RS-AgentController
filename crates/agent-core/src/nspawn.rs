@@ -1,6 +1,6 @@
 use crate::command::{CmdOutput, CommandRunner};
 use crate::model::{unit_name, Env, EnvState};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -139,10 +139,20 @@ impl Nspawn {
     }
 
     pub async fn stop(&self, machine_name: &str) -> Result<()> {
-        self.runner
-            .run_checked("machinectl", ["terminate", machine_name])
+        let output = self
+            .runner
+            .run("machinectl", ["terminate", machine_name])
             .await?;
-        Ok(())
+        if output.status == 0 || machinectl_reports_missing_machine(&output.stderr) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "machinectl terminate {machine_name} exited with {}: {}{}",
+                output.status,
+                output.stdout,
+                output.stderr
+            ))
+        }
     }
 
     pub async fn shell(&self, machine_name: &str) -> Result<()> {
@@ -214,6 +224,11 @@ fn is_unlimited_str(value: &str) -> bool {
     value == "0"
         || value.eq_ignore_ascii_case("unlimited")
         || value.eq_ignore_ascii_case("infinity")
+}
+
+fn machinectl_reports_missing_machine(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no machine") || stderr.contains("not exist") || stderr.contains("not found")
 }
 
 fn shell_join(command: &[String]) -> String {
@@ -316,6 +331,17 @@ mod tests {
         assert!(text.contains("DHCPServer=yes"));
         assert!(text.contains("IPMasquerade=ipv4"));
         assert!(text.contains("IPForward=ipv4"));
+    }
+
+    #[test]
+    fn missing_machine_stop_errors_are_idempotent() {
+        assert!(machinectl_reports_missing_machine(
+            "No machine 'af-codex-1' known"
+        ));
+        assert!(machinectl_reports_missing_machine(
+            "Machine af-codex-1 does not exist"
+        ));
+        assert!(!machinectl_reports_missing_machine("Access denied"));
     }
 
     #[tokio::test]
