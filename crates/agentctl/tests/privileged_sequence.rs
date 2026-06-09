@@ -98,6 +98,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_btrfs_qgroup_has_referenced_limit(&codex_qgroup, "/agentfs/envs/codex-1/rootfs");
     assert_child_cannot_see_project_vm_state("codex-1");
     assert_last_active_advances_after_exec("codex-1");
+    assert_idle_timeout_stops_env();
 
     assert_eq!(
         text(&["agentctl", "exec", "codex-1", "--", "sudo", "whoami"]).trim(),
@@ -416,6 +417,40 @@ fn assert_last_active_advances_after_exec(env_id: &str) {
         after > before,
         "env {env_id} last_active_at did not advance after exec: before={before}, after={after}"
     );
+}
+
+fn assert_idle_timeout_stops_env() {
+    run(&[
+        "agentctl",
+        "env",
+        "create",
+        "idle-1",
+        "--from",
+        "base-001",
+        "--profile",
+        "privileged-dev",
+        "--idle-timeout",
+        "1s",
+    ]);
+    assert_eq!(
+        json_file("/agentfs/envs/idle-1/meta.json")["limits"]["idle_timeout"],
+        "1s"
+    );
+    run(&["agentctl", "env", "start", "idle-1"]);
+    let idle_status = json(&["agentctl", "env", "status", "idle-1"]);
+    assert_env_status(&idle_status, "idle-1", "base-001", "running");
+    let idle_qgroup = btrfs_qgroup_id("/agentfs/envs/idle-1/rootfs");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let idle_status = json(&["agentctl", "env", "status", "idle-1"]);
+    assert_env_status(&idle_status, "idle-1", "base-001", "stopped");
+    assert_file_contains(
+        "/agentfs/envs/idle-1/logs/lifecycle.log",
+        "idle timeout exceeded",
+    );
+    run(&["agentctl", "env", "destroy", "idle-1"]);
+    assert!(!Path::new("/agentfs/envs/idle-1").exists());
+    assert!(!Path::new("/etc/systemd/nspawn/af-idle-1.nspawn").exists());
+    assert_btrfs_qgroup_removed(&idle_qgroup, "/agentfs");
 }
 
 fn assert_base_metadata(base_id: &str) {
