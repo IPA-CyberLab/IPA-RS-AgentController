@@ -1,6 +1,6 @@
 use crate::command::CommandRunner;
 use crate::model::{Env, Session, SessionState, SessionType};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::path::{Path, PathBuf};
@@ -220,15 +220,13 @@ impl TmuxSessionBackend {
             )
             .await?;
         if output.status != 0 {
-            return Ok(Vec::new());
+            return Err(anyhow!(
+                "failed to list tmux sessions in {}: {}",
+                env.machine_name,
+                output.stderr
+            ));
         }
-        Ok(output
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(ToOwned::to_owned)
-            .collect())
+        Ok(parse_tmux_session_names(&output.stdout))
     }
 
     pub async fn logs(&self, env: &Env, session_id: &str, log_path: &Path) -> Result<String> {
@@ -283,9 +281,18 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn parse_tmux_session_names(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::TmuxSessionBackend;
+    use super::{parse_tmux_session_names, TmuxSessionBackend};
 
     #[test]
     fn tmux_name_scopes_by_env() {
@@ -337,5 +344,13 @@ mod tests {
             .last()
             .unwrap()
             .contains("tmux attach-session -t 'dev'"));
+    }
+
+    #[test]
+    fn tmux_session_list_parser_ignores_empty_lines() {
+        assert_eq!(
+            parse_tmux_session_names("dev\n\n codex \n"),
+            vec!["dev".to_string(), "codex".to_string()]
+        );
     }
 }

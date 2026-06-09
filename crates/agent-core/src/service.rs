@@ -400,7 +400,11 @@ impl AgentService {
 
     pub async fn session_list(&self, env_id: &str) -> Result<Vec<crate::model::Session>> {
         let env = self.layout.read_env(env_id).await?;
-        let live_sessions = self.sessions.list(&env).await.unwrap_or_default();
+        let live_sessions = if env.state == EnvState::Running {
+            self.sessions.list(&env).await?
+        } else {
+            Vec::new()
+        };
         let mut sessions = self.layout.list_sessions(env_id).await?;
         for session in &mut sessions {
             session.state = if live_sessions.iter().any(|live| live == &session.id) {
