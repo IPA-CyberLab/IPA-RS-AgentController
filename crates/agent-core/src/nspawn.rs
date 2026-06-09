@@ -81,7 +81,8 @@ impl Nspawn {
         Ok(path)
     }
 
-    pub fn start_args(env: &Env, log_path: Option<&Path>) -> Vec<String> {
+    pub fn start_args(env: &Env, log_path: Option<&Path>) -> Result<Vec<String>> {
+        env.limits.validate()?;
         let unit = unit_name(&env.id);
         let mut args = vec![
             format!("--unit={unit}"),
@@ -120,20 +121,19 @@ impl Nspawn {
         } else {
             args.push("--private-network".to_string());
         }
-        args
+        Ok(args)
     }
 
     pub async fn start(&self, env: &Env, log_path: Option<&Path>) -> Result<()> {
         if env.limits.network == "private-nat" {
             self.write_private_nat_network_config().await?;
-            let _ = self
-                .runner
-                .run("systemctl", ["reload", "systemd-networkd"])
-                .await;
+            self.runner
+                .run_checked("systemctl", ["reload", "systemd-networkd"])
+                .await?;
         }
         self.write_config(env).await?;
         self.runner
-            .run_checked("systemd-run", Self::start_args(env, log_path))
+            .run_checked("systemd-run", Self::start_args(env, log_path)?)
             .await?;
         Ok(())
     }
@@ -290,7 +290,8 @@ mod tests {
         let args = Nspawn::start_args(
             &env,
             Some(Path::new("/agentfs/envs/codex-1/logs/nspawn.log")),
-        );
+        )
+        .unwrap();
         assert!(args.contains(&"--private-users=yes".to_string()));
         assert!(args.contains(&"--network-veth".to_string()));
         assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
@@ -319,7 +320,7 @@ mod tests {
             sessions: Vec::new(),
         };
         env.limits.network = "private".to_string();
-        let args = Nspawn::start_args(&env, None);
+        let args = Nspawn::start_args(&env, None).unwrap();
         assert!(args.contains(&"--private-network".to_string()));
         assert!(!args.iter().any(|arg| arg.starts_with("--network-zone")));
     }
@@ -388,7 +389,7 @@ mod tests {
         env.limits.memory_max = "0".to_string();
         env.limits.pids_max = 0;
         env.limits.max_runtime = "0".to_string();
-        let args = Nspawn::start_args(&env, None);
+        let args = Nspawn::start_args(&env, None).unwrap();
         assert!(!args.iter().any(|arg| arg.contains("CPUQuota")));
         assert!(!args.iter().any(|arg| arg.contains("MemoryMax")));
         assert!(!args.iter().any(|arg| arg.contains("TasksMax")));
@@ -409,8 +410,29 @@ mod tests {
             sessions: Vec::new(),
         };
         env.limits.max_runtime = "6h".to_string();
-        let args = Nspawn::start_args(&env, None);
+        let args = Nspawn::start_args(&env, None).unwrap();
         assert!(args.contains(&"--property=RuntimeMaxSec=6h".to_string()));
+    }
+
+    #[test]
+    fn start_args_reject_unknown_network_modes() {
+        let mut env = Env {
+            id: "bad-network-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/bad-network-1/rootfs".into(),
+            machine_name: machine_name("bad-network-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+        env.limits.network = "bridge".to_string();
+
+        assert!(Nspawn::start_args(&env, None)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported network mode"));
     }
 
     #[test]
