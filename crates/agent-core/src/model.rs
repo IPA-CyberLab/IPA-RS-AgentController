@@ -1,3 +1,4 @@
+use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -72,6 +73,16 @@ pub struct LimitOverrides {
 }
 
 impl Limits {
+    pub fn validate(&self) -> Result<()> {
+        if !matches!(self.network.as_str(), "private-nat" | "private") {
+            bail!(
+                "unsupported network mode {}; use private-nat or private",
+                self.network
+            );
+        }
+        Ok(())
+    }
+
     pub fn with_overrides(mut self, overrides: LimitOverrides) -> Self {
         if let Some(value) = overrides.cpu_max {
             self.cpu_max = value;
@@ -95,6 +106,42 @@ impl Limits {
             self.max_runtime = value;
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Limits;
+
+    #[test]
+    fn limits_accept_supported_network_modes() {
+        Limits {
+            network: "private-nat".to_string(),
+            ..Limits::default()
+        }
+        .validate()
+        .unwrap();
+
+        Limits {
+            network: "private".to_string(),
+            ..Limits::default()
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn limits_reject_unknown_network_modes() {
+        let limits = Limits {
+            network: "bridge".to_string(),
+            ..Limits::default()
+        };
+
+        assert!(limits
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported network mode"));
     }
 }
 

@@ -22,7 +22,7 @@
               "memory_max": { "type": "string" },
               "pids_max": { "type": "integer" },
               "disk_max": { "type": "string" },
-              "network": { "type": "string" },
+              "network": { "enum": ["private-nat", "private"] },
               "idle_timeout": { "type": "string" },
               "max_runtime": { "type": "string" }
             },

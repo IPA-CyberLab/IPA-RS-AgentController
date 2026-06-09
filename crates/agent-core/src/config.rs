@@ -30,8 +30,15 @@ impl AgentConfig {
         let bytes = tokio::fs::read(path)
             .await
             .with_context(|| format!("failed to read config {}", path.display()))?;
-        serde_json::from_slice(&bytes)
-            .with_context(|| format!("invalid config json {}", path.display()))
+        let config: Self = serde_json::from_slice(&bytes)
+            .with_context(|| format!("invalid config json {}", path.display()))?;
+        for profile in &config.profiles {
+            profile
+                .limits
+                .validate()
+                .with_context(|| format!("invalid limits for profile {}", profile.name))?;
+        }
+        Ok(config)
     }
 
     pub async fn load_or_default(path: Option<&Path>, agentfs: PathBuf) -> Result<Self> {
@@ -81,6 +88,42 @@ mod tests {
             config.profile("privileged-dev").unwrap().limits.memory_max,
             "32G"
         );
+    }
+
+    #[tokio::test]
+    async fn config_rejects_unknown_network_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "privileged-dev",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "800%",
+        "memory_max": "32G",
+        "pids_max": 8192,
+        "disk_max": "200G",
+        "network": "bridge",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
+
+        assert!(AgentConfig::load(&path)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid limits for profile privileged-dev"));
     }
 }
 

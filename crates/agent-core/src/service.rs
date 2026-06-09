@@ -193,6 +193,8 @@ impl AgentService {
         if env_dir.exists() {
             return Err(anyhow!("env {id} already exists"));
         }
+        let limits = profile.limits.clone().with_overrides(limit_overrides);
+        limits.validate()?;
         tokio::fs::create_dir_all(self.layout.session_logs(id)).await?;
         tokio::fs::create_dir_all(self.layout.sessions_dir(id)).await?;
         tokio::fs::create_dir_all(env_dir.join("exports")).await?;
@@ -201,7 +203,6 @@ impl AgentService {
         self.btrfs
             .snapshot_writable(&base.rootfs_path, &rootfs)
             .await?;
-        let limits = profile.limits.clone().with_overrides(limit_overrides);
         self.btrfs.set_limit(&limits.disk_max, &rootfs).await?;
         let env = Env {
             id: id.to_string(),
