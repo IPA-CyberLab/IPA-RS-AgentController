@@ -112,6 +112,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn packaged_config_matches_runtime_parser() {
+        let config: AgentConfig =
+            serde_json::from_str(include_str!("../../../packaging/agent-forkd/config.json"))
+                .unwrap();
+
+        config.validate().unwrap();
+        assert_eq!(config.agentfs.to_string_lossy(), "/agentfs");
+        assert_eq!(
+            config.socket_path.to_string_lossy(),
+            "/agentfs/runtime/sockets/agent-forkd.sock"
+        );
+        assert_eq!(config.default_profile, "privileged-dev");
+        assert_eq!(config.profiles.len(), 1);
+        assert_eq!(
+            config.profile("privileged-dev").unwrap().limits,
+            crate::model::Limits::default()
+        );
+    }
+
     #[tokio::test]
     async fn config_rejects_unknown_network_mode() {
         let dir = tempfile::tempdir().unwrap();
