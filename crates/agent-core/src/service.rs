@@ -261,7 +261,7 @@ impl AgentService {
     pub async fn env_destroy(&self, id: &str) -> Result<()> {
         let env = self.layout.read_env(id).await?;
         self.log_lifecycle(id, "destroying").await?;
-        let _ = self.nspawn.stop(&env.machine_name).await;
+        self.nspawn.stop(&env.machine_name).await?;
         let qgroup_id = self.btrfs.qgroup_id(&env.rootfs_path).await?;
         self.btrfs.delete_subvolume(&env.rootfs_path).await?;
         if let Some(qgroup_id) = qgroup_id {
