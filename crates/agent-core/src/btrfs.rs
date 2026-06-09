@@ -218,17 +218,28 @@ fn qgroup_show_result(status: i32, stdout: &str, stderr: &str, path: &Path) -> R
 }
 
 fn qgroup_show_reports_exceeded(output: &str) -> bool {
-    for line in output.lines().skip(2) {
+    let mut lines = output.lines();
+    let Some(header) = lines.next() else {
+        return false;
+    };
+    let headers = header.split_whitespace().collect::<Vec<_>>();
+    let Some(rfer_index) = headers.iter().position(|header| *header == "rfer") else {
+        return false;
+    };
+    let Some(max_rfer_index) = headers.iter().position(|header| *header == "max_rfer") else {
+        return false;
+    };
+    for line in lines.skip(1) {
         let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.len() < 4 {
+        if fields.len() <= rfer_index || fields.len() <= max_rfer_index {
             continue;
         }
         let referenced = fields
-            .get(1)
+            .get(rfer_index)
             .and_then(|value| value.parse::<u128>().ok())
             .unwrap_or(0);
         let max_referenced = fields
-            .last()
+            .get(max_rfer_index)
             .and_then(|value| value.parse::<u128>().ok())
             .unwrap_or(0);
         if max_referenced > 0 && referenced >= max_referenced {
@@ -299,6 +310,26 @@ qgroupid         rfer         excl     max_rfer
 ";
         assert!(!qgroup_show_reports_exceeded(below_limit));
         assert!(!qgroup_show_reports_exceeded(unlimited));
+    }
+
+    #[test]
+    fn qgroup_show_uses_max_rfer_not_max_excl() {
+        let output = "\
+qgroupid         rfer         excl     max_rfer    max_excl
+--------         ----         ----     --------    --------
+0/257            1024         1024     2048        1024
+";
+        assert!(!qgroup_show_reports_exceeded(output));
+    }
+
+    #[test]
+    fn qgroup_show_uses_header_positions() {
+        let output = "\
+qgroupid         excl         max_excl    rfer     max_rfer
+--------         ----         --------    ----     --------
+0/257            1            0           1024     1024
+";
+        assert!(qgroup_show_reports_exceeded(output));
     }
 
     #[test]
