@@ -250,6 +250,23 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "stopped");
     assert_env_artifacts_persist_after_stop("codex-1");
     assert_session_logs_contain("codex-1", "logger", "session-log-sentinel");
+    restart_agent_forkd_daemon();
+    let stopped_after_daemon_restart = json(&["agentctl", "env", "status", "codex-1"]);
+    assert_env_status(
+        &stopped_after_daemon_restart,
+        "codex-1",
+        "base-001",
+        "stopped",
+    );
+    assert_env_artifacts_persist_after_stop("codex-1");
+    assert_session_logs_contain("codex-1", "logger", "session-log-sentinel");
+    let claude_status_after_daemon_restart = json(&["agentctl", "env", "status", "claude-1"]);
+    assert_env_status(
+        &claude_status_after_daemon_restart,
+        "claude-1",
+        "base-001",
+        "running",
+    );
     run(&["agentctl", "env", "destroy", "codex-1"]);
     assert!(!Path::new("/agentfs/envs/codex-1/rootfs").exists());
     assert!(!Path::new("/agentfs/envs/codex-1").exists());
@@ -473,6 +490,19 @@ fn assert_session_logs_contain(env_id: &str, session_id: &str, needle: &str) {
         logs.contains(needle),
         "session {session_id} logs for {env_id} did not contain {needle:?}:\n{logs}"
     );
+}
+
+fn restart_agent_forkd_daemon() {
+    run(&["systemctl", "restart", "agent-forkd"]);
+    run(&[
+        "bash",
+        "-lc",
+        "for _ in $(seq 1 50); do \
+           test -S /agentfs/runtime/sockets/agent-forkd.sock && exit 0; \
+           sleep 0.1; \
+         done; \
+         exit 1",
+    ]);
 }
 
 fn assert_env_artifacts_persist_after_stop(env_id: &str) {
