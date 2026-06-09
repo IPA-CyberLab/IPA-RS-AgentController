@@ -68,6 +68,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "/agentfs/envs/claude-1/rootfs",
     );
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
+    assert_child_cannot_see_project_vm_state("codex-1");
 
     run(&["agentctl", "exec", "codex-1", "--", "sudo", "apt", "update"]);
     run(&[
@@ -215,6 +216,23 @@ fn btrfs_subvolume_field(path: &str, field: &str) -> String {
         }
     }
     panic!("btrfs subvolume show {path} did not contain field {field}");
+}
+
+fn assert_child_cannot_see_project_vm_state(env_id: &str) {
+    run(&[
+        "agentctl",
+        "exec",
+        env_id,
+        "--",
+        "bash",
+        "-lc",
+        "\
+test ! -e /agentfs/bases && \
+test ! -e /agentfs/envs && \
+test ! -S /agentfs/runtime/sockets/agent-forkd.sock && \
+test ! -S /run/docker.sock && \
+test ! -S /var/run/docker.sock",
+    ]);
 }
 
 fn assert_file_contains(path: &str, expected: &str) {
