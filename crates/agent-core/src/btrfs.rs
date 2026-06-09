@@ -159,7 +159,7 @@ impl Btrfs {
                 ],
             )
             .await?;
-        if output.status == 0 || output.stderr.contains("No such file or directory") {
+        if output.status == 0 || qgroup_destroy_reports_missing(&output.stderr) {
             return Ok(());
         }
         Err(anyhow!(
@@ -243,9 +243,20 @@ fn is_unlimited(value: &str) -> bool {
     value == "0" || value.eq_ignore_ascii_case("unlimited") || value.eq_ignore_ascii_case("none")
 }
 
+fn qgroup_destroy_reports_missing(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no such file or directory")
+        || stderr.contains("no such process")
+        || stderr.contains("not exist")
+        || stderr.contains("not found")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_unlimited, qgroup_show_reports_exceeded, qgroup_show_result};
+    use super::{
+        is_unlimited, qgroup_destroy_reports_missing, qgroup_show_reports_exceeded,
+        qgroup_show_result,
+    };
     use std::path::Path;
 
     #[test]
@@ -293,5 +304,21 @@ qgroupid         rfer         excl     max_rfer
         .unwrap_err();
 
         assert!(error.to_string().contains("failed to inspect Btrfs qgroup"));
+    }
+
+    #[test]
+    fn qgroup_destroy_missing_errors_are_idempotent() {
+        assert!(qgroup_destroy_reports_missing(
+            "ERROR: unable to destroy quota group: No such file or directory"
+        ));
+        assert!(qgroup_destroy_reports_missing(
+            "ERROR: unable to destroy quota group: No such process"
+        ));
+        assert!(qgroup_destroy_reports_missing(
+            "ERROR: qgroup 0/257 does not exist"
+        ));
+        assert!(!qgroup_destroy_reports_missing(
+            "ERROR: unable to destroy quota group: Permission denied"
+        ));
     }
 }
