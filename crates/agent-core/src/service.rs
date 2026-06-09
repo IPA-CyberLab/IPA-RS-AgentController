@@ -434,7 +434,7 @@ impl AgentService {
     pub async fn export(&self, env_id: &str, export_type: ExportType) -> Result<String> {
         let env = self.layout.read_env(env_id).await?;
         let base = self.layout.read_base(&env.base_id).await?;
-        match export_type {
+        let text = match export_type {
             ExportType::WorkspacePatch => self.exporter.workspace_patch(&env).await,
             ExportType::RootfsChangedPaths => {
                 Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
@@ -445,7 +445,16 @@ impl AgentService {
                     .await?;
                 Exporter::dpkg_delta(&base.dpkg_manifest, &env_manifest)
             }
-        }
+        }?;
+        let artifact = self
+            .layout
+            .env_dir(env_id)
+            .join("exports")
+            .join(export_type.artifact_name());
+        tokio::fs::write(&artifact, &text).await?;
+        self.log_lifecycle(env_id, &format!("exported {}", artifact.display()))
+            .await?;
+        Ok(text)
     }
 
     async fn write_dpkg_manifest(&self, rootfs: &Path, target: &Path) -> Result<()> {

@@ -22,6 +22,14 @@ impl ExportType {
             other => anyhow::bail!("unsupported export type {other}"),
         }
     }
+
+    pub fn artifact_name(self) -> &'static str {
+        match self {
+            Self::WorkspacePatch => "workspace-patch.patch",
+            Self::RootfsChangedPaths => "rootfs-changed-paths.txt",
+            Self::DpkgDelta => "dpkg-delta.txt",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,8 +129,21 @@ fn package_versions(path: &Path) -> Result<BTreeMap<String, String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::Exporter;
+    use super::{ExportType, Exporter};
     use std::fs;
+
+    #[test]
+    fn export_types_have_stable_artifact_names() {
+        assert_eq!(
+            ExportType::WorkspacePatch.artifact_name(),
+            "workspace-patch.patch"
+        );
+        assert_eq!(
+            ExportType::RootfsChangedPaths.artifact_name(),
+            "rootfs-changed-paths.txt"
+        );
+        assert_eq!(ExportType::DpkgDelta.artifact_name(), "dpkg-delta.txt");
+    }
 
     #[test]
     fn dpkg_delta_reports_installed_and_removed() {

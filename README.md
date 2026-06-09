@@ -80,6 +80,7 @@ The default `network=private-nat` profile launches nspawn with a veth in the `ag
   /envs/<env-id>/sessions/<session-id>.json
   /envs/<env-id>/logs/exec.log
   /envs/<env-id>/logs/sessions/<session-id>.log
+  /envs/<env-id>/exports/<export-artifact>
   /runtime/sockets/agent-forkd.sock
 ```
 
@@ -87,7 +88,7 @@ JSON schemas live in `schemas/`.
 
 `agent-forkd` and `agentctl` accept `--config /etc/agent-forkd/config.json` or `AGENT_FORKD_CONFIG` for the daemon config schema in `schemas/config.schema.json`.
 
-Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`, scrubs host `/agentfs` state such as `bases`, `envs`, `cache`, and `runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it.
+Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`, scrubs host `/agentfs` state such as `bases`, `envs`, `cache`, and `runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it. Export commands print their output and persist the latest artifact under `/agentfs/envs/<env-id>/exports/`.
 
 Env start validates that the child rootfs contains `/bin/bash`, `sudo`, `apt` or `apt-get`, and `tmux`. If those tools are missing, the env is marked `failed` and nspawn is not launched.
 
