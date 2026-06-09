@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config =
         AgentConfig::load_or_default(cli.config.as_deref(), effective_agentfs(&cli)).await?;
-    let request = to_request(&cli, &config);
+    let request = to_request(&cli, &config)?;
     let response = call(&config.socket_path, request).await?;
     print_response(response)
 }
@@ -164,18 +164,26 @@ fn effective_agentfs(cli: &Cli) -> PathBuf {
     }
 }
 
-fn to_request(cli: &Cli, config: &AgentConfig) -> Request {
+fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
     match &cli.command {
-        Command::Init(args) => Request::Init {
-            agentfs: args.agentfs.clone().unwrap_or_else(|| cli.agentfs.clone()),
-        },
-        Command::Base { command } => match command {
+        Command::Init(args) => {
+            let agentfs = args.agentfs.clone().unwrap_or_else(|| cli.agentfs.clone());
+            if config.agentfs != agentfs {
+                return Err(anyhow!(
+                    "init --agentfs {} does not match daemon config agentfs {}; use matching --config or AGENTFS",
+                    agentfs.display(),
+                    config.agentfs.display()
+                ));
+            }
+            Ok(Request::Init { agentfs })
+        }
+        Command::Base { command } => Ok(match command {
             BaseCommand::Freeze { name, from } => Request::BaseFreeze {
                 name: name.clone(),
                 from: from.clone(),
             },
-        },
-        Command::Env { command } => match command {
+        }),
+        Command::Env { command } => Ok(match command {
             EnvCommand::Create {
                 env_id,
                 base,
@@ -208,13 +216,13 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Request {
             EnvCommand::Destroy { env_id } => Request::EnvDestroy { id: env_id.clone() },
             EnvCommand::List => Request::EnvList,
             EnvCommand::Status { env_id } => Request::EnvStatus { id: env_id.clone() },
-        },
-        Command::Shell { env_id } => Request::Shell { id: env_id.clone() },
-        Command::Exec(args) => Request::Exec {
+        }),
+        Command::Shell { env_id } => Ok(Request::Shell { id: env_id.clone() }),
+        Command::Exec(args) => Ok(Request::Exec {
             id: args.env_id.clone(),
             command: args.command.clone(),
-        },
-        Command::Session { command } => match command {
+        }),
+        Command::Session { command } => Ok(match command {
             SessionCommand::Create(args) => Request::SessionCreate {
                 env_id: args.env_id.clone(),
                 session_id: args.session_id.clone(),
@@ -239,14 +247,14 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Request {
                 env_id: env_id.clone(),
                 session_id: session_id.clone(),
             },
-        },
-        Command::Diff { env_id } => Request::Diff {
+        }),
+        Command::Diff { env_id } => Ok(Request::Diff {
             env_id: env_id.clone(),
-        },
-        Command::Export(args) => Request::Export {
+        }),
+        Command::Export(args) => Ok(Request::Export {
             env_id: args.env_id.clone(),
             export_type: args.export_type.as_wire().to_string(),
-        },
+        }),
     }
 }
 
@@ -401,10 +409,28 @@ mod tests {
         };
 
         assert_eq!(effective_agentfs(&cli), PathBuf::from("/custom-agentfs"));
-        match to_request(&cli, &AgentConfig::new(PathBuf::from("/custom-agentfs"))) {
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/custom-agentfs"))).unwrap() {
             Request::Init { agentfs } => assert_eq!(agentfs, PathBuf::from("/custom-agentfs")),
             other => panic!("unexpected request {other:?}"),
         }
+    }
+
+    #[test]
+    fn init_rejects_agentfs_mismatch_with_loaded_config() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: Some(PathBuf::from("/etc/agent-forkd/config.json")),
+            command: Command::Init(InitArgs {
+                agentfs: Some(PathBuf::from("/custom-agentfs")),
+            }),
+        };
+        let config = AgentConfig::new(PathBuf::from("/agentfs"));
+
+        let error = to_request(&cli, &config).unwrap_err().to_string();
+
+        assert!(error.contains("does not match daemon config agentfs"));
+        assert!(error.contains("/custom-agentfs"));
+        assert!(error.contains("/agentfs"));
     }
 
     #[test]
@@ -434,7 +460,7 @@ mod tests {
             limits: Default::default(),
         });
 
-        match to_request(&cli, &config) {
+        match to_request(&cli, &config).unwrap() {
             Request::EnvCreate { profile, .. } => assert_eq!(profile, "custom-dev"),
             other => panic!("unexpected request {other:?}"),
         }
@@ -462,7 +488,7 @@ mod tests {
         };
         let config = AgentConfig::new(PathBuf::from("/agentfs"));
 
-        match to_request(&cli, &config) {
+        match to_request(&cli, &config).unwrap() {
             Request::EnvCreate { profile, .. } => assert_eq!(profile, "explicit-dev"),
             other => panic!("unexpected request {other:?}"),
         }
