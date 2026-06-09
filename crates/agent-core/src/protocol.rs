@@ -47,6 +47,14 @@ pub enum Request {
         env_id: String,
         session_id: String,
     },
+    SessionDetach {
+        env_id: String,
+        session_id: String,
+    },
+    SessionKill {
+        env_id: String,
+        session_id: String,
+    },
     SessionList {
         env_id: String,
     },

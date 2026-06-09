@@ -45,6 +45,7 @@ agentctl exec codex-1 -- sudo apt update
 agentctl exec codex-1 -- sudo apt install -y ripgrep
 agentctl session create codex-1 dev -- bash
 agentctl session attach codex-1 dev
+agentctl session detach codex-1 dev
 agentctl session logs codex-1 dev
 
 agentctl env list

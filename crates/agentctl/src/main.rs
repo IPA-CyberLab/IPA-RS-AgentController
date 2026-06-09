@@ -109,6 +109,8 @@ struct ExecArgs {
 enum SessionCommand {
     Create(SessionCreateArgs),
     Attach { env_id: String, session_id: String },
+    Detach { env_id: String, session_id: String },
+    Kill { env_id: String, session_id: String },
     List { env_id: String },
     Logs { env_id: String, session_id: String },
 }
@@ -209,6 +211,14 @@ fn to_request(cli: &Cli) -> Request {
                 command: args.command.clone(),
             },
             SessionCommand::Attach { env_id, session_id } => Request::SessionAttach {
+                env_id: env_id.clone(),
+                session_id: session_id.clone(),
+            },
+            SessionCommand::Detach { env_id, session_id } => Request::SessionDetach {
+                env_id: env_id.clone(),
+                session_id: session_id.clone(),
+            },
+            SessionCommand::Kill { env_id, session_id } => Request::SessionKill {
                 env_id: env_id.clone(),
                 session_id: session_id.clone(),
             },

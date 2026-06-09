@@ -112,6 +112,14 @@ impl AgentService {
                     session_id,
                 })
             }
+            Request::SessionDetach { env_id, session_id } => {
+                self.session_detach(&env_id, &session_id).await?;
+                Ok(Response::Ok)
+            }
+            Request::SessionKill { env_id, session_id } => {
+                self.session_kill(&env_id, &session_id).await?;
+                Ok(Response::Ok)
+            }
             Request::SessionList { env_id } => Ok(Response::Sessions {
                 sessions: self.session_list(&env_id).await?,
             }),
@@ -353,6 +361,26 @@ impl AgentService {
         self.log_lifecycle(env_id, &format!("session {session_id} logs synced"))
             .await?;
         Ok(logs)
+    }
+
+    pub async fn session_detach(&self, env_id: &str, session_id: &str) -> Result<()> {
+        let env = self.layout.read_env(env_id).await?;
+        let session = self.layout.read_session(env_id, session_id).await?;
+        self.sessions.detach(&env, &session.id).await?;
+        self.log_lifecycle(env_id, &format!("session {session_id} detached"))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn session_kill(&self, env_id: &str, session_id: &str) -> Result<()> {
+        let env = self.layout.read_env(env_id).await?;
+        let mut session = self.layout.read_session(env_id, session_id).await?;
+        self.sessions.kill(&env, &session.id).await?;
+        session.state = SessionState::Stopped;
+        self.layout.write_session(&session).await?;
+        self.log_lifecycle(env_id, &format!("session {session_id} killed"))
+            .await?;
+        Ok(())
     }
 
     pub async fn session_list(&self, env_id: &str) -> Result<Vec<crate::model::Session>> {
