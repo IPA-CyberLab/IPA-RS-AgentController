@@ -352,6 +352,7 @@ fn print_response(response: Response) -> Result<()> {
 
 fn machinectl_attach_args(machine_name: &str, session_id: &str) -> Vec<String> {
     vec![
+        "--quiet".to_string(),
         "shell".to_string(),
         machine_name.to_string(),
         "/bin/bash".to_string(),
@@ -621,6 +622,7 @@ mod tests {
         assert_eq!(
             machinectl_attach_args("af-codex-1", "dev"),
             vec![
+                "--quiet".to_string(),
                 "shell".to_string(),
                 "af-codex-1".to_string(),
                 "/bin/bash".to_string(),

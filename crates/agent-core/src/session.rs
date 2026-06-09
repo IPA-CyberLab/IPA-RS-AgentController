@@ -119,6 +119,7 @@ impl TmuxSessionBackend {
 
     fn machinectl_shell_args(machine: &str, command: &str) -> Vec<String> {
         vec![
+            "--quiet".to_string(),
             "shell".to_string(),
             machine.to_string(),
             "/bin/bash".to_string(),
@@ -439,8 +440,9 @@ mod tests {
             sessions: vec!["dev".to_string()],
         };
         let args = TmuxSessionBackend::attach_args(&env, "dev");
-        assert_eq!(args[0], "shell");
-        assert_eq!(args[1], "af-codex-1");
+        assert_eq!(args[0], "--quiet");
+        assert_eq!(args[1], "shell");
+        assert_eq!(args[2], "af-codex-1");
         assert!(args
             .last()
             .unwrap()

@@ -175,6 +175,7 @@ impl Nspawn {
 
     pub async fn exec(&self, env: &Env, command: &[String], log_path: &Path) -> Result<CmdOutput> {
         let mut args = vec![
+            "--quiet".to_string(),
             "shell".to_string(),
             env.machine_name.clone(),
             "/bin/bash".to_string(),
