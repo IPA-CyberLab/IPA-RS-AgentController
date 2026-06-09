@@ -217,6 +217,13 @@ impl AgentService {
         let mut env = self.layout.read_env(id).await?;
         let nspawn_log = self.layout.nspawn_log(id);
         self.log_lifecycle(id, "starting").await?;
+        if let Err(error) = validate_child_rootfs_requirements(&env.rootfs_path) {
+            env.state = EnvState::Failed;
+            self.layout.write_env(&env).await?;
+            self.log_lifecycle(id, &format!("failed preflight: {error:#}"))
+                .await?;
+            return Err(error);
+        }
         self.nspawn.start(&env, Some(&nspawn_log)).await?;
         env.state = EnvState::Running;
         self.log_lifecycle(id, "running").await?;
@@ -468,5 +475,60 @@ impl AgentService {
     async fn append_env_log(&self, path: &Path, message: &str) -> Result<()> {
         let line = format!("{} {message}\n", Utc::now().to_rfc3339());
         CommandRunner::append_to_file(path, &line).await
+    }
+}
+
+fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    for (name, candidates) in [
+        ("bash", &["bin/bash", "usr/bin/bash"][..]),
+        ("sudo", &["usr/bin/sudo", "bin/sudo"][..]),
+        ("tmux", &["usr/bin/tmux", "bin/tmux"][..]),
+        ("apt", &["usr/bin/apt", "usr/bin/apt-get"][..]),
+    ] {
+        if !candidates
+            .iter()
+            .any(|candidate| rootfs.join(candidate).exists())
+        {
+            missing.push(name);
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "child rootfs {} is missing required tool(s): {}",
+            rootfs.display(),
+            missing.join(", ")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_child_rootfs_requirements;
+    use std::fs;
+
+    #[test]
+    fn rootfs_preflight_requires_sudo_apt_tmux_and_bash() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("bin")).unwrap();
+        fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        fs::write(dir.path().join("bin/bash"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/sudo"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/apt-get"), "").unwrap();
+        fs::write(dir.path().join("usr/bin/tmux"), "").unwrap();
+        validate_child_rootfs_requirements(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn rootfs_preflight_reports_missing_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = validate_child_rootfs_requirements(dir.path()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("bash"));
+        assert!(message.contains("sudo"));
+        assert!(message.contains("apt"));
+        assert!(message.contains("tmux"));
     }
 }
