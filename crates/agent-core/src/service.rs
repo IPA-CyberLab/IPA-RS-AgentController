@@ -449,16 +449,27 @@ impl AgentService {
     }
 
     async fn clean_runtime_paths(&self, rootfs: &Path) -> Result<()> {
-        for rel in ["proc", "sys", "dev", "run", "tmp", "agentfs/runtime"] {
+        for rel in [
+            "proc",
+            "sys",
+            "dev",
+            "run",
+            "tmp",
+            "agentfs/bases",
+            "agentfs/envs",
+            "agentfs/cache",
+            "agentfs/runtime",
+        ] {
             let path = rootfs.join(rel);
             if path.exists() {
                 let _ = tokio::fs::remove_dir_all(&path).await;
                 let _ = tokio::fs::remove_file(&path).await;
             }
-            if rel != "agentfs/runtime" {
+            if matches!(rel, "proc" | "sys" | "dev" | "run" | "tmp") {
                 tokio::fs::create_dir_all(&path).await?;
             }
         }
+        tokio::fs::create_dir_all(rootfs.join("agentfs")).await?;
         Ok(())
     }
 
@@ -506,7 +517,8 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_child_rootfs_requirements;
+    use super::{validate_child_rootfs_requirements, AgentService};
+    use crate::config::AgentConfig;
     use std::fs;
 
     #[test]
@@ -530,5 +542,39 @@ mod tests {
         assert!(message.contains("sudo"));
         assert!(message.contains("apt"));
         assert!(message.contains("tmux"));
+    }
+
+    #[tokio::test]
+    async fn base_cleanup_removes_host_agentfs_state() {
+        let dir = tempfile::tempdir().unwrap();
+        for rel in [
+            "proc",
+            "sys",
+            "dev",
+            "run",
+            "tmp",
+            "agentfs/bases/base-001",
+            "agentfs/envs/sibling",
+            "agentfs/cache/apt",
+            "agentfs/runtime/sockets",
+        ] {
+            fs::create_dir_all(dir.path().join(rel)).unwrap();
+        }
+        fs::write(dir.path().join("agentfs/bases/base-001/secret"), "").unwrap();
+        fs::write(dir.path().join("agentfs/envs/sibling/secret"), "").unwrap();
+
+        let service = AgentService::new(AgentConfig::new(dir.path().join("agentfs-host")));
+        service.clean_runtime_paths(dir.path()).await.unwrap();
+
+        assert!(dir.path().join("proc").is_dir());
+        assert!(dir.path().join("sys").is_dir());
+        assert!(dir.path().join("dev").is_dir());
+        assert!(dir.path().join("run").is_dir());
+        assert!(dir.path().join("tmp").is_dir());
+        assert!(dir.path().join("agentfs").is_dir());
+        assert!(!dir.path().join("agentfs/bases").exists());
+        assert!(!dir.path().join("agentfs/envs").exists());
+        assert!(!dir.path().join("agentfs/cache").exists());
+        assert!(!dir.path().join("agentfs/runtime").exists());
     }
 }
