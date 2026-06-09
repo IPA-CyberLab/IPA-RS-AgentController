@@ -4,8 +4,8 @@
   "type": "object",
   "required": ["id", "env_id", "command", "state", "created_at", "type", "log_path"],
   "properties": {
-    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
-    "env_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$" },
+    "env_id": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$" },
     "command": { "type": "string" },
     "state": { "enum": ["running", "stopped", "failed"] },
     "created_at": { "type": "string", "format": "date-time" },

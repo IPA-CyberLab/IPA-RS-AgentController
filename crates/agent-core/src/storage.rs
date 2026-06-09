@@ -386,21 +386,21 @@ pub async fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 
 pub fn validate_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+        && id.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && id.bytes().last().is_some_and(|b| b.is_ascii_alphanumeric())
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
     if ok {
         Ok(())
     } else {
         Err(anyhow!(
-            "invalid id {id:?}; use ASCII letters, numbers, '-' or '_'"
+            "invalid id {id:?}; use ASCII letters, numbers, and interior '-'"
         ))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{unique_tmp_path, write_json, write_text_file, Layout};
+    use super::{unique_tmp_path, validate_id, write_json, write_text_file, Layout};
     use crate::model::{
         machine_name, Base, Env, EnvState, Limits, Session, SessionState, SessionType,
     };
@@ -416,6 +416,17 @@ mod tests {
         assert!(layout.read_env("../env").await.is_err());
         assert!(layout.read_session("codex-1", "../session").await.is_err());
         assert!(layout.list_sessions("../env").await.is_err());
+    }
+
+    #[test]
+    fn ids_are_hostname_safe() {
+        for id in ["base-001", "codex-1", "dev", "session2"] {
+            validate_id(id).unwrap();
+        }
+
+        for id in ["", "-bad", "bad-", "bad_id", "bad.id", "../bad"] {
+            assert!(validate_id(id).is_err(), "{id:?} should be rejected");
+        }
     }
 
     #[test]
