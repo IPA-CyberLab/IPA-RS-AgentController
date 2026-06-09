@@ -1,4 +1,4 @@
-use crate::model::{Base, Env, Session};
+use crate::model::{machine_name, Base, Env, Session};
 use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -104,13 +104,15 @@ impl Layout {
     }
 
     pub async fn write_env(&self, env: &Env) -> Result<()> {
-        validate_id(&env.id)?;
+        self.validate_env_metadata(env, Some(&env.id))?;
         write_json(&self.env_dir(&env.id).join("meta.json"), env).await
     }
 
     pub async fn read_env(&self, id: &str) -> Result<Env> {
         validate_id(id)?;
-        read_json(&self.env_dir(id).join("meta.json")).await
+        let env: Env = read_json(&self.env_dir(id).join("meta.json")).await?;
+        self.validate_env_metadata(&env, Some(id))?;
+        Ok(env)
     }
 
     pub async fn write_session(&self, session: &Session) -> Result<()> {
@@ -137,7 +139,9 @@ impl Layout {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path().join("meta.json");
             if path.exists() {
-                envs.push(read_json(&path).await?);
+                let env: Env = read_json(&path).await?;
+                self.validate_env_metadata(&env, None)?;
+                envs.push(env);
             }
         }
         envs.sort_by(|a, b| a.id.cmp(&b.id));
@@ -160,6 +164,44 @@ impl Layout {
         }
         sessions.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(sessions)
+    }
+
+    fn validate_env_metadata(&self, env: &Env, expected_id: Option<&str>) -> Result<()> {
+        validate_id(&env.id)?;
+        if let Some(expected_id) = expected_id {
+            if env.id != expected_id {
+                return Err(anyhow!(
+                    "env metadata id {} does not match requested id {}",
+                    env.id,
+                    expected_id
+                ));
+            }
+        }
+        validate_id(&env.base_id)?;
+        validate_id(&env.profile)?;
+        env.limits.validate()?;
+        for session_id in &env.sessions {
+            validate_id(session_id)?;
+        }
+        let expected_machine = machine_name(&env.id);
+        if env.machine_name != expected_machine {
+            return Err(anyhow!(
+                "env {} has machine_name {}, expected {}",
+                env.id,
+                env.machine_name,
+                expected_machine
+            ));
+        }
+        let expected_rootfs = self.env_rootfs(&env.id);
+        if env.rootfs_path != expected_rootfs {
+            return Err(anyhow!(
+                "env {} has rootfs_path {}, expected {}",
+                env.id,
+                env.rootfs_path.display(),
+                expected_rootfs.display()
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -203,8 +245,8 @@ pub fn validate_id(id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::Layout;
-    use crate::model::{Env, EnvState, Limits, Session, SessionState, SessionType};
+    use super::{write_json, Layout};
+    use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
     use chrono::Utc;
 
     #[tokio::test]
@@ -245,5 +287,54 @@ mod tests {
             log_path: dir.path().join("session.log"),
         };
         assert!(layout.write_session(&session).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_env_metadata_with_mismatched_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let mut env = test_env(&layout, "codex-1");
+
+        layout.write_env(&env).await.unwrap();
+        assert_eq!(layout.read_env("codex-1").await.unwrap().id, "codex-1");
+
+        env.machine_name = "af-other".to_string();
+        assert!(layout.write_env(&env).await.is_err());
+
+        env = test_env(&layout, "codex-1");
+        env.rootfs_path = dir.path().join("envs/other/rootfs");
+        assert!(layout.write_env(&env).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_tampered_env_metadata_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let mut env = test_env(&layout, "codex-1");
+        env.id = "other".to_string();
+        write_json(&layout.env_dir("codex-1").join("meta.json"), &env)
+            .await
+            .unwrap();
+
+        assert!(layout
+            .read_env("codex-1")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not match requested id"));
+    }
+
+    fn test_env(layout: &Layout, id: &str) -> Env {
+        Env {
+            id: id.to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: layout.env_rootfs(id),
+            machine_name: machine_name(id),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        }
     }
 }
