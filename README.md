@@ -24,6 +24,29 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now agent-forkd
 ```
 
+## Install
+
+Install the latest GitHub Release binaries and add the install directory to
+your shell PATH:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.sh | sh
+```
+
+By default the installer writes `agentctl` and `agent-forkd` to
+`$HOME/.local/bin`. Override the release or destination with environment
+variables:
+
+```bash
+AGENT_VERSION=v0.1.0 AGENT_INSTALL_DIR=/usr/local/bin \
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.sh)"
+```
+
+GitHub Actions builds release archives for Linux, macOS, and Windows on x86_64
+and arm64 targets. `agent-forkd` is operational on Unix-like platforms where the
+runtime requirements below are available; non-Unix builds are packaged so the
+release matrix is complete.
+
 ## Requirements
 
 The Project VM must provide Linux, Btrfs, `btrfs-progs`, systemd, `systemd-nspawn`, `machinectl`, `systemd-networkd`, cgroup v2, user namespaces, `tmux`, and `tee`. The full privileged goal sequence also expects Debian/Ubuntu package tooling (`apt` or `apt-get`, `dpkg`, and `sudo`) and the `codex` CLI to be available in the host rootfs before freezing a base.

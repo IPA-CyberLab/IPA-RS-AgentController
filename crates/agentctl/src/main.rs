@@ -1,11 +1,17 @@
 use agent_core::config::AgentConfig;
 use agent_core::model::{EnvState, LimitOverrides, SessionState};
-use agent_core::protocol::{parse_response_json, Request, Response};
+#[cfg(unix)]
+use agent_core::protocol::parse_response_json;
+use agent_core::protocol::{Request, Response};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command as StdCommand;
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 
 #[derive(Debug, Parser)]
@@ -259,6 +265,11 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
 }
 
 async fn call(socket_path: &PathBuf, request: Request) -> Result<Response> {
+    call_unix_socket(socket_path, request).await
+}
+
+#[cfg(unix)]
+async fn call_unix_socket(socket_path: &PathBuf, request: Request) -> Result<Response> {
     let mut stream = UnixStream::connect(socket_path)
         .await
         .map_err(|error| anyhow!("failed to connect {}: {error}", socket_path.display()))?;
@@ -273,6 +284,15 @@ async fn call(socket_path: &PathBuf, request: Request) -> Result<Response> {
     parse_response_line(socket_path, &line)
 }
 
+#[cfg(not(unix))]
+async fn call_unix_socket(socket_path: &PathBuf, _request: Request) -> Result<Response> {
+    Err(anyhow!(
+        "agentctl requires a Unix socket at {}; this platform is not supported",
+        socket_path.display()
+    ))
+}
+
+#[cfg(unix)]
 fn parse_response_line(socket_path: &Path, line: &str) -> Result<Response> {
     parse_response_json(line).map_err(|error| {
         anyhow!(

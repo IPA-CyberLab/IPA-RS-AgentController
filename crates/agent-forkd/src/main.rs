@@ -1,15 +1,27 @@
+#[cfg(unix)]
 use agent_core::config::AgentConfig;
+#[cfg(unix)]
 use agent_core::protocol::{parse_request_json, Request, Response};
+#[cfg(unix)]
 use agent_core::AgentService;
+#[cfg(unix)]
 use anyhow::{anyhow, Result};
+#[cfg(unix)]
 use clap::Parser;
+#[cfg(unix)]
 use std::fs::Permissions;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(unix)]
 use tracing::{error, info};
 
+#[cfg(unix)]
 #[derive(Debug, Parser)]
 #[command(name = "agent-forkd", about = "Forked dev environment daemon")]
 struct Args {
@@ -19,6 +31,7 @@ struct Args {
     config: Option<PathBuf>,
 }
 
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -42,6 +55,13 @@ async fn main() -> Result<()> {
     }
 }
 
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("agent-forkd is supported only on Unix-like platforms.");
+    std::process::exit(1);
+}
+
+#[cfg(unix)]
 async fn bind_control_socket(path: &Path) -> Result<UnixListener> {
     prepare_socket_path(path).await?;
     let listener = UnixListener::bind(path)?;
@@ -49,6 +69,7 @@ async fn bind_control_socket(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
+#[cfg(unix)]
 async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -69,12 +90,14 @@ async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> 
     Ok(())
 }
 
+#[cfg(unix)]
 fn parse_request_line(line: &str) -> std::result::Result<Request, Response> {
     parse_request_json(line).map_err(|error| Response::Error {
         message: format!("invalid request json: {error}"),
     })
 }
 
+#[cfg(unix)]
 async fn write_response<W>(write: &mut W, response: &Response) -> Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -85,6 +108,7 @@ where
     Ok(())
 }
 
+#[cfg(unix)]
 async fn prepare_socket_path(path: &Path) -> Result<()> {
     let parent = path
         .parent()

@@ -71,6 +71,7 @@ impl CommandRunner {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn shell_join(command: &[String]) -> String {
     command
         .iter()
@@ -89,6 +90,7 @@ pub(crate) fn shell_join(command: &[String]) -> String {
         .join(" ")
 }
 
+#[cfg(unix)]
 pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
