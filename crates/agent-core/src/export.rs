@@ -1,6 +1,6 @@
 use crate::command::CommandRunner;
 use crate::model::Env;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -81,7 +81,8 @@ impl Exporter {
 
     pub fn changed_paths_by_walk(base: &Path, env: &Path) -> Result<String> {
         let mut changed = BTreeSet::new();
-        for entry in WalkDir::new(env).into_iter().filter_map(Result::ok) {
+        for entry in WalkDir::new(env) {
+            let entry = entry.with_context(|| format!("failed to walk {}", env.display()))?;
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -91,7 +92,8 @@ impl Exporter {
                 changed.insert(format!("/{}", rel.display()));
             }
         }
-        for entry in WalkDir::new(base).into_iter().filter_map(Result::ok) {
+        for entry in WalkDir::new(base) {
+            let entry = entry.with_context(|| format!("failed to walk {}", base.display()))?;
             if !entry.file_type().is_file() {
                 continue;
             }
