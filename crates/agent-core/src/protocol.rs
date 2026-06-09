@@ -153,7 +153,9 @@ fn reject_unknown_fields(
 fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]> {
     Some(match message_type {
         "init" => &["type", "agentfs"],
-        "new" => &["type", "target", "base", "from", "profile", "limits", "command"],
+        "new" => &[
+            "type", "target", "base", "from", "profile", "limits", "command",
+        ],
         "base_freeze" => &["type", "name", "from"],
         "env_create" => &["type", "id", "base", "profile", "limits"],
         "env_start" | "env_stop" | "env_destroy" | "env_status" | "shell" => &["type", "id"],
@@ -355,6 +357,7 @@ mod tests {
         Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: crate::model::RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             machine_name: machine_name("codex-1"),
             state: EnvState::Running,

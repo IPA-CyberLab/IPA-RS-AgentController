@@ -1,4 +1,4 @@
-use crate::model::{machine_name, Base, Env, Session};
+use crate::model::{machine_name, Base, Env, RootfsBackend, Session};
 use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -199,14 +199,27 @@ impl Layout {
         if !base.readonly {
             return Err(anyhow!("base {} metadata is not readonly", base.id));
         }
-        let expected_rootfs = self.base_rootfs(&base.id);
-        if base.rootfs_path != expected_rootfs {
-            return Err(anyhow!(
-                "base {} has rootfs_path {}, expected {}",
-                base.id,
-                base.rootfs_path.display(),
-                expected_rootfs.display()
-            ));
+        match base.backend {
+            RootfsBackend::Btrfs => {
+                let expected_rootfs = self.base_rootfs(&base.id);
+                if base.rootfs_path != expected_rootfs {
+                    return Err(anyhow!(
+                        "base {} has rootfs_path {}, expected {}",
+                        base.id,
+                        base.rootfs_path.display(),
+                        expected_rootfs.display()
+                    ));
+                }
+            }
+            RootfsBackend::Overlay => {
+                if !base.rootfs_path.is_absolute() {
+                    return Err(anyhow!(
+                        "overlay base {} has non-absolute rootfs_path {}",
+                        base.id,
+                        base.rootfs_path.display()
+                    ));
+                }
+            }
         }
         let expected_manifest = self.base_dir(&base.id).join("dpkg.list");
         if base.dpkg_manifest != expected_manifest {
@@ -403,7 +416,8 @@ pub fn validate_id(id: &str) -> Result<()> {
 mod tests {
     use super::{unique_tmp_path, validate_id, write_json, write_text_file, Layout};
     use crate::model::{
-        machine_name, Base, Env, EnvState, Limits, Session, SessionState, SessionType,
+        machine_name, Base, Env, EnvState, Limits, RootfsBackend, Session, SessionState,
+        SessionType,
     };
     use chrono::Utc;
     use serde_json::json;
@@ -503,6 +517,7 @@ mod tests {
         let env = Env {
             id: "../env".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: dir.path().join("rootfs"),
             machine_name: "af-env".to_string(),
             state: EnvState::Created,
@@ -719,6 +734,7 @@ mod tests {
     fn test_base(layout: &Layout, id: &str) -> Base {
         Base {
             id: id.to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: layout.base_rootfs(id),
             readonly: true,
             created_at: Utc::now(),
@@ -731,6 +747,7 @@ mod tests {
         Env {
             id: id.to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: layout.env_rootfs(id),
             machine_name: machine_name(id),
             state: EnvState::Created,

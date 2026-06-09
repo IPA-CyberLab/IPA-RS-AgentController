@@ -396,12 +396,13 @@ mod tests {
 
     #[test]
     fn host_transcript_path_resolves_inside_env_rootfs() {
-        use crate::model::{machine_name, Env, EnvState, Limits};
+        use crate::model::{machine_name, Env, EnvState, Limits, RootfsBackend};
         use chrono::Utc;
 
         let env = Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             machine_name: machine_name("codex-1"),
             state: EnvState::Stopped,
@@ -423,12 +424,13 @@ mod tests {
 
     #[test]
     fn attach_args_target_child_tmux() {
-        use crate::model::{machine_name, Env, EnvState, Limits};
+        use crate::model::{machine_name, Env, EnvState, Limits, RootfsBackend};
         use chrono::Utc;
 
         let env = Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             machine_name: machine_name("codex-1"),
             state: EnvState::Running,

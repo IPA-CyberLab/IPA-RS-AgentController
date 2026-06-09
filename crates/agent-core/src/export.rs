@@ -181,7 +181,7 @@ fn is_runtime_only_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{is_runtime_only_path, ExportType, Exporter};
-    use crate::model::{machine_name, Env, EnvState, Limits};
+    use crate::model::{machine_name, Env, EnvState, Limits, RootfsBackend};
     use chrono::Utc;
     use std::fs;
     use std::os::unix::fs::symlink;
@@ -337,6 +337,7 @@ mod tests {
         Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path,
             machine_name: machine_name("codex-1"),
             state: EnvState::Created,

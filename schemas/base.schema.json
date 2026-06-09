@@ -2,9 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Agent Fork Base",
   "type": "object",
-  "required": ["id", "rootfs_path", "readonly", "created_at", "source", "dpkg_manifest"],
+  "required": ["id", "backend", "rootfs_path", "readonly", "created_at", "source", "dpkg_manifest"],
   "properties": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$" },
+    "backend": { "enum": ["btrfs", "overlay"] },
     "rootfs_path": { "type": "string" },
     "readonly": { "type": "boolean" },
     "created_at": { "type": "string", "format": "date-time" },

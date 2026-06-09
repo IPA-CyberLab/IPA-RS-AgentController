@@ -16,7 +16,7 @@ impl Default for Btrfs {
 }
 
 impl Btrfs {
-    pub async fn ensure_filesystem(&self, path: &Path) -> Result<()> {
+    pub async fn is_filesystem(&self, path: &Path) -> Result<bool> {
         let output = self
             .runner
             .run(
@@ -30,18 +30,26 @@ impl Btrfs {
                 ],
             )
             .await?;
-        if output.status != 0 || output.stdout.trim() != "btrfs" {
+        Ok(output.status == 0 && output.stdout.trim() == "btrfs")
+    }
+
+    pub async fn ensure_filesystem(&self, path: &Path) -> Result<()> {
+        if !self.is_filesystem(path).await? {
             return Err(anyhow!("{} is not on a Btrfs filesystem", path.display()));
         }
         Ok(())
     }
 
-    pub async fn ensure_subvolume(&self, path: &Path) -> Result<()> {
+    pub async fn is_subvolume(&self, path: &Path) -> Result<bool> {
         let output = self
             .runner
             .run("btrfs", ["subvolume", "show", &path.display().to_string()])
             .await?;
-        if output.status != 0 {
+        Ok(output.status == 0)
+    }
+
+    pub async fn ensure_subvolume(&self, path: &Path) -> Result<()> {
+        if !self.is_subvolume(path).await? {
             return Err(anyhow!("{} is not a Btrfs subvolume", path.display()));
         }
         Ok(())

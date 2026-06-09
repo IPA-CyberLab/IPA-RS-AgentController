@@ -128,6 +128,8 @@ impl Nspawn {
             "--private-users-ownership=map".to_string(),
             "--resolv-conf=copy-host".to_string(),
             "--register=yes".to_string(),
+            "--tmpfs=/run".to_string(),
+            "--tmpfs=/tmp".to_string(),
         ]);
         args.extend(
             Self::INACCESSIBLE_PATHS
@@ -373,7 +375,7 @@ fn parse_child_exit_status(stdout: &mut String) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{machine_name, Limits};
+    use crate::model::{machine_name, Limits, RootfsBackend};
     use chrono::Utc;
 
     #[test]
@@ -381,6 +383,7 @@ mod tests {
         let env = Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             machine_name: machine_name("codex-1"),
             state: EnvState::Created,
@@ -409,6 +412,7 @@ mod tests {
         let env = Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             machine_name: machine_name("codex-1"),
             state: EnvState::Created,
@@ -427,6 +431,8 @@ mod tests {
         assert!(args.contains(&"--private-users=pick".to_string()));
         assert!(args.contains(&"--private-users-ownership=map".to_string()));
         assert!(args.contains(&"--resolv-conf=copy-host".to_string()));
+        assert!(args.contains(&"--tmpfs=/run".to_string()));
+        assert!(args.contains(&"--tmpfs=/tmp".to_string()));
         assert!(args.contains(&"--hostname=af-codex-1".to_string()));
         assert!(args.contains(&"--network-veth".to_string()));
         assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
@@ -453,6 +459,7 @@ mod tests {
         let mut env = Env {
             id: "locked-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/locked-1/rootfs".into(),
             machine_name: machine_name("locked-1"),
             state: EnvState::Created,
@@ -543,6 +550,7 @@ mod tests {
         let env = Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             machine_name: machine_name("codex-1"),
             state: EnvState::Created,
@@ -566,6 +574,7 @@ mod tests {
         let mut env = Env {
             id: "unlimited-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/unlimited-1/rootfs".into(),
             machine_name: machine_name("unlimited-1"),
             state: EnvState::Created,
@@ -592,6 +601,7 @@ mod tests {
         let mut env = Env {
             id: "timed-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/timed-1/rootfs".into(),
             machine_name: machine_name("timed-1"),
             state: EnvState::Created,
@@ -612,6 +622,7 @@ mod tests {
         let mut env = Env {
             id: "bad-network-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/bad-network-1/rootfs".into(),
             machine_name: machine_name("bad-network-1"),
             state: EnvState::Created,

@@ -3,7 +3,8 @@ use crate::command::{shell_join, CommandRunner};
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
 use crate::model::{
-    machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, Session, SessionState,
+    machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, RootfsBackend, Session,
+    SessionState,
 };
 use crate::nspawn::Nspawn;
 use crate::protocol::{Request, Response};
@@ -13,7 +14,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct AgentService {
@@ -157,9 +158,10 @@ impl AgentService {
     }
 
     pub async fn init(&self) -> Result<()> {
-        self.btrfs.ensure_filesystem(&self.config.agentfs).await?;
         self.layout.ensure_agentfs().await?;
-        self.btrfs.enable_quota(&self.config.agentfs).await?;
+        if self.btrfs.is_filesystem(&self.config.agentfs).await? {
+            self.btrfs.enable_quota(&self.config.agentfs).await?;
+        }
         Ok(())
     }
 
@@ -195,7 +197,13 @@ impl AgentService {
 
     pub async fn base_freeze(&self, name: &str, from: &Path) -> Result<Base> {
         validate_id(name)?;
-        self.btrfs.ensure_subvolume(from).await?;
+        if self.btrfs.is_subvolume(from).await.unwrap_or(false) {
+            return self.base_freeze_btrfs(name, from).await;
+        }
+        self.base_freeze_overlay(name, from).await
+    }
+
+    async fn base_freeze_btrfs(&self, name: &str, from: &Path) -> Result<Base> {
         let base_dir = self.layout.base_dir(name);
         if base_dir.exists() {
             return Err(anyhow!("base {name} already exists"));
@@ -228,6 +236,7 @@ impl AgentService {
         }
         let base = Base {
             id: name.to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: rootfs.clone(),
             readonly: true,
             created_at,
@@ -236,6 +245,49 @@ impl AgentService {
         };
         if let Err(error) = self.layout.write_base(&base).await {
             self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
+            return Err(error);
+        }
+        Ok(base)
+    }
+
+    async fn base_freeze_overlay(&self, name: &str, from: &Path) -> Result<Base> {
+        if !from.is_absolute() {
+            return Err(anyhow!("overlay base source must be an absolute path"));
+        }
+        if !tokio::fs::try_exists(from).await? {
+            return Err(anyhow!(
+                "overlay base source {} does not exist",
+                from.display()
+            ));
+        }
+        let base_dir = self.layout.base_dir(name);
+        if base_dir.exists() {
+            return Err(anyhow!("base {name} already exists"));
+        }
+        tokio::fs::create_dir_all(&base_dir).await?;
+        let dpkg_manifest = base_dir.join("dpkg.list");
+        if let Err(error) = self.write_dpkg_manifest(from, &dpkg_manifest).await {
+            cleanup_failed_base_dir(&base_dir).await;
+            return Err(error);
+        }
+        let created_at = Utc::now();
+        if let Err(error) =
+            write_text_file(&base_dir.join("created_at"), created_at.to_rfc3339()).await
+        {
+            cleanup_failed_base_dir(&base_dir).await;
+            return Err(error);
+        }
+        let base = Base {
+            id: name.to_string(),
+            backend: RootfsBackend::Overlay,
+            rootfs_path: from.to_path_buf(),
+            readonly: true,
+            created_at,
+            source: base_source_label(from),
+            dpkg_manifest,
+        };
+        if let Err(error) = self.layout.write_base(&base).await {
+            cleanup_failed_base_dir(&base_dir).await;
             return Err(error);
         }
         Ok(base)
@@ -261,27 +313,40 @@ impl AgentService {
         }
         let limits = profile.limits.clone().with_overrides(limit_overrides);
         limits.validate()?;
-        tokio::fs::create_dir_all(&env_dir).await?;
         let rootfs = self.layout.env_rootfs(id);
-        if let Err(error) = self
-            .btrfs
-            .snapshot_writable(&base.rootfs_path, &rootfs)
-            .await
-        {
-            cleanup_failed_env_dir(&env_dir).await;
-            return Err(error);
-        }
-        if let Err(error) = self.btrfs.set_limit(&limits.disk_max, &rootfs).await {
-            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
-            return Err(error);
+        tokio::fs::create_dir_all(&env_dir).await?;
+        match base.backend {
+            RootfsBackend::Btrfs => {
+                if let Err(error) = self
+                    .btrfs
+                    .snapshot_writable(&base.rootfs_path, &rootfs)
+                    .await
+                {
+                    cleanup_failed_env_dir(&env_dir).await;
+                    return Err(error);
+                }
+                if let Err(error) = self.btrfs.set_limit(&limits.disk_max, &rootfs).await {
+                    self.cleanup_failed_env_create(RootfsBackend::Btrfs, &rootfs, &env_dir)
+                        .await;
+                    return Err(error);
+                }
+            }
+            RootfsBackend::Overlay => {
+                if let Err(error) = self.ensure_overlay_dirs(id).await {
+                    cleanup_failed_env_dir(&env_dir).await;
+                    return Err(error);
+                }
+            }
         }
         if let Err(error) = self.ensure_env_dirs(id).await {
-            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            self.cleanup_failed_env_create(base.backend.clone(), &rootfs, &env_dir)
+                .await;
             return Err(error);
         }
         let env = Env {
             id: id.to_string(),
             base_id: base_id.to_string(),
+            backend: base.backend.clone(),
             rootfs_path: rootfs.clone(),
             machine_name: machine_name(id),
             state: EnvState::Created,
@@ -293,20 +358,24 @@ impl AgentService {
             sessions: Vec::new(),
         };
         if let Err(error) = self.log_daemon(id, "env created").await {
-            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            self.cleanup_failed_env_create(env.backend.clone(), &rootfs, &env_dir)
+                .await;
             return Err(error);
         }
         if let Err(error) = self.log_lifecycle(id, "created").await {
-            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            self.cleanup_failed_env_create(env.backend.clone(), &rootfs, &env_dir)
+                .await;
             return Err(error);
         }
         if let Err(error) = self.nspawn.write_config(&env).await {
-            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            self.cleanup_failed_env_create(env.backend.clone(), &rootfs, &env_dir)
+                .await;
             return Err(error);
         }
         if let Err(error) = self.layout.write_env(&env).await {
             let _ = self.nspawn.remove_config(&env).await;
-            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            self.cleanup_failed_env_create(env.backend.clone(), &rootfs, &env_dir)
+                .await;
             return Err(error);
         }
         Ok(env)
@@ -317,6 +386,15 @@ impl AgentService {
         let nspawn_log = self.layout.nspawn_log(id);
         self.log_daemon(id, "env start requested").await?;
         self.log_lifecycle(id, "starting").await?;
+        if let Err(error) = self.ensure_env_rootfs_mounted(&env).await {
+            env.state = EnvState::Failed;
+            self.layout.write_env(&env).await?;
+            self.log_daemon(id, &format!("env start failed mount setup: {error:#}"))
+                .await?;
+            self.log_lifecycle(id, &format!("failed mount setup: {error:#}"))
+                .await?;
+            return Err(error);
+        }
         if let Err(error) = validate_child_rootfs_requirements(&env.rootfs_path) {
             env.state = EnvState::Failed;
             self.layout.write_env(&env).await?;
@@ -423,6 +501,9 @@ impl AgentService {
             return Err(anyhow!("env {id} is still running after stop"));
         }
         apply_stopped_state(&mut env);
+        if env.backend == RootfsBackend::Overlay {
+            self.umount_overlay_rootfs(&env).await?;
+        }
         self.log_daemon(id, "env stopped").await?;
         self.log_lifecycle(id, "stopped").await?;
         self.layout.write_env(&env).await?;
@@ -434,12 +515,19 @@ impl AgentService {
         self.log_daemon(id, "env destroy requested").await?;
         self.log_lifecycle(id, "destroying").await?;
         self.nspawn.stop(&env).await?;
-        let qgroup_id = self.btrfs.qgroup_id(&env.rootfs_path).await?;
-        self.btrfs.delete_subvolume(&env.rootfs_path).await?;
-        if let Some(qgroup_id) = qgroup_id {
-            self.btrfs
-                .destroy_qgroup(&qgroup_id, &self.config.agentfs)
-                .await?;
+        match env.backend {
+            RootfsBackend::Btrfs => {
+                let qgroup_id = self.btrfs.qgroup_id(&env.rootfs_path).await?;
+                self.btrfs.delete_subvolume(&env.rootfs_path).await?;
+                if let Some(qgroup_id) = qgroup_id {
+                    self.btrfs
+                        .destroy_qgroup(&qgroup_id, &self.config.agentfs)
+                        .await?;
+                }
+            }
+            RootfsBackend::Overlay => {
+                self.umount_overlay_rootfs(&env).await?;
+            }
         }
         self.nspawn.remove_config(&env).await?;
         remove_dir_all_if_exists(&self.layout.env_dir(id)).await?;
@@ -456,13 +544,16 @@ impl AgentService {
             apply_stopped_state(&mut env);
             self.log_lifecycle(id, "idle timeout exceeded").await?;
         }
-        if should_check_quota(&env.state) && self.btrfs.quota_exceeded(&env.rootfs_path).await? {
+        if env.backend == RootfsBackend::Btrfs
+            && should_check_quota(&env.state)
+            && self.btrfs.quota_exceeded(&env.rootfs_path).await?
+        {
             env.state = EnvState::QuotaExceeded;
             self.log_lifecycle(id, "quota exceeded during status refresh")
                 .await?;
         }
         self.layout.write_env(&env).await?;
-        let disk_used = self.disk_used(&env.rootfs_path).await.ok();
+        let disk_used = self.env_disk_used(&env).await.ok();
         Ok(EnvStatus { env, disk_used })
     }
 
@@ -488,7 +579,9 @@ impl AgentService {
             .await?;
         let output = self.nspawn.exec(&env, command, &log_path).await?;
         mark_env_active(&mut env);
-        if self.btrfs.quota_exceeded(&env.rootfs_path).await? {
+        if env.backend == RootfsBackend::Btrfs
+            && self.btrfs.quota_exceeded(&env.rootfs_path).await?
+        {
             env.state = EnvState::QuotaExceeded;
             self.log_lifecycle(id, "quota exceeded after exec").await?;
         }
@@ -676,6 +769,7 @@ impl AgentService {
 
     pub async fn diff(&self, env_id: &str) -> Result<String> {
         let mut env = self.layout.read_env(env_id).await?;
+        self.ensure_env_rootfs_mounted(&env).await?;
         mark_env_active(&mut env);
         self.layout.write_env(&env).await?;
         self.exporter.workspace_patch(&env).await
@@ -684,11 +778,15 @@ impl AgentService {
     pub async fn export(&self, env_id: &str, export_type: ExportType) -> Result<String> {
         let mut env = self.layout.read_env(env_id).await?;
         let base = self.layout.read_base(&env.base_id).await?;
+        self.ensure_env_rootfs_mounted(&env).await?;
         let text = match export_type {
             ExportType::WorkspacePatch => self.exporter.workspace_patch(&env).await,
-            ExportType::RootfsChangedPaths => {
-                Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
-            }
+            ExportType::RootfsChangedPaths => match env.backend {
+                RootfsBackend::Btrfs => {
+                    Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
+                }
+                RootfsBackend::Overlay => self.overlay_changed_paths(&env).await,
+            },
             ExportType::DpkgDelta => {
                 let env_manifest = self.layout.env_dir(env_id).join("dpkg.list");
                 self.write_dpkg_manifest(&env.rootfs_path, &env_manifest)
@@ -758,6 +856,96 @@ impl AgentService {
         Ok(())
     }
 
+    async fn ensure_overlay_dirs(&self, id: &str) -> Result<()> {
+        for dir in [
+            self.overlay_upper_dir(id),
+            self.overlay_work_dir(id),
+            self.layout.env_rootfs(id),
+        ] {
+            tokio::fs::create_dir_all(dir).await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_env_rootfs_mounted(&self, env: &Env) -> Result<()> {
+        if env.backend != RootfsBackend::Overlay {
+            return Ok(());
+        }
+        self.ensure_overlay_dirs(&env.id).await?;
+        if self.is_mountpoint(&env.rootfs_path).await? {
+            return Ok(());
+        }
+        let base = self.layout.read_base(&env.base_id).await?;
+        let lower = base.rootfs_path;
+        let upper = self.overlay_upper_dir(&env.id);
+        let work = self.overlay_work_dir(&env.id);
+        let options = format!(
+            "lowerdir={},upperdir={},workdir={}",
+            lower.display(),
+            upper.display(),
+            work.display()
+        );
+        self.runner
+            .run_checked(
+                "mount",
+                [
+                    "-t",
+                    "overlay",
+                    "overlay",
+                    "-o",
+                    &options,
+                    &env.rootfs_path.display().to_string(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn umount_overlay_rootfs(&self, env: &Env) -> Result<()> {
+        if env.backend != RootfsBackend::Overlay || !self.is_mountpoint(&env.rootfs_path).await? {
+            return Ok(());
+        }
+        self.runner
+            .run_checked("umount", [&env.rootfs_path.display().to_string()])
+            .await?;
+        Ok(())
+    }
+
+    async fn is_mountpoint(&self, path: &Path) -> Result<bool> {
+        let output = self
+            .runner
+            .run(
+                "findmnt",
+                ["-n", "--mountpoint", &path.display().to_string()],
+            )
+            .await?;
+        Ok(output.status == 0)
+    }
+
+    async fn env_disk_used(&self, env: &Env) -> Result<String> {
+        let path = match env.backend {
+            RootfsBackend::Btrfs => env.rootfs_path.clone(),
+            RootfsBackend::Overlay => self.overlay_upper_dir(&env.id),
+        };
+        self.disk_used(&path).await
+    }
+
+    async fn overlay_changed_paths(&self, env: &Env) -> Result<String> {
+        let upper = self.overlay_upper_dir(&env.id);
+        let mut paths = Vec::new();
+        collect_overlay_changed_paths(&upper, &upper, &mut paths)?;
+        paths.sort();
+        Ok(format!("{}\n", paths.join("\n")).trim_end().to_string())
+    }
+
+    fn overlay_upper_dir(&self, id: &str) -> PathBuf {
+        self.layout.env_dir(id).join("upper")
+    }
+
+    fn overlay_work_dir(&self, id: &str) -> PathBuf {
+        self.layout.env_dir(id).join("work")
+    }
+
     async fn disk_used(&self, path: &Path) -> Result<String> {
         let output = self
             .runner
@@ -810,14 +998,21 @@ impl AgentService {
         Ok(())
     }
 
-    async fn cleanup_failed_env_create(&self, rootfs: &Path, env_dir: &Path) {
-        let qgroup_id = self.btrfs.qgroup_id(rootfs).await.ok().flatten();
-        let _ = self.btrfs.delete_subvolume(rootfs).await;
-        if let Some(qgroup_id) = qgroup_id {
-            let _ = self
-                .btrfs
-                .destroy_qgroup(&qgroup_id, &self.config.agentfs)
-                .await;
+    async fn cleanup_failed_env_create(
+        &self,
+        backend: RootfsBackend,
+        rootfs: &Path,
+        env_dir: &Path,
+    ) {
+        if backend == RootfsBackend::Btrfs {
+            let qgroup_id = self.btrfs.qgroup_id(rootfs).await.ok().flatten();
+            let _ = self.btrfs.delete_subvolume(rootfs).await;
+            if let Some(qgroup_id) = qgroup_id {
+                let _ = self
+                    .btrfs
+                    .destroy_qgroup(&qgroup_id, &self.config.agentfs)
+                    .await;
+            }
         }
         cleanup_failed_env_dir(env_dir).await;
     }
@@ -855,6 +1050,33 @@ async fn remove_path_if_exists(path: &Path) -> Result<()> {
         tokio::fs::remove_dir_all(path).await?;
     } else {
         tokio::fs::remove_file(path).await?;
+    }
+    Ok(())
+}
+
+fn collect_overlay_changed_paths(root: &Path, dir: &Path, paths: &mut Vec<String>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name == ".wh..wh..opq" {
+            continue;
+        }
+        let reported_path = if let Some(deleted_name) = file_name.strip_prefix(".wh.") {
+            path.with_file_name(deleted_name)
+        } else {
+            path.clone()
+        };
+        let relative = reported_path
+            .strip_prefix(root)
+            .with_context(|| format!("{} is outside {}", path.display(), root.display()))?;
+        paths.push(format!("/{}", relative.display()));
+        if path.is_dir() {
+            collect_overlay_changed_paths(root, &path, paths)?;
+        }
     }
     Ok(())
 }
@@ -1069,15 +1291,17 @@ async fn enable_child_systemd_unit(rootfs: &Path, unit: &str) -> Result<()> {
 mod tests {
     use super::{
         apply_stopped_state, base_source_label, child_ipv4_octet, cleanup_failed_base_dir,
-        cleanup_failed_env_dir, default_shell_command, ensure_child_hostname,
-        ensure_child_network_config, ensure_inaccessible_mask_targets, ensure_running_env,
-        idle_timeout_expired, read_offline_session_log, read_session_log_file,
+        cleanup_failed_env_dir, collect_overlay_changed_paths, default_shell_command,
+        ensure_child_hostname, ensure_child_network_config, ensure_inaccessible_mask_targets,
+        ensure_running_env, idle_timeout_expired, read_offline_session_log, read_session_log_file,
         remove_dir_all_if_exists, remove_path_if_exists, should_check_quota, should_mark_stopped,
         should_refresh_live_state, should_reject_session_create, sync_env_session_index,
         validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
-    use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
+    use crate::model::{
+        machine_name, Env, EnvState, Limits, RootfsBackend, Session, SessionState, SessionType,
+    };
     use chrono::Utc;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -1313,6 +1537,29 @@ mod tests {
         assert_eq!(default_shell_command(), vec!["/bin/bash".to_string()]);
     }
 
+    #[test]
+    fn overlay_changed_paths_report_upper_entries_and_whiteouts() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("home/user")).unwrap();
+        fs::write(dir.path().join("home/user/edited.txt"), "changed").unwrap();
+        fs::write(dir.path().join("home/user/.wh.deleted.txt"), "").unwrap();
+        fs::write(dir.path().join("home/user/.wh..wh..opq"), "").unwrap();
+
+        let mut paths = Vec::new();
+        collect_overlay_changed_paths(dir.path(), dir.path(), &mut paths).unwrap();
+        paths.sort();
+
+        assert_eq!(
+            paths,
+            vec![
+                "/home".to_string(),
+                "/home/user".to_string(),
+                "/home/user/deleted.txt".to_string(),
+                "/home/user/edited.txt".to_string(),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn base_cleanup_removes_host_agentfs_state() {
         let dir = tempfile::tempdir().unwrap();
@@ -1489,6 +1736,7 @@ mod tests {
         Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             machine_name: machine_name("codex-1"),
             state,

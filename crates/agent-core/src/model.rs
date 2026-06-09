@@ -9,6 +9,8 @@ use std::time::Duration as StdDuration;
 #[serde(deny_unknown_fields)]
 pub struct Base {
     pub id: String,
+    #[serde(default)]
+    pub backend: RootfsBackend,
     pub rootfs_path: PathBuf,
     pub readonly: bool,
     pub created_at: DateTime<Utc>,
@@ -21,6 +23,8 @@ pub struct Base {
 pub struct Env {
     pub id: String,
     pub base_id: String,
+    #[serde(default)]
+    pub backend: RootfsBackend,
     pub rootfs_path: PathBuf,
     pub machine_name: String,
     pub state: EnvState,
@@ -32,6 +36,14 @@ pub struct Env {
     #[serde(default)]
     pub network_policy: NetworkPolicy,
     pub sessions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RootfsBackend {
+    #[default]
+    Btrfs,
+    Overlay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -248,8 +260,8 @@ fn is_unlimited(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Base, Env, EnvState, LimitOverrides, Limits, NetworkPolicy, Session, SessionState,
-        SessionType,
+        Base, Env, EnvState, LimitOverrides, Limits, NetworkPolicy, RootfsBackend, Session,
+        SessionState, SessionType,
     };
     use chrono::Utc;
     use serde_json::Value;
@@ -379,6 +391,7 @@ mod tests {
             include_str!("../../../schemas/base.schema.json"),
             &[
                 "id",
+                "backend",
                 "rootfs_path",
                 "readonly",
                 "created_at",
@@ -391,6 +404,7 @@ mod tests {
             &[
                 "id",
                 "base_id",
+                "backend",
                 "rootfs_path",
                 "machine_name",
                 "state",
@@ -429,6 +443,16 @@ mod tests {
             &["created", "running", "stopped", "failed", "quota_exceeded"],
         );
         assert_schema_enum_values(
+            include_str!("../../../schemas/base.schema.json"),
+            &["properties", "backend", "enum"],
+            &["btrfs", "overlay"],
+        );
+        assert_schema_enum_values(
+            include_str!("../../../schemas/env.schema.json"),
+            &["properties", "backend", "enum"],
+            &["btrfs", "overlay"],
+        );
+        assert_schema_enum_values(
             include_str!("../../../schemas/session.schema.json"),
             &["properties", "state", "enum"],
             &["running", "stopped", "failed"],
@@ -457,6 +481,7 @@ mod tests {
     fn metadata_model_serializes_schema_fields() {
         let base = Base {
             id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: PathBuf::from("/agentfs/bases/base-001/rootfs"),
             readonly: true,
             created_at: Utc::now(),
@@ -467,6 +492,7 @@ mod tests {
             serde_json::to_value(base).unwrap(),
             &[
                 "id",
+                "backend",
                 "rootfs_path",
                 "readonly",
                 "created_at",
@@ -478,6 +504,7 @@ mod tests {
         let env = Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
             rootfs_path: PathBuf::from("/agentfs/envs/codex-1/rootfs"),
             machine_name: "af-codex-1".to_string(),
             state: EnvState::Running,
@@ -493,6 +520,7 @@ mod tests {
             &[
                 "id",
                 "base_id",
+                "backend",
                 "rootfs_path",
                 "machine_name",
                 "state",
