@@ -6,7 +6,7 @@ The implementation uses:
 
 - Btrfs read-only base snapshots and writable child snapshots
 - Btrfs qgroup quotas per child rootfs
-- systemd-nspawn machines with `PrivateUsers=yes` and private networking
+- systemd-nspawn machines with `PrivateUsers=yes` and private networking or private NAT
 - tmux-backed persistent PTY sessions running inside each child machine
 - JSON metadata under `/agentfs`
 - a Unix socket API at `/agentfs/runtime/sockets/agent-forkd.sock`
@@ -24,7 +24,7 @@ sudo systemctl enable --now agent-forkd
 
 ## Requirements
 
-The Project VM must provide Linux, Btrfs, `btrfs-progs`, systemd, `systemd-nspawn`, `machinectl`, cgroup v2, user namespaces, and `tmux`.
+The Project VM must provide Linux, Btrfs, `btrfs-progs`, systemd, `systemd-nspawn`, `machinectl`, `systemd-networkd`, cgroup v2, user namespaces, and `tmux`.
 
 `/agentfs` must be on a Btrfs filesystem. `agentctl base freeze --from /` requires `/` itself to be a Btrfs subvolume. The implementation intentionally fails when that is not true and does not fall back to a full copy.
 
@@ -61,6 +61,8 @@ agentctl env create codex-1 --from base-001 \
   --cpu-max 800% --memory-max 32G --pids-max 8192 --disk-max 200G
 ```
 
+The default `network=private-nat` profile launches nspawn with a veth in the `agent-forkd` network zone and writes `/etc/systemd/network/80-agent-forkd-private-nat.network` for the `vz-agent-forkd` bridge. Use `--network private` to request an isolated namespace without egress.
+
 ## Metadata Layout
 
 ```text
@@ -82,7 +84,7 @@ Session operations invoke `tmux` through `machinectl shell` inside the child nsp
 
 ## Security Model
 
-Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users and private networking, does not bind `/agentfs` into children, and keeps base and sibling rootfs trees outside the child view.
+Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users and private networking/private NAT, does not bind `/agentfs` into children, and keeps base and sibling rootfs trees outside the child view.
 
 ## Test Notes
 

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub struct Nspawn {
     runner: CommandRunner,
     config_dir: PathBuf,
+    network_dir: PathBuf,
 }
 
 impl Default for Nspawn {
@@ -14,15 +15,32 @@ impl Default for Nspawn {
         Self {
             runner: CommandRunner,
             config_dir: PathBuf::from("/etc/systemd/nspawn"),
+            network_dir: PathBuf::from("/etc/systemd/network"),
         }
     }
 }
 
 impl Nspawn {
+    const PRIVATE_NAT_ZONE: &str = "agent-forkd";
+    const PRIVATE_NAT_BRIDGE: &str = "vz-agent-forkd";
+
     pub fn config_text(env: &Env) -> String {
+        let network = if env.limits.network == "private-nat" {
+            format!("VirtualEthernet=yes\nZone={}\n", Self::PRIVATE_NAT_ZONE)
+        } else {
+            "Private=yes\n".to_string()
+        };
         format!(
-            "[Exec]\nBoot=yes\nPrivateUsers=yes\nHostname={machine}\n\n[Files]\nReadOnly=no\n\n[Network]\nPrivate=yes\n",
-            machine = env.machine_name
+            "[Exec]\nBoot=yes\nPrivateUsers=yes\nHostname={machine}\n\n[Files]\nReadOnly=no\n\n[Network]\n{network}",
+            machine = env.machine_name,
+            network = network
+        )
+    }
+
+    pub fn private_nat_network_text() -> String {
+        format!(
+            "[Match]\nName={bridge}\n\n[Network]\nAddress=10.77.0.1/24\nDHCPServer=yes\nIPMasquerade=ipv4\nIPForward=ipv4\n\n[DHCPServer]\nPoolOffset=100\nPoolSize=100\nEmitDNS=yes\nDNS=1.1.1.1\n",
+            bridge = Self::PRIVATE_NAT_BRIDGE
         )
     }
 
@@ -32,6 +50,15 @@ impl Nspawn {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&path, Self::config_text(env)).await?;
+        Ok(path)
+    }
+
+    pub async fn write_private_nat_network_config(&self) -> Result<PathBuf> {
+        let path = self.network_dir.join("80-agent-forkd-private-nat.network");
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&path, Self::private_nat_network_text()).await?;
         Ok(path)
     }
 
@@ -63,13 +90,25 @@ impl Nspawn {
             env.rootfs_path.display().to_string(),
             "--boot".to_string(),
             "--private-users=yes".to_string(),
-            "--private-network".to_string(),
             "--register=yes".to_string(),
         ]);
+        if env.limits.network == "private-nat" {
+            args.push("--network-veth".to_string());
+            args.push(format!("--network-zone={}", Self::PRIVATE_NAT_ZONE));
+        } else {
+            args.push("--private-network".to_string());
+        }
         args
     }
 
     pub async fn start(&self, env: &Env, log_path: Option<&Path>) -> Result<()> {
+        if env.limits.network == "private-nat" {
+            self.write_private_nat_network_config().await?;
+            let _ = self
+                .runner
+                .run("systemctl", ["reload", "systemd-networkd"])
+                .await;
+        }
         self.write_config(env).await?;
         self.runner
             .run_checked("systemd-run", Self::start_args(env, log_path))
@@ -166,7 +205,8 @@ mod tests {
         };
         let text = Nspawn::config_text(&env);
         assert!(text.contains("PrivateUsers=yes"));
-        assert!(text.contains("Private=yes"));
+        assert!(text.contains("VirtualEthernet=yes"));
+        assert!(text.contains("Zone=agent-forkd"));
         assert!(text.contains("Hostname=af-codex-1"));
     }
 
@@ -188,13 +228,42 @@ mod tests {
             Some(Path::new("/agentfs/envs/codex-1/logs/nspawn.log")),
         );
         assert!(args.contains(&"--private-users=yes".to_string()));
-        assert!(args.contains(&"--private-network".to_string()));
+        assert!(args.contains(&"--network-veth".to_string()));
+        assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
         assert!(args.contains(&"--property=CPUQuota=400%".to_string()));
         assert!(args.contains(&"--property=MemoryMax=16G".to_string()));
         assert!(args.contains(&"--property=TasksMax=4096".to_string()));
         assert!(args.contains(
             &"--property=StandardOutput=append:/agentfs/envs/codex-1/logs/nspawn.log".to_string()
         ));
+    }
+
+    #[test]
+    fn private_network_profile_has_no_egress_veth() {
+        let mut env = Env {
+            id: "locked-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/locked-1/rootfs".into(),
+            machine_name: machine_name("locked-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+        env.limits.network = "private".to_string();
+        let args = Nspawn::start_args(&env, None);
+        assert!(args.contains(&"--private-network".to_string()));
+        assert!(!args.iter().any(|arg| arg.starts_with("--network-zone")));
+    }
+
+    #[test]
+    fn private_nat_networkd_config_enables_masquerade() {
+        let text = Nspawn::private_nat_network_text();
+        assert!(text.contains("Name=vz-agent-forkd"));
+        assert!(text.contains("DHCPServer=yes"));
+        assert!(text.contains("IPMasquerade=ipv4"));
+        assert!(text.contains("IPForward=ipv4"));
     }
 
     #[test]

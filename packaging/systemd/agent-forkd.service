@@ -1,7 +1,7 @@
 [Unit]
 Description=Forked development environment manager
-After=local-fs.target systemd-machined.service
-Requires=systemd-machined.service
+After=local-fs.target systemd-networkd.service systemd-machined.service
+Requires=systemd-networkd.service systemd-machined.service
 
 [Service]
 Type=simple
