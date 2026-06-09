@@ -1,5 +1,6 @@
 use crate::command::{shell_join, CmdOutput, CommandRunner};
 use crate::model::{unit_name, Env, EnvState};
+use crate::storage::write_text_file;
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
@@ -59,7 +60,7 @@ impl Nspawn {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&path, Self::config_text(env)).await?;
+        write_text_file(&path, Self::config_text(env)).await?;
         Ok(path)
     }
 
@@ -77,7 +78,7 @@ impl Nspawn {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&path, Self::private_nat_network_text()).await?;
+        write_text_file(&path, Self::private_nat_network_text()).await?;
         Ok(path)
     }
 

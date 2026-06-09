@@ -1,5 +1,6 @@
 use crate::command::{shell_join, shell_quote, CommandRunner};
 use crate::model::{Env, Session, SessionState, SessionType};
+use crate::storage::write_text_file;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -262,10 +263,7 @@ impl TmuxSessionBackend {
                 Err(error) => return Err(error.into()),
             }
         };
-        if let Some(parent) = log_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(log_path, &text).await?;
+        write_text_file(log_path, &text).await?;
         Ok(text)
     }
 
