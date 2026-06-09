@@ -32,6 +32,8 @@ agentctl env create codex-1 --from base-001 --profile privileged-dev
 agentctl env create claude-1 --from base-001 --profile privileged-dev
 agentctl env start codex-1
 agentctl env start claude-1
+agentctl env list
+agentctl env status codex-1
 
 agentctl exec codex-1 -- sudo apt update
 agentctl exec codex-1 -- sudo apt install -y ripgrep
@@ -40,6 +42,14 @@ agentctl exec claude-1 -- bash -lc 'command -v rg || true'
 
 agentctl exec codex-1 -- bash -lc 'echo codex > /root/marker.txt'
 agentctl exec claude-1 -- bash -lc 'test ! -e /root/marker.txt'
+
+agentctl shell codex-1
+# Detach from the persistent shell with the tmux default key sequence: Ctrl-b, then d.
+agentctl shell codex-1
+# Reattached shell should still be the same persistent session. Detach again with Ctrl-b, then d.
+
+agentctl exec codex-1 -- bash -lc 'mkdir -p /workspace && cd /workspace && git init --quiet && git config user.email test@example.invalid && git config user.name "Agent Forkd Test" && printf "old\n" > README.md && git add README.md && git commit --quiet -m initial && printf "new\n" > README.md'
+agentctl diff codex-1
 
 agentctl session create codex-1 dev -- bash
 agentctl session attach codex-1 dev
@@ -55,6 +65,7 @@ agentctl session attach codex-1 codex
 agentctl session detach codex-1 codex
 agentctl session logs codex-1 codex
 
+agentctl export codex-1 --type workspace-patch
 agentctl export codex-1 --type dpkg-delta
 agentctl export codex-1 --type rootfs-changed-paths
 
