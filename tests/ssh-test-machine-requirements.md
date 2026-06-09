@@ -72,6 +72,7 @@ dpkg
 findmnt
 git
 machinectl
+readlink
 rustc
 sudo
 systemctl

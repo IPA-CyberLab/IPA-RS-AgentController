@@ -313,6 +313,12 @@ mod tests {
         assert!(args.contains(&"--private-users=yes".to_string()));
         assert!(args.contains(&"--network-veth".to_string()));
         assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "--network-zone=agent-forkd")
+                .count(),
+            1
+        );
         assert!(args.contains(&"--inaccessible=/agentfs".to_string()));
         assert!(args.contains(&"--inaccessible=/run/docker.sock".to_string()));
         assert!(args.contains(&"--inaccessible=/var/run/docker.sock".to_string()));

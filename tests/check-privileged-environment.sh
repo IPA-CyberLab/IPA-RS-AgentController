@@ -135,6 +135,7 @@ main() {
     findmnt \
     git \
     machinectl \
+    readlink \
     rustc \
     sudo \
     systemctl \

@@ -92,6 +92,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         text(&["agentctl", "exec", "claude-1", "--", "hostname"]).trim(),
         "af-claude-1"
     );
+    assert_runtime_namespaces_are_isolated("codex-1", "claude-1");
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
     assert_btrfs_qgroup_has_referenced_limit(&codex_qgroup, "/agentfs/envs/codex-1/rootfs");
     assert_child_cannot_see_project_vm_state("codex-1");
@@ -324,6 +325,7 @@ fn require_privileged_test_environment() {
         "findmnt",
         "git",
         "machinectl",
+        "readlink",
         "rustc",
         "sudo",
         "systemctl",
@@ -711,6 +713,51 @@ fn assert_btrfs_qgroup_has_referenced_limit(qgroup_id: &str, path: &str) {
         return;
     }
     panic!("qgroup {qgroup_id} was not present in qgroup output:\n{qgroups}");
+}
+
+fn assert_runtime_namespaces_are_isolated(left_env_id: &str, right_env_id: &str) {
+    let host_network = text(&["readlink", "/proc/self/ns/net"]);
+    let left_network = text(&[
+        "agentctl",
+        "exec",
+        left_env_id,
+        "--",
+        "readlink",
+        "/proc/self/ns/net",
+    ]);
+    let right_network = text(&[
+        "agentctl",
+        "exec",
+        right_env_id,
+        "--",
+        "readlink",
+        "/proc/self/ns/net",
+    ]);
+    assert_ne!(
+        host_network.trim(),
+        left_network.trim(),
+        "{left_env_id} reused the host network namespace"
+    );
+    assert_ne!(
+        left_network.trim(),
+        right_network.trim(),
+        "{left_env_id} and {right_env_id} shared a network namespace"
+    );
+
+    let host_user = text(&["readlink", "/proc/self/ns/user"]);
+    let left_user = text(&[
+        "agentctl",
+        "exec",
+        left_env_id,
+        "--",
+        "readlink",
+        "/proc/self/ns/user",
+    ]);
+    assert_ne!(
+        host_user.trim(),
+        left_user.trim(),
+        "{left_env_id} reused the host user namespace"
+    );
 }
 
 fn btrfs_subvolume_field(path: &str, field: &str) -> String {
