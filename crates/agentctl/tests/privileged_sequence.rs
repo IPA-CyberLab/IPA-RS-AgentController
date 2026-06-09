@@ -147,6 +147,8 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "stopped");
     run(&["agentctl", "env", "destroy", "codex-1"]);
     assert!(!Path::new("/agentfs/envs/codex-1/rootfs").exists());
+    assert!(!Path::new("/agentfs/envs/codex-1").exists());
+    assert!(!Path::new("/etc/systemd/nspawn/af-codex-1.nspawn").exists());
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
     assert_env_status(&claude_status, "claude-1", "base-001", "running");
 }
