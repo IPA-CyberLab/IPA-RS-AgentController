@@ -91,7 +91,10 @@ The default `network=private-nat` profile launches nspawn with a veth in the `ag
   /bases/<base-id>/dpkg.list
   /envs/<env-id>/meta.json
   /envs/<env-id>/sessions/<session-id>.json
+  /envs/<env-id>/logs/agent-forkd.log
+  /envs/<env-id>/logs/lifecycle.log
   /envs/<env-id>/logs/exec.log
+  /envs/<env-id>/logs/nspawn.log
   /envs/<env-id>/logs/sessions/<session-id>.log
   /envs/<env-id>/exports/<export-artifact>
   /runtime/sockets/agent-forkd.sock

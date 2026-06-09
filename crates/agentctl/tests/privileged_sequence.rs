@@ -48,6 +48,8 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     run(&["agentctl", "env", "start", "codex-1"]);
     run(&["agentctl", "env", "start", "claude-1"]);
     assert!(Path::new("/agentfs/envs/codex-1/logs/nspawn.log").exists());
+    assert_file_contains("/agentfs/envs/codex-1/logs/agent-forkd.log", "env created");
+    assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "running");
 
     let codex_status = json(&["agentctl", "env", "status", "codex-1"]);
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
@@ -164,6 +166,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(Path::new("/agentfs/envs/codex-1/logs/sessions/codex.log").exists());
     run(&["agentctl", "session", "detach", "codex-1", "codex"]);
     assert_session_running("codex-1", "codex");
+    assert_file_contains(
+        "/agentfs/envs/codex-1/logs/lifecycle.log",
+        "session codex detached",
+    );
 
     let dpkg_delta = text(&["agentctl", "export", "codex-1", "--type", "dpkg-delta"]);
     assert!(dpkg_delta.contains("ripgrep"));
@@ -186,6 +192,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_file_contains(
         "/agentfs/envs/codex-1/exports/rootfs-changed-paths.txt",
         "/root/marker.txt",
+    );
+    assert_file_contains(
+        "/agentfs/envs/codex-1/logs/lifecycle.log",
+        "exported /agentfs/envs/codex-1/exports/rootfs-changed-paths.txt",
     );
 
     run(&["agentctl", "env", "stop", "codex-1"]);
