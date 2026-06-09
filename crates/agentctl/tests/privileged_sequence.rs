@@ -61,6 +61,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_private_nat_network_config();
     assert!(Path::new("/agentfs/envs/codex-1/logs/nspawn.log").exists());
     assert_file_contains("/agentfs/envs/codex-1/logs/agent-forkd.log", "env created");
+    assert_file_contains("/agentfs/envs/codex-1/logs/agent-forkd.log", "env started");
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "running");
 
     let codex_status = json(&["agentctl", "env", "status", "codex-1"]);
@@ -113,6 +114,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_file_contains(
         "/agentfs/envs/codex-1/logs/exec.log",
         "sudo apt install -y ripgrep",
+    );
+    assert_file_contains(
+        "/agentfs/envs/codex-1/logs/agent-forkd.log",
+        "exec sudo apt install -y ripgrep",
     );
     assert!(text(&["agentctl", "exec", "codex-1", "--", "rg", "--version"]).contains("ripgrep"));
     assert_eq!(
@@ -234,6 +239,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "/agentfs/envs/codex-1/logs/lifecycle.log",
         "session killme killed",
     );
+    assert_file_contains(
+        "/agentfs/envs/codex-1/logs/agent-forkd.log",
+        "session killme killed",
+    );
 
     run(&[
         "agentctl", "session", "create", "codex-1", "codex", "--", "codex",
@@ -278,10 +287,15 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "/agentfs/envs/codex-1/logs/lifecycle.log",
         "exported /agentfs/envs/codex-1/exports/rootfs-changed-paths.txt",
     );
+    assert_file_contains(
+        "/agentfs/envs/codex-1/logs/agent-forkd.log",
+        "exported /agentfs/envs/codex-1/exports/rootfs-changed-paths.txt",
+    );
 
     run(&["agentctl", "env", "stop", "codex-1"]);
     let stopped_status = json(&["agentctl", "env", "status", "codex-1"]);
     assert_env_status(&stopped_status, "codex-1", "base-001", "stopped");
+    assert_file_contains("/agentfs/envs/codex-1/logs/agent-forkd.log", "env stopped");
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "stopped");
     assert_env_artifacts_persist_after_stop("codex-1");
     assert_session_logs_contain("codex-1", "logger", "session-log-sentinel");

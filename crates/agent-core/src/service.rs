@@ -274,10 +274,13 @@ impl AgentService {
     pub async fn env_start(&self, id: &str) -> Result<()> {
         let mut env = self.layout.read_env(id).await?;
         let nspawn_log = self.layout.nspawn_log(id);
+        self.log_daemon(id, "env start requested").await?;
         self.log_lifecycle(id, "starting").await?;
         if let Err(error) = validate_child_rootfs_requirements(&env.rootfs_path) {
             env.state = EnvState::Failed;
             self.layout.write_env(&env).await?;
+            self.log_daemon(id, &format!("env start failed preflight: {error:#}"))
+                .await?;
             self.log_lifecycle(id, &format!("failed preflight: {error:#}"))
                 .await?;
             return Err(error);
@@ -285,6 +288,11 @@ impl AgentService {
         if let Err(error) = ensure_inaccessible_mask_targets(&env.rootfs_path).await {
             env.state = EnvState::Failed;
             self.layout.write_env(&env).await?;
+            self.log_daemon(
+                id,
+                &format!("env start failed mask target setup: {error:#}"),
+            )
+            .await?;
             self.log_lifecycle(id, &format!("failed mask target setup: {error:#}"))
                 .await?;
             return Err(error);
@@ -292,12 +300,15 @@ impl AgentService {
         if let Err(error) = self.nspawn.start(&env, Some(&nspawn_log)).await {
             env.state = EnvState::Failed;
             self.layout.write_env(&env).await?;
+            self.log_daemon(id, &format!("env start failed: {error:#}"))
+                .await?;
             self.log_lifecycle(id, &format!("failed start: {error:#}"))
                 .await?;
             return Err(error);
         }
         env.state = EnvState::Running;
         mark_env_active(&mut env);
+        self.log_daemon(id, "env started").await?;
         self.log_lifecycle(id, "running").await?;
         self.layout.write_env(&env).await?;
         Ok(())
@@ -305,6 +316,7 @@ impl AgentService {
 
     pub async fn env_stop(&self, id: &str) -> Result<()> {
         let mut env = self.layout.read_env(id).await?;
+        self.log_daemon(id, "env stop requested").await?;
         self.log_lifecycle(id, "stopping").await?;
         self.nspawn.stop(&env.machine_name).await?;
         let mut refreshed = env.clone();
@@ -315,6 +327,7 @@ impl AgentService {
             return Err(anyhow!("env {id} is still running after stop"));
         }
         apply_stopped_state(&mut env);
+        self.log_daemon(id, "env stopped").await?;
         self.log_lifecycle(id, "stopped").await?;
         self.layout.write_env(&env).await?;
         Ok(())
@@ -322,6 +335,7 @@ impl AgentService {
 
     pub async fn env_destroy(&self, id: &str) -> Result<()> {
         let env = self.layout.read_env(id).await?;
+        self.log_daemon(id, "env destroy requested").await?;
         self.log_lifecycle(id, "destroying").await?;
         self.nspawn.stop(&env.machine_name).await?;
         let qgroup_id = self.btrfs.qgroup_id(&env.rootfs_path).await?;
@@ -372,6 +386,8 @@ impl AgentService {
         let mut env = self.layout.read_env(id).await?;
         ensure_running_env(&env)?;
         let log_path = self.layout.env_logs(id).join("exec.log");
+        self.log_daemon(id, &format!("exec {}", shell_join(command)))
+            .await?;
         self.log_lifecycle(id, &format!("exec {}", shell_join(command)))
             .await?;
         let output = self.nspawn.exec(&env, command, &log_path).await?;
@@ -427,6 +443,8 @@ impl AgentService {
         mark_env_active(&mut env);
         self.layout.write_session(&session).await?;
         self.layout.write_env(&env).await?;
+        self.log_daemon(env_id, &format!("session {session_id} created"))
+            .await?;
         self.log_lifecycle(env_id, &format!("session {session_id} created"))
             .await?;
         Ok(())
@@ -492,6 +510,8 @@ impl AgentService {
             )
             .await?
         };
+        self.log_daemon(env_id, &format!("session {session_id} logs synced"))
+            .await?;
         self.log_lifecycle(env_id, &format!("session {session_id} logs synced"))
             .await?;
         mark_env_active(&mut env);
@@ -513,6 +533,8 @@ impl AgentService {
         self.sessions.detach(&env, &session.id).await?;
         mark_env_active(&mut env);
         self.layout.write_env(&env).await?;
+        self.log_daemon(env_id, &format!("session {session_id} detached"))
+            .await?;
         self.log_lifecycle(env_id, &format!("session {session_id} detached"))
             .await?;
         Ok(())
@@ -527,6 +549,8 @@ impl AgentService {
         self.layout.write_session(&session).await?;
         mark_env_active(&mut env);
         self.layout.write_env(&env).await?;
+        self.log_daemon(env_id, &format!("session {session_id} killed"))
+            .await?;
         self.log_lifecycle(env_id, &format!("session {session_id} killed"))
             .await?;
         Ok(())
@@ -584,6 +608,8 @@ impl AgentService {
         write_text_file(&artifact, &text).await?;
         mark_env_active(&mut env);
         self.layout.write_env(&env).await?;
+        self.log_daemon(env_id, &format!("exported {}", artifact.display()))
+            .await?;
         self.log_lifecycle(env_id, &format!("exported {}", artifact.display()))
             .await?;
         Ok(text)
