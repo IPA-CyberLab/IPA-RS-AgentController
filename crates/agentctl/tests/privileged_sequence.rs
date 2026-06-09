@@ -70,6 +70,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
     assert_child_cannot_see_project_vm_state("codex-1");
 
+    assert_eq!(
+        text(&["agentctl", "exec", "codex-1", "--", "sudo", "whoami"]).trim(),
+        "root"
+    );
     run(&["agentctl", "exec", "codex-1", "--", "sudo", "apt", "update"]);
     run(&[
         "agentctl", "exec", "codex-1", "--", "sudo", "apt", "install", "-y", "ripgrep",
@@ -126,6 +130,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     let sessions = text(&["agentctl", "session", "list", "codex-1"]);
     assert!(sessions.contains("dev"));
     assert!(sessions.contains("Running"));
+    assert_env_sessions("codex-1", &["dev"]);
 
     run(&[
         "agentctl", "session", "create", "codex-1", "codex", "--", "codex",
@@ -133,6 +138,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     let sessions = text(&["agentctl", "session", "list", "codex-1"]);
     assert!(sessions.contains("codex"));
     assert!(sessions.contains("Running"));
+    assert_env_sessions("codex-1", &["dev", "codex"]);
     let _ = text(&["agentctl", "session", "logs", "codex-1", "codex"]);
     assert!(Path::new("/agentfs/envs/codex-1/logs/sessions/codex.log").exists());
     run(&["agentctl", "session", "detach", "codex-1", "codex"]);
@@ -168,6 +174,20 @@ fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
     assert_eq!(status["env"]["id"], id);
     assert_eq!(status["env"]["base_id"], base_id);
     assert_eq!(status["env"]["state"], state);
+}
+
+fn assert_env_sessions(env_id: &str, expected: &[&str]) {
+    let status = json(&["agentctl", "env", "status", env_id]);
+    let sessions = status["env"]["sessions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("env {env_id} status did not contain sessions array"));
+
+    for session_id in expected {
+        assert!(
+            sessions.iter().any(|value| value == session_id),
+            "env {env_id} did not record session {session_id}; sessions={sessions:?}"
+        );
+    }
 }
 
 fn assert_btrfs_subvolume(path: &str) {
