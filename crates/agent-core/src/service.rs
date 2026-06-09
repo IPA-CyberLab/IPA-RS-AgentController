@@ -103,7 +103,8 @@ impl AgentService {
                 Ok(Response::Ok)
             }
             Request::SessionAttach { env_id, session_id } => {
-                self.sessions.attach(&env_id, &session_id).await?;
+                let env = self.layout.read_env(&env_id).await?;
+                self.sessions.attach(&env, &session_id).await?;
                 Ok(Response::Ok)
             }
             Request::SessionList { env_id } => Ok(Response::Sessions {
@@ -290,14 +291,15 @@ impl AgentService {
     }
 
     pub async fn shell(&self, env_id: &str) -> Result<()> {
+        let env = self.layout.read_env(env_id).await?;
         let session_id = "shell";
         if self.layout.read_session(env_id, session_id).await.is_err()
-            || !self.sessions.is_running(env_id, session_id).await?
+            || !self.sessions.is_running(&env, session_id).await?
         {
             self.session_create(env_id, session_id, &["bash".to_string()])
                 .await?;
         }
-        self.sessions.attach(env_id, session_id).await
+        self.sessions.attach(&env, session_id).await
     }
 
     pub async fn diff(&self, env_id: &str) -> Result<String> {

@@ -14,11 +14,11 @@ pub trait SessionBackend {
         command: &[String],
         log_path: PathBuf,
     ) -> Result<Session>;
-    async fn attach(&self, env_id: &str, session_id: &str) -> Result<()>;
-    async fn detach(&self, env_id: &str, session_id: &str) -> Result<()>;
-    async fn kill(&self, env_id: &str, session_id: &str) -> Result<()>;
-    async fn is_running(&self, env_id: &str, session_id: &str) -> Result<bool>;
-    async fn list(&self, env_id: &str) -> Result<Vec<String>>;
+    async fn attach(&self, env: &Env, session_id: &str) -> Result<()>;
+    async fn detach(&self, env: &Env, session_id: &str) -> Result<()>;
+    async fn kill(&self, env: &Env, session_id: &str) -> Result<()>;
+    async fn is_running(&self, env: &Env, session_id: &str) -> Result<bool>;
+    async fn list(&self, env: &Env) -> Result<Vec<String>>;
     async fn logs(&self, log_path: &Path) -> Result<String>;
     fn log_path(log_dir: &Path, session_id: &str) -> PathBuf
     where
@@ -50,24 +50,24 @@ impl SessionBackend for TmuxSessionBackend {
         self.create(env, session_id, command, log_path).await
     }
 
-    async fn attach(&self, env_id: &str, session_id: &str) -> Result<()> {
-        TmuxSessionBackend::attach(self, env_id, session_id).await
+    async fn attach(&self, env: &Env, session_id: &str) -> Result<()> {
+        TmuxSessionBackend::attach(self, env, session_id).await
     }
 
-    async fn detach(&self, env_id: &str, session_id: &str) -> Result<()> {
-        TmuxSessionBackend::detach(self, env_id, session_id).await
+    async fn detach(&self, env: &Env, session_id: &str) -> Result<()> {
+        TmuxSessionBackend::detach(self, env, session_id).await
     }
 
-    async fn kill(&self, env_id: &str, session_id: &str) -> Result<()> {
-        TmuxSessionBackend::kill(self, env_id, session_id).await
+    async fn kill(&self, env: &Env, session_id: &str) -> Result<()> {
+        TmuxSessionBackend::kill(self, env, session_id).await
     }
 
-    async fn is_running(&self, env_id: &str, session_id: &str) -> Result<bool> {
-        TmuxSessionBackend::is_running(self, env_id, session_id).await
+    async fn is_running(&self, env: &Env, session_id: &str) -> Result<bool> {
+        TmuxSessionBackend::is_running(self, env, session_id).await
     }
 
-    async fn list(&self, env_id: &str) -> Result<Vec<String>> {
-        TmuxSessionBackend::list(self, env_id).await
+    async fn list(&self, env: &Env) -> Result<Vec<String>> {
+        TmuxSessionBackend::list(self, env).await
     }
 
     async fn logs(&self, log_path: &Path) -> Result<String> {
@@ -84,6 +84,36 @@ impl TmuxSessionBackend {
         format!("af-{env_id}-{session_id}")
     }
 
+    pub fn child_tmux_name(session_id: &str) -> String {
+        session_id.to_string()
+    }
+
+    pub fn child_transcript_path(session_id: &str) -> String {
+        format!("/var/log/agent-forkd/sessions/{session_id}.log")
+    }
+
+    pub fn child_create_command(session_id: &str, command: &[String]) -> String {
+        let tmux = Self::child_tmux_name(session_id);
+        let transcript = Self::child_transcript_path(session_id);
+        let command = shell_join(command);
+        format!(
+            "mkdir -p /var/log/agent-forkd/sessions && tmux new-session -d -s {tmux} {command} && tmux pipe-pane -o -t {tmux} {pipe}",
+            tmux = shell_quote(&tmux),
+            command = shell_quote(&command),
+            pipe = shell_quote(&format!("cat >> {transcript}")),
+        )
+    }
+
+    fn machinectl_shell_args(machine: &str, command: &str) -> Vec<String> {
+        vec![
+            "shell".to_string(),
+            machine.to_string(),
+            "/bin/bash".to_string(),
+            "-lc".to_string(),
+            command.to_string(),
+        ]
+    }
+
     pub async fn create(
         &self,
         env: &Env,
@@ -91,17 +121,24 @@ impl TmuxSessionBackend {
         command: &[String],
         log_path: PathBuf,
     ) -> Result<Session> {
-        let tmux = Self::tmux_name(&env.id, session_id);
         let inside = command.join(" ");
-        let wrapped = format!(
-            "machinectl shell {machine} /bin/bash -lc {cmd:?} 2>&1 | tee -a {log}",
-            machine = env.machine_name,
-            cmd = inside,
-            log = log_path.display()
-        );
+        let child_command = Self::child_create_command(session_id, command);
         self.runner
-            .run_checked("tmux", ["new-session", "-d", "-s", &tmux, &wrapped])
+            .run_checked(
+                "machinectl",
+                Self::machinectl_shell_args(&env.machine_name, &child_command),
+            )
             .await?;
+        CommandRunner::append_to_file(
+            &log_path,
+            &format!(
+                "created child tmux session {} in {}; child transcript {}\n",
+                session_id,
+                env.machine_name,
+                Self::child_transcript_path(session_id)
+            ),
+        )
+        .await?;
         Ok(Session {
             id: session_id.to_string(),
             env_id: env.id.clone(),
@@ -113,60 +150,82 @@ impl TmuxSessionBackend {
         })
     }
 
-    pub async fn attach(&self, env_id: &str, session_id: &str) -> Result<()> {
+    pub async fn attach(&self, env: &Env, session_id: &str) -> Result<()> {
+        let command = format!(
+            "tmux attach-session -t {}",
+            shell_quote(&Self::child_tmux_name(session_id))
+        );
         self.runner
             .run_checked(
-                "tmux",
-                ["attach-session", "-t", &Self::tmux_name(env_id, session_id)],
+                "machinectl",
+                Self::machinectl_shell_args(&env.machine_name, &command),
             )
             .await?;
         Ok(())
     }
 
-    pub async fn detach(&self, env_id: &str, session_id: &str) -> Result<()> {
+    pub async fn detach(&self, env: &Env, session_id: &str) -> Result<()> {
+        let command = format!(
+            "tmux detach-client -s {}",
+            shell_quote(&Self::child_tmux_name(session_id))
+        );
         self.runner
             .run_checked(
-                "tmux",
-                ["detach-client", "-s", &Self::tmux_name(env_id, session_id)],
+                "machinectl",
+                Self::machinectl_shell_args(&env.machine_name, &command),
             )
             .await?;
         Ok(())
     }
 
-    pub async fn kill(&self, env_id: &str, session_id: &str) -> Result<()> {
+    pub async fn kill(&self, env: &Env, session_id: &str) -> Result<()> {
+        let command = format!(
+            "tmux kill-session -t {}",
+            shell_quote(&Self::child_tmux_name(session_id))
+        );
         self.runner
             .run_checked(
-                "tmux",
-                ["kill-session", "-t", &Self::tmux_name(env_id, session_id)],
+                "machinectl",
+                Self::machinectl_shell_args(&env.machine_name, &command),
             )
             .await?;
         Ok(())
     }
 
-    pub async fn is_running(&self, env_id: &str, session_id: &str) -> Result<bool> {
+    pub async fn is_running(&self, env: &Env, session_id: &str) -> Result<bool> {
+        let command = format!(
+            "tmux has-session -t {}",
+            shell_quote(&Self::child_tmux_name(session_id))
+        );
         let output = self
             .runner
             .run(
-                "tmux",
-                ["has-session", "-t", &Self::tmux_name(env_id, session_id)],
+                "machinectl",
+                Self::machinectl_shell_args(&env.machine_name, &command),
             )
             .await?;
         Ok(output.status == 0)
     }
 
-    pub async fn list(&self, env_id: &str) -> Result<Vec<String>> {
+    pub async fn list(&self, env: &Env) -> Result<Vec<String>> {
         let output = self
             .runner
-            .run("tmux", ["list-sessions", "-F", "#{session_name}"])
+            .run(
+                "machinectl",
+                Self::machinectl_shell_args(
+                    &env.machine_name,
+                    "tmux list-sessions -F '#{session_name}'",
+                ),
+            )
             .await?;
         if output.status != 0 {
             return Ok(Vec::new());
         }
-        let prefix = format!("af-{env_id}-");
         Ok(output
             .stdout
             .lines()
-            .filter_map(|line| line.strip_prefix(&prefix))
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
             .map(ToOwned::to_owned)
             .collect())
     }
@@ -184,6 +243,27 @@ impl TmuxSessionBackend {
     }
 }
 
+fn shell_join(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|arg| {
+            if arg
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_./:=+".contains(&b))
+            {
+                arg.clone()
+            } else {
+                shell_quote(arg)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::TmuxSessionBackend;
@@ -194,5 +274,17 @@ mod tests {
             TmuxSessionBackend::tmux_name("codex-1", "dev"),
             "af-codex-1-dev"
         );
+    }
+
+    #[test]
+    fn child_create_command_uses_tmux_inside_child() {
+        let command = TmuxSessionBackend::child_create_command(
+            "dev",
+            &["bash".to_string(), "-l".to_string()],
+        );
+        assert!(command.contains("tmux new-session -d -s 'dev'"));
+        assert!(command.contains("tmux pipe-pane -o -t 'dev'"));
+        assert!(command.contains("/var/log/agent-forkd/sessions/dev.log"));
+        assert!(!command.contains("machinectl"));
     }
 }

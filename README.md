@@ -7,7 +7,7 @@ The implementation uses:
 - Btrfs read-only base snapshots and writable child snapshots
 - Btrfs qgroup quotas per child rootfs
 - systemd-nspawn machines with `PrivateUsers=yes` and private networking
-- tmux-backed persistent PTY sessions
+- tmux-backed persistent PTY sessions running inside each child machine
 - JSON metadata under `/agentfs`
 - a Unix socket API at `/agentfs/runtime/sockets/agent-forkd.sock`
 
@@ -76,6 +76,8 @@ agentctl env create codex-1 --from base-001 \
 JSON schemas live in `schemas/`.
 
 Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, and `/agentfs/runtime`, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it.
+
+Session operations invoke `tmux` through `machinectl shell` inside the child nspawn machine. The host-side session log records daemon events under `/agentfs/envs/<env-id>/logs/sessions`, while the child tmux transcript is piped to `/var/log/agent-forkd/sessions/<session-id>.log` inside the child rootfs so `/agentfs` does not need to be bind-mounted into the child.
 
 ## Security Model
 
