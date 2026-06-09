@@ -129,6 +129,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
 
     let dpkg_delta = text(&["agentctl", "export", "codex-1", "--type", "dpkg-delta"]);
     assert!(dpkg_delta.contains("ripgrep"));
+    assert_file_contains("/agentfs/envs/codex-1/exports/dpkg-delta.txt", "ripgrep");
     let changed_paths = text(&[
         "agentctl",
         "export",
@@ -137,6 +138,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "rootfs-changed-paths",
     ]);
     assert!(changed_paths.contains("/root/marker.txt"));
+    assert_file_contains(
+        "/agentfs/envs/codex-1/exports/rootfs-changed-paths.txt",
+        "/root/marker.txt",
+    );
 
     run(&["agentctl", "env", "stop", "codex-1"]);
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "stopped");
