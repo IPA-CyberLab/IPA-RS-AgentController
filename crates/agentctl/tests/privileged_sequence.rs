@@ -142,6 +142,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     let _ = text(&["agentctl", "session", "logs", "codex-1", "codex"]);
     assert!(Path::new("/agentfs/envs/codex-1/logs/sessions/codex.log").exists());
     run(&["agentctl", "session", "detach", "codex-1", "codex"]);
+    assert_session_running("codex-1", "codex");
 
     let dpkg_delta = text(&["agentctl", "export", "codex-1", "--type", "dpkg-delta"]);
     assert!(dpkg_delta.contains("ripgrep"));
@@ -188,6 +189,17 @@ fn assert_env_sessions(env_id: &str, expected: &[&str]) {
             "env {env_id} did not record session {session_id}; sessions={sessions:?}"
         );
     }
+}
+
+fn assert_session_running(env_id: &str, session_id: &str) {
+    let sessions = text(&["agentctl", "session", "list", env_id]);
+
+    assert!(
+        sessions
+            .lines()
+            .any(|line| line.contains(session_id) && line.contains("Running")),
+        "session {session_id} in env {env_id} was not listed as running:\n{sessions}"
+    );
 }
 
 fn assert_btrfs_subvolume(path: &str) {
