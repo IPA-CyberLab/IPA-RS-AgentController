@@ -52,7 +52,7 @@ impl Btrfs {
             .runner
             .run("btrfs", ["quota", "enable", &path.display().to_string()])
             .await?;
-        if output.status == 0 || output.stderr.contains("File exists") {
+        if output.status == 0 || quota_enable_reports_already_enabled(&output.stderr) {
             return Ok(());
         }
         Err(anyhow!("failed to enable Btrfs quota: {}", output.stderr))
@@ -243,6 +243,14 @@ fn is_unlimited(value: &str) -> bool {
     value == "0" || value.eq_ignore_ascii_case("unlimited") || value.eq_ignore_ascii_case("none")
 }
 
+fn quota_enable_reports_already_enabled(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("file exists")
+        || stderr.contains("quota support already enabled")
+        || stderr.contains("quota already enabled")
+        || stderr.contains("qgroups already enabled")
+}
+
 fn qgroup_destroy_reports_missing(stderr: &str) -> bool {
     let stderr = stderr.to_ascii_lowercase();
     stderr.contains("no such file or directory")
@@ -255,7 +263,7 @@ fn qgroup_destroy_reports_missing(stderr: &str) -> bool {
 mod tests {
     use super::{
         is_unlimited, qgroup_destroy_reports_missing, qgroup_show_reports_exceeded,
-        qgroup_show_result,
+        qgroup_show_result, quota_enable_reports_already_enabled,
     };
     use std::path::Path;
 
@@ -319,6 +327,22 @@ qgroupid         rfer         excl     max_rfer
         ));
         assert!(!qgroup_destroy_reports_missing(
             "ERROR: unable to destroy quota group: Permission denied"
+        ));
+    }
+
+    #[test]
+    fn quota_enable_already_enabled_errors_are_idempotent() {
+        assert!(quota_enable_reports_already_enabled(
+            "ERROR: quota support already enabled"
+        ));
+        assert!(quota_enable_reports_already_enabled(
+            "ERROR: cannot enable quota: File exists"
+        ));
+        assert!(quota_enable_reports_already_enabled(
+            "ERROR: qgroups already enabled"
+        ));
+        assert!(!quota_enable_reports_already_enabled(
+            "ERROR: quota support disabled"
         ));
     }
 }
