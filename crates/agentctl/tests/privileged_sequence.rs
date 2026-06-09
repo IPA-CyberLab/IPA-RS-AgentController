@@ -93,6 +93,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "af-claude-1"
     );
     assert_runtime_namespaces_are_isolated("codex-1", "claude-1");
+    assert_systemd_cgroup_limits("codex-1");
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
     assert_btrfs_qgroup_has_referenced_limit(&codex_qgroup, "/agentfs/envs/codex-1/rootfs");
     assert_child_cannot_see_project_vm_state("codex-1");
@@ -757,6 +758,22 @@ fn assert_runtime_namespaces_are_isolated(left_env_id: &str, right_env_id: &str)
         host_user.trim(),
         left_user.trim(),
         "{left_env_id} reused the host user namespace"
+    );
+}
+
+fn assert_systemd_cgroup_limits(env_id: &str) {
+    let unit = format!("agent-forkd-{env_id}.service");
+    let memory_max = text(&["systemctl", "show", &unit, "-p", "MemoryMax", "--value"]);
+    assert_eq!(
+        memory_max.trim(),
+        "17179869184",
+        "{unit} did not apply MemoryMax=16G"
+    );
+    let tasks_max = text(&["systemctl", "show", &unit, "-p", "TasksMax", "--value"]);
+    assert_eq!(
+        tasks_max.trim(),
+        "4096",
+        "{unit} did not apply TasksMax=4096"
     );
 }
 
