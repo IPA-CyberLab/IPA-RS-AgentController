@@ -180,6 +180,25 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_env_sessions("codex-1", &["dev"]);
     assert_session_metadata("codex-1", "dev", "bash", "running");
     assert_shell_request_creates_persistent_session("codex-1");
+    run(&[
+        "agentctl",
+        "session",
+        "create",
+        "codex-1",
+        "logger",
+        "--",
+        "bash",
+        "-lc",
+        "printf 'session-log-sentinel\n'; sleep infinity",
+    ]);
+    assert_env_sessions("codex-1", &["dev", "logger", "shell"]);
+    assert_session_metadata(
+        "codex-1",
+        "logger",
+        "bash -lc 'printf '\\''session-log-sentinel\n'\\''; sleep infinity'",
+        "running",
+    );
+    assert_session_logs_contain("codex-1", "logger", "session-log-sentinel");
 
     run(&[
         "agentctl", "session", "create", "codex-1", "codex", "--", "codex",
@@ -230,6 +249,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_env_status(&stopped_status, "codex-1", "base-001", "stopped");
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "stopped");
     assert_env_artifacts_persist_after_stop("codex-1");
+    assert_session_logs_contain("codex-1", "logger", "session-log-sentinel");
     run(&["agentctl", "env", "destroy", "codex-1"]);
     assert!(!Path::new("/agentfs/envs/codex-1/rootfs").exists());
     assert!(!Path::new("/agentfs/envs/codex-1").exists());
@@ -447,16 +467,26 @@ fn assert_session_metadata(env_id: &str, session_id: &str, command: &str, state:
     );
 }
 
+fn assert_session_logs_contain(env_id: &str, session_id: &str, needle: &str) {
+    let logs = text(&["agentctl", "session", "logs", env_id, session_id]);
+    assert!(
+        logs.contains(needle),
+        "session {session_id} logs for {env_id} did not contain {needle:?}:\n{logs}"
+    );
+}
+
 fn assert_env_artifacts_persist_after_stop(env_id: &str) {
     for path in [
         format!("/agentfs/envs/{env_id}/rootfs"),
         format!("/agentfs/envs/{env_id}/meta.json"),
         format!("/agentfs/envs/{env_id}/sessions/dev.json"),
+        format!("/agentfs/envs/{env_id}/sessions/logger.json"),
         format!("/agentfs/envs/{env_id}/sessions/codex.json"),
         format!("/agentfs/envs/{env_id}/logs/agent-forkd.log"),
         format!("/agentfs/envs/{env_id}/logs/lifecycle.log"),
         format!("/agentfs/envs/{env_id}/logs/exec.log"),
         format!("/agentfs/envs/{env_id}/logs/nspawn.log"),
+        format!("/agentfs/envs/{env_id}/logs/sessions/logger.log"),
         format!("/agentfs/envs/{env_id}/logs/sessions/codex.log"),
         format!("/agentfs/envs/{env_id}/exports/dpkg-delta.txt"),
         format!("/agentfs/envs/{env_id}/exports/workspace-patch.patch"),
