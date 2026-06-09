@@ -266,6 +266,7 @@ impl AgentService {
                 .destroy_qgroup(&qgroup_id, &self.config.agentfs)
                 .await?;
         }
+        self.nspawn.remove_config(&env).await?;
         tokio::fs::remove_dir_all(self.layout.env_dir(id)).await?;
         Ok(())
     }

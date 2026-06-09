@@ -50,13 +50,26 @@ impl Nspawn {
         )
     }
 
+    pub fn config_path(&self, env: &Env) -> PathBuf {
+        self.config_dir.join(format!("{}.nspawn", env.machine_name))
+    }
+
     pub async fn write_config(&self, env: &Env) -> Result<PathBuf> {
-        let path = self.config_dir.join(format!("{}.nspawn", env.machine_name));
+        let path = self.config_path(env);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&path, Self::config_text(env)).await?;
         Ok(path)
+    }
+
+    pub async fn remove_config(&self, env: &Env) -> Result<()> {
+        let path = self.config_path(env);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub async fn write_private_nat_network_config(&self) -> Result<PathBuf> {
@@ -303,6 +316,33 @@ mod tests {
         assert!(text.contains("DHCPServer=yes"));
         assert!(text.contains("IPMasquerade=ipv4"));
         assert!(text.contains("IPForward=ipv4"));
+    }
+
+    #[tokio::test]
+    async fn remove_config_deletes_generated_nspawn_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let nspawn = Nspawn {
+            runner: CommandRunner,
+            config_dir: dir.path().join("nspawn"),
+            network_dir: dir.path().join("network"),
+        };
+        let env = Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
+            machine_name: machine_name("codex-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+
+        let path = nspawn.write_config(&env).await.unwrap();
+        assert!(path.exists());
+        nspawn.remove_config(&env).await.unwrap();
+        assert!(!path.exists());
+        nspawn.remove_config(&env).await.unwrap();
     }
 
     #[test]
