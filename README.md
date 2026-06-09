@@ -47,6 +47,7 @@ agentctl env start claude-1
 
 agentctl exec codex-1 -- sudo apt update
 agentctl exec codex-1 -- sudo apt install -y ripgrep
+agentctl shell codex-1
 agentctl session create codex-1 dev -- bash
 agentctl session attach codex-1 dev
 agentctl session detach codex-1 dev
@@ -55,11 +56,19 @@ agentctl session logs codex-1 dev
 agentctl env list
 agentctl env status codex-1
 agentctl session list codex-1
+agentctl diff codex-1
+agentctl export codex-1 --type workspace-patch
 agentctl export codex-1 --type dpkg-delta
 agentctl export codex-1 --type rootfs-changed-paths
 agentctl env stop codex-1
 agentctl env destroy codex-1
 ```
+
+`agentctl shell <env-id>` creates or reuses a persistent `shell` tmux session
+inside the child and attaches the current terminal to it. `agentctl diff`
+prints the `/workspace` Git patch when that directory is a Git repository, and
+`workspace-patch` also persists the patch artifact under the env's `exports`
+directory.
 
 `dpkg-delta` compares package names and versions, reporting installed, removed, and upgraded packages.
 
@@ -88,9 +97,9 @@ The default `network=private-nat` profile launches nspawn with a veth in the `ag
   /runtime/sockets/agent-forkd.sock
 ```
 
-JSON schemas live in `schemas/`.
+JSON schemas for daemon config and metadata live in `schemas/`.
 
-`agent-forkd` and `agentctl` accept `--config /etc/agent-forkd/config.json` or `AGENT_FORKD_CONFIG` for the daemon config schema in `schemas/config.schema.json`.
+`agent-forkd` and `agentctl` accept `--config /etc/agent-forkd/config.json` or `AGENT_FORKD_CONFIG` for the daemon config schema in `schemas/config.schema.json`. Base, env, and session metadata are described by `schemas/base.schema.json`, `schemas/env.schema.json`, and `schemas/session.schema.json`.
 
 Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`, scrubs host `/agentfs` state, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it. Export commands print their output and persist the latest artifact under `/agentfs/envs/<env-id>/exports/`. The `rootfs-changed-paths` export omits runtime-only trees such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`.
 
