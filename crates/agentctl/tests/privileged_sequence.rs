@@ -222,7 +222,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     );
 
     run(&["agentctl", "env", "stop", "codex-1"]);
+    let stopped_status = json(&["agentctl", "env", "status", "codex-1"]);
+    assert_env_status(&stopped_status, "codex-1", "base-001", "stopped");
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "stopped");
+    assert_env_artifacts_persist_after_stop("codex-1");
     run(&["agentctl", "env", "destroy", "codex-1"]);
     assert!(!Path::new("/agentfs/envs/codex-1/rootfs").exists());
     assert!(!Path::new("/agentfs/envs/codex-1").exists());
@@ -370,6 +373,36 @@ fn assert_session_metadata(env_id: &str, session_id: &str, command: &str, state:
     assert!(
         metadata["created_at"].as_str().is_some(),
         "session metadata omitted created_at: {metadata}"
+    );
+}
+
+fn assert_env_artifacts_persist_after_stop(env_id: &str) {
+    for path in [
+        format!("/agentfs/envs/{env_id}/rootfs"),
+        format!("/agentfs/envs/{env_id}/meta.json"),
+        format!("/agentfs/envs/{env_id}/sessions/dev.json"),
+        format!("/agentfs/envs/{env_id}/sessions/codex.json"),
+        format!("/agentfs/envs/{env_id}/logs/agent-forkd.log"),
+        format!("/agentfs/envs/{env_id}/logs/lifecycle.log"),
+        format!("/agentfs/envs/{env_id}/logs/exec.log"),
+        format!("/agentfs/envs/{env_id}/logs/nspawn.log"),
+        format!("/agentfs/envs/{env_id}/logs/sessions/codex.log"),
+        format!("/agentfs/envs/{env_id}/exports/dpkg-delta.txt"),
+        format!("/agentfs/envs/{env_id}/exports/workspace-patch.patch"),
+        format!("/agentfs/envs/{env_id}/exports/rootfs-changed-paths.txt"),
+    ] {
+        assert!(
+            Path::new(&path).exists(),
+            "{path} did not persist after stop"
+        );
+    }
+    assert_file_contains(
+        &format!("/agentfs/envs/{env_id}/exports/rootfs-changed-paths.txt"),
+        "/root/marker.txt",
+    );
+    assert_file_contains(
+        &format!("/agentfs/envs/{env_id}/exports/dpkg-delta.txt"),
+        "ripgrep",
     );
 }
 
