@@ -279,6 +279,13 @@ impl AgentService {
                 .await?;
             return Err(error);
         }
+        if let Err(error) = ensure_inaccessible_mask_targets(&env.rootfs_path).await {
+            env.state = EnvState::Failed;
+            self.layout.write_env(&env).await?;
+            self.log_lifecycle(id, &format!("failed mask target setup: {error:#}"))
+                .await?;
+            return Err(error);
+        }
         if let Err(error) = self.nspawn.start(&env, Some(&nspawn_log)).await {
             env.state = EnvState::Failed;
             self.layout.write_env(&env).await?;
@@ -784,14 +791,39 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
     }
 }
 
+async fn ensure_inaccessible_mask_targets(rootfs: &Path) -> Result<()> {
+    for path in Nspawn::inaccessible_paths() {
+        let relative = path
+            .strip_prefix('/')
+            .ok_or_else(|| anyhow!("inaccessible path {path} must be absolute"))?;
+        let target = rootfs.join(relative);
+        if target.exists() {
+            continue;
+        }
+        if *path == "/agentfs" {
+            tokio::fs::create_dir_all(&target).await?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&target)
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_failed_base_dir, cleanup_failed_env_dir, default_shell_command, ensure_running_env,
-        read_offline_session_log, read_session_log_file, remove_dir_all_if_exists,
-        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
-        should_reject_session_create, sync_env_session_index, validate_child_rootfs_requirements,
-        AgentService,
+        cleanup_failed_base_dir, cleanup_failed_env_dir, default_shell_command,
+        ensure_inaccessible_mask_targets, ensure_running_env, read_offline_session_log,
+        read_session_log_file, remove_dir_all_if_exists, remove_path_if_exists, should_check_quota,
+        should_mark_stopped, should_refresh_live_state, should_reject_session_create,
+        sync_env_session_index, validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
@@ -837,6 +869,18 @@ mod tests {
         let error = validate_child_rootfs_requirements(dir.path()).unwrap_err();
 
         assert!(error.to_string().contains("bash"));
+    }
+
+    #[tokio::test]
+    async fn inaccessible_mask_targets_are_created_inside_child_rootfs() {
+        let dir = tempfile::tempdir().unwrap();
+
+        ensure_inaccessible_mask_targets(dir.path()).await.unwrap();
+
+        assert!(dir.path().join("agentfs").is_dir());
+        assert!(dir.path().join("run/agent-forkd.sock").is_file());
+        assert!(dir.path().join("run/docker.sock").is_file());
+        assert!(dir.path().join("var/run/docker.sock").is_file());
     }
 
     #[test]

@@ -31,6 +31,10 @@ impl Nspawn {
         "/var/run/docker.sock",
     ];
 
+    pub fn inaccessible_paths() -> &'static [&'static str] {
+        Self::INACCESSIBLE_PATHS
+    }
+
     pub fn config_text(env: &Env) -> String {
         let network = if env.limits.network == "private-nat" {
             format!("VirtualEthernet=yes\nZone={}\n", Self::PRIVATE_NAT_ZONE)
