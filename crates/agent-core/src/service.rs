@@ -316,7 +316,7 @@ impl AgentService {
                 .await?;
         }
         self.nspawn.remove_config(&env).await?;
-        tokio::fs::remove_dir_all(self.layout.env_dir(id)).await?;
+        remove_dir_all_if_exists(&self.layout.env_dir(id)).await?;
         Ok(())
     }
 
@@ -651,11 +651,19 @@ impl AgentService {
 }
 
 async fn cleanup_failed_base_dir(base_dir: &Path) {
-    let _ = tokio::fs::remove_dir_all(base_dir).await;
+    let _ = remove_dir_all_if_exists(base_dir).await;
 }
 
 async fn cleanup_failed_env_dir(env_dir: &Path) {
-    let _ = tokio::fs::remove_dir_all(env_dir).await;
+    let _ = remove_dir_all_if_exists(env_dir).await;
+}
+
+async fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 async fn remove_path_if_exists(path: &Path) -> Result<()> {
@@ -775,9 +783,10 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 mod tests {
     use super::{
         cleanup_failed_base_dir, cleanup_failed_env_dir, ensure_running_env,
-        read_offline_session_log, read_session_log_file, remove_path_if_exists, should_check_quota,
-        should_mark_stopped, should_refresh_live_state, should_reject_session_create,
-        sync_env_session_index, validate_child_rootfs_requirements, AgentService,
+        read_offline_session_log, read_session_log_file, remove_dir_all_if_exists,
+        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
+        should_reject_session_create, sync_env_session_index, validate_child_rootfs_requirements,
+        AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
@@ -937,6 +946,19 @@ mod tests {
         cleanup_failed_base_dir(&base_dir).await;
 
         assert!(!base_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn directory_cleanup_tolerates_already_removed_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_dir = dir.path().join("envs/codex-1");
+        fs::create_dir_all(env_dir.join("logs/sessions")).unwrap();
+        fs::write(env_dir.join("logs/sessions/dev.log"), "done\n").unwrap();
+
+        remove_dir_all_if_exists(&env_dir).await.unwrap();
+        remove_dir_all_if_exists(&env_dir).await.unwrap();
+
+        assert!(!env_dir.exists());
     }
 
     #[tokio::test]
