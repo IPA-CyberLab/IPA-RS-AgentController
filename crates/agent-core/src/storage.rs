@@ -143,8 +143,9 @@ impl Layout {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path().join("meta.json");
             if path.exists() {
+                let expected_id = entry.file_name().to_string_lossy().to_string();
                 let env: Env = read_json(&path).await?;
-                self.validate_env_metadata(&env, None)?;
+                self.validate_env_metadata(&env, Some(&expected_id))?;
                 envs.push(env);
             }
         }
@@ -163,8 +164,17 @@ impl Layout {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                let expected_session_id = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "session metadata path {} has no valid file stem",
+                            path.display()
+                        )
+                    })?;
                 let session: Session = read_json(&path).await?;
-                self.validate_session_metadata(&session, Some(env_id), None)?;
+                self.validate_session_metadata(&session, Some(env_id), Some(expected_session_id))?;
                 sessions.push(session);
             }
         }
@@ -430,6 +440,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_rejects_tampered_env_metadata_on_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let env = test_env(&layout, "other");
+        write_json(&layout.env_dir("codex-1").join("meta.json"), &env)
+            .await
+            .unwrap();
+
+        assert!(layout
+            .list_envs()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not match requested id"));
+    }
+
+    #[tokio::test]
     async fn storage_rejects_unknown_env_metadata_fields_on_read() {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout::new(dir.path().to_path_buf());
@@ -502,6 +529,23 @@ mod tests {
 
         assert!(layout
             .read_session("codex-1", "dev")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not match requested id"));
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_tampered_session_metadata_on_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let session = test_session(&layout, "codex-1", "other");
+        write_json(&layout.sessions_dir("codex-1").join("dev.json"), &session)
+            .await
+            .unwrap();
+
+        assert!(layout
+            .list_sessions("codex-1")
             .await
             .unwrap_err()
             .to_string()
