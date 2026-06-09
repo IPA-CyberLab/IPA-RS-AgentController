@@ -1,4 +1,6 @@
 use serde_json::Value;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -173,6 +175,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(sessions.contains("running"));
     assert_env_sessions("codex-1", &["dev"]);
     assert_session_metadata("codex-1", "dev", "bash", "running");
+    assert_shell_request_creates_persistent_session("codex-1");
 
     run(&[
         "agentctl", "session", "create", "codex-1", "codex", "--", "codex",
@@ -368,6 +371,18 @@ fn assert_session_metadata(env_id: &str, session_id: &str, command: &str, state:
         metadata["created_at"].as_str().is_some(),
         "session metadata omitted created_at: {metadata}"
     );
+}
+
+fn assert_shell_request_creates_persistent_session(env_id: &str) {
+    let response = daemon_request(serde_json::json!({
+        "type": "shell",
+        "id": env_id
+    }));
+    assert_eq!(response["type"], "attach");
+    assert_eq!(response["machine_name"], format!("af-{env_id}"));
+    assert_eq!(response["session_id"], "shell");
+    assert_session_metadata(env_id, "shell", "/bin/bash", "running");
+    assert_env_sessions(env_id, &["dev", "shell"]);
 }
 
 fn assert_agentfs_layout_initialized() {
@@ -592,6 +607,25 @@ fn json_file(path: &str) -> Value {
     });
     serde_json::from_str(&text).unwrap_or_else(|error| {
         panic!("failed to parse json file {path}: {error}");
+    })
+}
+
+fn daemon_request(request: Value) -> Value {
+    let mut stream = UnixStream::connect("/agentfs/runtime/sockets/agent-forkd.sock")
+        .unwrap_or_else(|error| {
+            panic!("failed to connect to agent-forkd socket: {error}");
+        });
+    writeln!(stream, "{request}").unwrap_or_else(|error| {
+        panic!("failed to write daemon request {request}: {error}");
+    });
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .unwrap_or_else(|error| {
+            panic!("failed to read daemon response for {request}: {error}");
+        });
+    serde_json::from_str(&response).unwrap_or_else(|error| {
+        panic!("failed to parse daemon response {response:?}: {error}");
     })
 }
 
