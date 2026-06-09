@@ -119,8 +119,7 @@ impl Nspawn {
             "systemd-nspawn".to_string(),
             "--machine".to_string(),
             env.machine_name.clone(),
-            "--hostname".to_string(),
-            env.machine_name.clone(),
+            format!("--hostname={}", env.machine_name),
             "--directory".to_string(),
             env.rootfs_path.display().to_string(),
             "--boot".to_string(),
@@ -376,8 +375,7 @@ mod tests {
         .unwrap();
         assert!(args.contains(&"--private-users=yes".to_string()));
         assert!(args.contains(&"--resolv-conf=copy-host".to_string()));
-        assert!(args.contains(&"--hostname".to_string()));
-        assert!(args.contains(&"af-codex-1".to_string()));
+        assert!(args.contains(&"--hostname=af-codex-1".to_string()));
         assert!(args.contains(&"--network-veth".to_string()));
         assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
         assert_eq!(
