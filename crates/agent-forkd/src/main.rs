@@ -1,9 +1,9 @@
 use agent_core::config::AgentConfig;
 use agent_core::protocol::{Request, Response};
 use agent_core::AgentService;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{error, info};
@@ -26,10 +26,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let config = AgentConfig::load_or_default(args.config.as_deref(), args.agentfs).await?;
     let service = AgentService::new(config.clone());
-    tokio::fs::create_dir_all(config.socket_path.parent().unwrap()).await?;
-    if config.socket_path.exists() {
-        tokio::fs::remove_file(&config.socket_path).await?;
-    }
+    prepare_socket_path(&config.socket_path).await?;
     let listener = UnixListener::bind(&config.socket_path)?;
     info!("listening on {}", config.socket_path.display());
 
@@ -58,4 +55,51 @@ async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> 
         }
     }
     Ok(())
+}
+
+async fn prepare_socket_path(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("socket path {} has no parent", path.display()))?;
+    tokio::fs::create_dir_all(parent).await?;
+    if !path.exists() {
+        return Ok(());
+    }
+    if UnixStream::connect(path).await.is_ok() {
+        return Err(anyhow!(
+            "{} is already accepting connections; agent-forkd may already be running",
+            path.display()
+        ));
+    }
+    tokio::fs::remove_file(path).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_socket_path;
+    use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn prepare_socket_path_removes_stale_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-forkd.sock");
+        tokio::fs::write(&socket, b"stale").await.unwrap();
+
+        prepare_socket_path(&socket).await.unwrap();
+
+        assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn prepare_socket_path_rejects_active_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-forkd.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+
+        let error = prepare_socket_path(&socket).await.unwrap_err();
+
+        assert!(error.to_string().contains("already accepting connections"));
+        assert!(socket.exists());
+    }
 }
