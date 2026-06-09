@@ -775,7 +775,7 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
     ] {
         if !candidates
             .iter()
-            .any(|candidate| rootfs.join(candidate).exists())
+            .any(|candidate| rootfs_executable_exists(&rootfs.join(candidate)))
         {
             missing.push(name);
         }
@@ -789,6 +789,12 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
             missing.join(", ")
         ))
     }
+}
+
+fn rootfs_executable_exists(path: &Path) -> bool {
+    path.metadata()
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 async fn ensure_inaccessible_mask_targets(rootfs: &Path) -> Result<()> {
@@ -830,17 +836,18 @@ mod tests {
     use chrono::Utc;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     #[test]
     fn rootfs_preflight_requires_sudo_apt_tmux_tee_and_bash() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("bin")).unwrap();
         fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        fs::write(dir.path().join("bin/bash"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/sudo"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/apt-get"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/tmux"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/tee"), "").unwrap();
+        write_executable(&dir.path().join("bin/bash"));
+        write_executable(&dir.path().join("usr/bin/sudo"));
+        write_executable(&dir.path().join("usr/bin/apt-get"));
+        write_executable(&dir.path().join("usr/bin/tmux"));
+        write_executable(&dir.path().join("usr/bin/tee"));
         validate_child_rootfs_requirements(dir.path()).unwrap();
     }
 
@@ -860,11 +867,27 @@ mod tests {
     fn rootfs_preflight_requires_bin_bash_for_machinectl_shell() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        fs::write(dir.path().join("usr/bin/bash"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/sudo"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/apt"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/tmux"), "").unwrap();
-        fs::write(dir.path().join("usr/bin/tee"), "").unwrap();
+        write_executable(&dir.path().join("usr/bin/bash"));
+        write_executable(&dir.path().join("usr/bin/sudo"));
+        write_executable(&dir.path().join("usr/bin/apt"));
+        write_executable(&dir.path().join("usr/bin/tmux"));
+        write_executable(&dir.path().join("usr/bin/tee"));
+
+        let error = validate_child_rootfs_requirements(dir.path()).unwrap_err();
+
+        assert!(error.to_string().contains("bash"));
+    }
+
+    #[test]
+    fn rootfs_preflight_rejects_non_executable_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("bin")).unwrap();
+        fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        fs::write(dir.path().join("bin/bash"), "").unwrap();
+        write_executable(&dir.path().join("usr/bin/sudo"));
+        write_executable(&dir.path().join("usr/bin/apt"));
+        write_executable(&dir.path().join("usr/bin/tmux"));
+        write_executable(&dir.path().join("usr/bin/tee"));
 
         let error = validate_child_rootfs_requirements(dir.path()).unwrap_err();
 
@@ -1144,5 +1167,10 @@ mod tests {
             session_type: SessionType::Pty,
             log_path: format!("/agentfs/envs/{env_id}/logs/sessions/{session_id}.log").into(),
         }
+    }
+
+    fn write_executable(path: &Path) {
+        fs::write(path, "").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
