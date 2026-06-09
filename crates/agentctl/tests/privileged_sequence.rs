@@ -188,6 +188,7 @@ fn require_privileged_test_environment() {
         "systemd-nspawn",
         "systemd-run",
         "tmux",
+        "codex",
     ] {
         run(&["bash", "-lc", &format!("command -v {program}")]);
     }

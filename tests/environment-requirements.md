@@ -127,10 +127,15 @@ command -v sudo
 command -v apt || command -v apt-get
 command -v tmux
 command -v tee
+command -v codex
 ```
 
 The integration sequence also installs and verifies `ripgrep` inside `codex-1`,
 so apt egress must work from the child nspawn private NAT network.
+
+The privileged sequence starts a persistent `codex` session inside `codex-1`.
+Because the child rootfs is forked from `/`, install and configure the Codex CLI
+on the host rootfs before freezing `base-001`.
 
 ## Build And Install
 
