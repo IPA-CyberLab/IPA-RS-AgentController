@@ -404,7 +404,7 @@ impl AgentService {
         if self.layout.read_session(env_id, session_id).await.is_err()
             || !self.sessions.is_running(&env, session_id).await?
         {
-            self.session_create(env_id, session_id, &["bash".to_string()])
+            self.session_create(env_id, session_id, &default_shell_command())
                 .await?;
         }
         Ok((env.machine_name, session_id.to_string()))
@@ -729,6 +729,10 @@ fn sync_env_session_index(env: &mut Env, sessions: &[Session]) -> bool {
     }
 }
 
+fn default_shell_command() -> Vec<String> {
+    vec!["/bin/bash".to_string()]
+}
+
 async fn read_session_log_file(path: &Path) -> Result<String> {
     match tokio::fs::read_to_string(path).await {
         Ok(text) => Ok(text),
@@ -782,7 +786,7 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_failed_base_dir, cleanup_failed_env_dir, ensure_running_env,
+        cleanup_failed_base_dir, cleanup_failed_env_dir, default_shell_command, ensure_running_env,
         read_offline_session_log, read_session_log_file, remove_dir_all_if_exists,
         remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
         should_reject_session_create, sync_env_session_index, validate_child_rootfs_requirements,
@@ -878,6 +882,11 @@ mod tests {
         assert!(sync_env_session_index(&mut env, &sessions));
         assert_eq!(env.sessions, vec!["codex".to_string(), "dev".to_string()]);
         assert!(!sync_env_session_index(&mut env, &sessions));
+    }
+
+    #[test]
+    fn default_shell_uses_absolute_bash_path() {
+        assert_eq!(default_shell_command(), vec!["/bin/bash".to_string()]);
     }
 
     #[tokio::test]
