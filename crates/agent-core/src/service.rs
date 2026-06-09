@@ -249,7 +249,9 @@ impl AgentService {
         let mut env = self.layout.read_env(id).await?;
         self.log_lifecycle(id, "stopping").await?;
         self.nspawn.stop(&env.machine_name).await?;
-        env.state = EnvState::Stopped;
+        if should_mark_stopped(&env.state) {
+            env.state = EnvState::Stopped;
+        }
         self.log_lifecycle(id, "stopped").await?;
         self.layout.write_env(&env).await?;
         Ok(())
@@ -558,6 +560,13 @@ fn should_check_quota(state: &EnvState) -> bool {
     !matches!(state, EnvState::Failed | EnvState::QuotaExceeded)
 }
 
+fn should_mark_stopped(state: &EnvState) -> bool {
+    matches!(
+        state,
+        EnvState::Created | EnvState::Running | EnvState::Stopped
+    )
+}
+
 fn ensure_running_env(env: &Env) -> Result<()> {
     if env.state == EnvState::Running {
         Ok(())
@@ -599,7 +608,7 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_running_env, should_check_quota, should_refresh_live_state,
+        ensure_running_env, should_check_quota, should_mark_stopped, should_refresh_live_state,
         validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
@@ -646,6 +655,15 @@ mod tests {
         assert!(should_check_quota(&EnvState::Stopped));
         assert!(!should_check_quota(&EnvState::Failed));
         assert!(!should_check_quota(&EnvState::QuotaExceeded));
+    }
+
+    #[test]
+    fn stop_preserves_terminal_env_states() {
+        assert!(should_mark_stopped(&EnvState::Created));
+        assert!(should_mark_stopped(&EnvState::Running));
+        assert!(should_mark_stopped(&EnvState::Stopped));
+        assert!(!should_mark_stopped(&EnvState::Failed));
+        assert!(!should_mark_stopped(&EnvState::QuotaExceeded));
     }
 
     #[test]
