@@ -37,9 +37,14 @@ impl Nspawn {
         } else {
             "Private=yes\n".to_string()
         };
+        let inaccessible_paths = Self::INACCESSIBLE_PATHS
+            .iter()
+            .map(|path| format!("Inaccessible={path}\n"))
+            .collect::<String>();
         format!(
-            "[Exec]\nBoot=yes\nPrivateUsers=yes\nHostname={machine}\n\n[Files]\nReadOnly=no\n\n[Network]\n{network}",
+            "[Exec]\nBoot=yes\nPrivateUsers=yes\nHostname={machine}\n\n[Files]\nReadOnly=no\n{inaccessible_paths}\n[Network]\n{network}",
             machine = env.machine_name,
+            inaccessible_paths = inaccessible_paths,
             network = network
         )
     }
@@ -275,6 +280,9 @@ mod tests {
         };
         let text = Nspawn::config_text(&env);
         assert!(text.contains("PrivateUsers=yes"));
+        assert!(text.contains("Inaccessible=/agentfs"));
+        assert!(text.contains("Inaccessible=/run/docker.sock"));
+        assert!(text.contains("Inaccessible=/var/run/docker.sock"));
         assert!(text.contains("VirtualEthernet=yes"));
         assert!(text.contains("Zone=agent-forkd"));
         assert!(text.contains("Hostname=af-codex-1"));
