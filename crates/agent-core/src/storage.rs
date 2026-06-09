@@ -234,6 +234,7 @@ impl Layout {
         validate_id(&env.base_id)?;
         validate_id(&env.profile)?;
         env.limits.validate()?;
+        env.network_policy.validate()?;
         for session_id in &env.sessions {
             validate_id(session_id)?;
         }
@@ -562,6 +563,26 @@ mod tests {
         env = test_env(&layout, "codex-1");
         env.rootfs_path = dir.path().join("envs/other/rootfs");
         assert!(layout.write_env(&env).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_env_metadata_with_invalid_network_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let mut env = test_env(&layout, "codex-1");
+
+        env.network_policy.egress_proxy = Some("socks5://proxy.example.invalid".to_string());
+        assert!(layout.write_env(&env).await.is_err());
+
+        write_json(&layout.env_dir("codex-1").join("meta.json"), &env)
+            .await
+            .unwrap();
+        assert!(layout
+            .read_env("codex-1")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("egress_proxy must start with http:// or https://"));
     }
 
     #[tokio::test]
