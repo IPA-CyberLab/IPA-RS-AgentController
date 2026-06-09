@@ -227,7 +227,18 @@ impl TmuxSessionBackend {
                 Self::machinectl_shell_args(&env.machine_name, &command),
             )
             .await?;
-        Ok(output.status == 0)
+        if output.status == 0 {
+            return Ok(true);
+        }
+        if tmux_has_session_reports_missing(&output.stderr) {
+            return Ok(false);
+        }
+        Err(anyhow!(
+            "failed to inspect tmux session {session_id} in {}: {}{}",
+            env.machine_name,
+            output.stdout,
+            output.stderr
+        ))
     }
 
     pub async fn list(&self, env: &Env) -> Result<Vec<String>> {
@@ -300,11 +311,18 @@ fn tmux_list_reports_no_sessions(stderr: &str) -> bool {
     stderr.contains("no server running") || stderr.contains("no sessions")
 }
 
+fn tmux_has_session_reports_missing(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no server running")
+        || stderr.contains("can't find session")
+        || stderr.contains("can't find window")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         parse_tmux_session_names, tmux_detach_reports_no_current_client,
-        tmux_list_reports_no_sessions, TmuxSessionBackend,
+        tmux_has_session_reports_missing, tmux_list_reports_no_sessions, TmuxSessionBackend,
     };
     use crate::command::shell_join;
 
@@ -438,5 +456,20 @@ mod tests {
         ));
         assert!(tmux_list_reports_no_sessions("no sessions"));
         assert!(!tmux_list_reports_no_sessions("permission denied"));
+    }
+
+    #[test]
+    fn has_session_only_treats_tmux_absence_as_missing() {
+        assert!(tmux_has_session_reports_missing(
+            "no server running on /tmp/tmux-0/default"
+        ));
+        assert!(tmux_has_session_reports_missing("can't find session: dev"));
+        assert!(tmux_has_session_reports_missing("can't find window: dev"));
+        assert!(!tmux_has_session_reports_missing(
+            "Failed to connect bus: Permission denied"
+        ));
+        assert!(!tmux_has_session_reports_missing(
+            "No machine 'af-codex-1' known"
+        ));
     }
 }
