@@ -66,8 +66,8 @@ enum EnvCommand {
         env_id: String,
         #[arg(long = "from")]
         base: String,
-        #[arg(long, default_value = "privileged-dev")]
-        profile: String,
+        #[arg(long)]
+        profile: Option<String>,
         #[arg(long)]
         cpu_max: Option<String>,
         #[arg(long)]
@@ -150,9 +150,9 @@ impl ExportKind {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let request = to_request(&cli);
     let config =
         AgentConfig::load_or_default(cli.config.as_deref(), effective_agentfs(&cli)).await?;
+    let request = to_request(&cli, &config);
     let response = call(&config.socket_path, request).await?;
     print_response(response)
 }
@@ -164,7 +164,7 @@ fn effective_agentfs(cli: &Cli) -> PathBuf {
     }
 }
 
-fn to_request(cli: &Cli) -> Request {
+fn to_request(cli: &Cli, config: &AgentConfig) -> Request {
     match &cli.command {
         Command::Init(args) => Request::Init {
             agentfs: args.agentfs.clone().unwrap_or_else(|| cli.agentfs.clone()),
@@ -190,7 +190,9 @@ fn to_request(cli: &Cli) -> Request {
             } => Request::EnvCreate {
                 id: env_id.clone(),
                 base: base.clone(),
-                profile: profile.clone(),
+                profile: profile
+                    .clone()
+                    .unwrap_or_else(|| config.default_profile.clone()),
                 limits: LimitOverrides {
                     cpu_max: cpu_max.clone(),
                     memory_max: memory_max.clone(),
@@ -380,8 +382,10 @@ fn session_state_label(state: &SessionState) -> &'static str {
 mod tests {
     use super::{
         effective_agentfs, env_state_label, machinectl_attach_args, parse_response_line,
-        session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command, InitArgs,
+        session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command,
+        EnvCommand, InitArgs,
     };
+    use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
     use agent_core::protocol::Request;
     use std::path::PathBuf;
@@ -397,8 +401,69 @@ mod tests {
         };
 
         assert_eq!(effective_agentfs(&cli), PathBuf::from("/custom-agentfs"));
-        match to_request(&cli) {
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/custom-agentfs"))) {
             Request::Init { agentfs } => assert_eq!(agentfs, PathBuf::from("/custom-agentfs")),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_create_uses_configured_default_profile() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::Env {
+                command: EnvCommand::Create {
+                    env_id: "codex-1".to_string(),
+                    base: "base-001".to_string(),
+                    profile: None,
+                    cpu_max: None,
+                    memory_max: None,
+                    pids_max: None,
+                    disk_max: None,
+                    network: None,
+                    idle_timeout: None,
+                    max_runtime: None,
+                },
+            },
+        };
+        let mut config = AgentConfig::new(PathBuf::from("/agentfs"));
+        config.default_profile = "custom-dev".to_string();
+        config.profiles.push(Profile {
+            name: "custom-dev".to_string(),
+            limits: Default::default(),
+        });
+
+        match to_request(&cli, &config) {
+            Request::EnvCreate { profile, .. } => assert_eq!(profile, "custom-dev"),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_create_profile_flag_overrides_configured_default() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::Env {
+                command: EnvCommand::Create {
+                    env_id: "codex-1".to_string(),
+                    base: "base-001".to_string(),
+                    profile: Some("explicit-dev".to_string()),
+                    cpu_max: None,
+                    memory_max: None,
+                    pids_max: None,
+                    disk_max: None,
+                    network: None,
+                    idle_timeout: None,
+                    max_runtime: None,
+                },
+            },
+        };
+        let config = AgentConfig::new(PathBuf::from("/agentfs"));
+
+        match to_request(&cli, &config) {
+            Request::EnvCreate { profile, .. } => assert_eq!(profile, "explicit-dev"),
             other => panic!("unexpected request {other:?}"),
         }
     }
