@@ -391,7 +391,7 @@ mod tests {
     use super::{
         effective_agentfs, env_state_label, machinectl_attach_args, parse_response_line,
         session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command,
-        EnvCommand, InitArgs,
+        EnvCommand, ExportArgs, ExportKind, InitArgs,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
@@ -490,6 +490,61 @@ mod tests {
 
         match to_request(&cli, &config).unwrap() {
             Request::EnvCreate { profile, .. } => assert_eq!(profile, "explicit-dev"),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shell_command_maps_to_shell_request() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::Shell {
+                env_id: "codex-1".to_string(),
+            },
+        };
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::Shell { id } => assert_eq!(id, "codex-1"),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_command_maps_to_diff_request() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::Diff {
+                env_id: "codex-1".to_string(),
+            },
+        };
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::Diff { env_id } => assert_eq!(env_id, "codex-1"),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn export_command_uses_wire_export_type() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            command: Command::Export(ExportArgs {
+                env_id: "codex-1".to_string(),
+                export_type: ExportKind::WorkspacePatch,
+            }),
+        };
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::Export {
+                env_id,
+                export_type,
+            } => {
+                assert_eq!(env_id, "codex-1");
+                assert_eq!(export_type, "workspace-patch");
+            }
             other => panic!("unexpected request {other:?}"),
         }
     }
