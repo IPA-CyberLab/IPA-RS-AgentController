@@ -318,7 +318,7 @@ impl AgentService {
         let mut env = self.layout.read_env(id).await?;
         self.log_daemon(id, "env stop requested").await?;
         self.log_lifecycle(id, "stopping").await?;
-        self.nspawn.stop(&env.machine_name).await?;
+        self.nspawn.stop(&env).await?;
         let mut refreshed = env.clone();
         self.nspawn.refresh_state(&mut refreshed).await?;
         if refreshed.state == EnvState::Running {
@@ -337,7 +337,7 @@ impl AgentService {
         let env = self.layout.read_env(id).await?;
         self.log_daemon(id, "env destroy requested").await?;
         self.log_lifecycle(id, "destroying").await?;
-        self.nspawn.stop(&env.machine_name).await?;
+        self.nspawn.stop(&env).await?;
         let qgroup_id = self.btrfs.qgroup_id(&env.rootfs_path).await?;
         self.btrfs.delete_subvolume(&env.rootfs_path).await?;
         if let Some(qgroup_id) = qgroup_id {
@@ -356,7 +356,7 @@ impl AgentService {
             self.nspawn.refresh_state(&mut env).await?;
         }
         if idle_timeout_expired(&env, Utc::now()) {
-            self.nspawn.stop(&env.machine_name).await?;
+            self.nspawn.stop(&env).await?;
             apply_stopped_state(&mut env);
             self.log_lifecycle(id, "idle timeout exceeded").await?;
         }

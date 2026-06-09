@@ -146,6 +146,9 @@ impl Nspawn {
     }
 
     pub async fn start(&self, env: &Env, log_path: Option<&Path>) -> Result<()> {
+        let unit = unit_name(&env.id);
+        self.stop_unit(&unit).await?;
+        self.reset_failed_unit(&unit).await?;
         if env.limits.network == "private-nat" {
             self.write_private_nat_network_config().await?;
             self.runner
@@ -159,21 +162,26 @@ impl Nspawn {
         Ok(())
     }
 
-    pub async fn stop(&self, machine_name: &str) -> Result<()> {
+    pub async fn stop(&self, env: &Env) -> Result<()> {
         let output = self
             .runner
-            .run("machinectl", ["terminate", machine_name])
+            .run("machinectl", ["terminate", &env.machine_name])
             .await?;
-        if output.status == 0 || machinectl_reports_missing_machine(&output.stderr) {
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "machinectl terminate {machine_name} exited with {}: {}{}",
+        let machine_stopped =
+            output.status == 0 || machinectl_reports_missing_machine(&output.stderr);
+        let unit = unit_name(&env.id);
+        self.stop_unit(&unit).await?;
+        self.reset_failed_unit(&unit).await?;
+        if !machine_stopped {
+            return Err(anyhow!(
+                "machinectl terminate {} exited with {}: {}{}",
+                env.machine_name,
                 output.status,
                 output.stdout,
                 output.stderr
-            ))
+            ));
         }
+        Ok(())
     }
 
     pub async fn shell(&self, machine_name: &str) -> Result<()> {
@@ -220,6 +228,34 @@ impl Nspawn {
         )?;
         Ok(())
     }
+
+    async fn stop_unit(&self, unit: &str) -> Result<()> {
+        let output = self.runner.run("systemctl", ["stop", unit]).await?;
+        if output.status == 0 || systemctl_reports_missing_unit(&output.stderr) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "systemctl stop {unit} exited with {}: {}{}",
+                output.status,
+                output.stdout,
+                output.stderr
+            ))
+        }
+    }
+
+    async fn reset_failed_unit(&self, unit: &str) -> Result<()> {
+        let output = self.runner.run("systemctl", ["reset-failed", unit]).await?;
+        if output.status == 0 || systemctl_reports_missing_unit(&output.stderr) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "systemctl reset-failed {unit} exited with {}: {}{}",
+                output.status,
+                output.stdout,
+                output.stderr
+            ))
+        }
+    }
 }
 
 fn systemd_limit_properties(env: &Env) -> Vec<String> {
@@ -252,6 +288,14 @@ fn is_unlimited_str(value: &str) -> bool {
 fn machinectl_reports_missing_machine(stderr: &str) -> bool {
     let stderr = stderr.to_ascii_lowercase();
     stderr.contains("no machine") || stderr.contains("not exist") || stderr.contains("not found")
+}
+
+fn systemctl_reports_missing_unit(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("not loaded")
+        || stderr.contains("could not be found")
+        || stderr.contains("not found")
+        || stderr.contains("does not exist")
 }
 
 fn machinectl_show_state_result(
