@@ -195,19 +195,28 @@ impl AgentService {
         }
         let limits = profile.limits.clone().with_overrides(limit_overrides);
         limits.validate()?;
-        tokio::fs::create_dir_all(self.layout.session_logs(id)).await?;
-        tokio::fs::create_dir_all(self.layout.sessions_dir(id)).await?;
-        tokio::fs::create_dir_all(env_dir.join("exports")).await?;
-        tokio::fs::create_dir_all(env_dir.join("locks")).await?;
+        tokio::fs::create_dir_all(&env_dir).await?;
         let rootfs = self.layout.env_rootfs(id);
-        self.btrfs
+        if let Err(error) = self
+            .btrfs
             .snapshot_writable(&base.rootfs_path, &rootfs)
-            .await?;
-        self.btrfs.set_limit(&limits.disk_max, &rootfs).await?;
+            .await
+        {
+            cleanup_failed_env_dir(&env_dir).await;
+            return Err(error);
+        }
+        if let Err(error) = self.btrfs.set_limit(&limits.disk_max, &rootfs).await {
+            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            return Err(error);
+        }
+        if let Err(error) = self.ensure_env_dirs(id).await {
+            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            return Err(error);
+        }
         let env = Env {
             id: id.to_string(),
             base_id: base_id.to_string(),
-            rootfs_path: rootfs,
+            rootfs_path: rootfs.clone(),
             machine_name: machine_name(id),
             state: EnvState::Created,
             profile: profile.name.clone(),
@@ -215,10 +224,23 @@ impl AgentService {
             limits,
             sessions: Vec::new(),
         };
-        self.log_daemon(id, "env created").await?;
-        self.log_lifecycle(id, "created").await?;
-        self.nspawn.write_config(&env).await?;
-        self.layout.write_env(&env).await?;
+        if let Err(error) = self.log_daemon(id, "env created").await {
+            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            return Err(error);
+        }
+        if let Err(error) = self.log_lifecycle(id, "created").await {
+            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            return Err(error);
+        }
+        if let Err(error) = self.nspawn.write_config(&env).await {
+            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            return Err(error);
+        }
+        if let Err(error) = self.layout.write_env(&env).await {
+            let _ = self.nspawn.remove_config(&env).await;
+            self.cleanup_failed_env_create(&rootfs, &env_dir).await;
+            return Err(error);
+        }
         Ok(env)
     }
 
@@ -565,6 +587,24 @@ impl AgentService {
         let line = format!("{} {message}\n", Utc::now().to_rfc3339());
         CommandRunner::append_to_file(path, &line).await
     }
+
+    async fn ensure_env_dirs(&self, id: &str) -> Result<()> {
+        let env_dir = self.layout.env_dir(id);
+        tokio::fs::create_dir_all(self.layout.session_logs(id)).await?;
+        tokio::fs::create_dir_all(self.layout.sessions_dir(id)).await?;
+        tokio::fs::create_dir_all(env_dir.join("exports")).await?;
+        tokio::fs::create_dir_all(env_dir.join("locks")).await?;
+        Ok(())
+    }
+
+    async fn cleanup_failed_env_create(&self, rootfs: &Path, env_dir: &Path) {
+        let _ = self.btrfs.delete_subvolume(rootfs).await;
+        cleanup_failed_env_dir(env_dir).await;
+    }
+}
+
+async fn cleanup_failed_env_dir(env_dir: &Path) {
+    let _ = tokio::fs::remove_dir_all(env_dir).await;
 }
 
 async fn remove_path_if_exists(path: &Path) -> Result<()> {
@@ -652,9 +692,9 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_running_env, read_session_log_file, remove_path_if_exists, should_check_quota,
-        should_mark_stopped, should_refresh_live_state, should_reject_session_create,
-        validate_child_rootfs_requirements, AgentService,
+        cleanup_failed_env_dir, ensure_running_env, read_session_log_file, remove_path_if_exists,
+        should_check_quota, should_mark_stopped, should_refresh_live_state,
+        should_reject_session_create, validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits};
@@ -765,6 +805,19 @@ mod tests {
         assert!(!dir.path().join("agentfs/envs").exists());
         assert!(!dir.path().join("agentfs/cache").exists());
         assert!(!dir.path().join("agentfs/runtime").exists());
+    }
+
+    #[tokio::test]
+    async fn failed_env_dir_cleanup_removes_partial_metadata_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_dir = dir.path().join("envs/codex-1");
+        fs::create_dir_all(env_dir.join("logs/sessions")).unwrap();
+        fs::create_dir_all(env_dir.join("sessions")).unwrap();
+        fs::write(env_dir.join("logs/lifecycle.log"), "creating\n").unwrap();
+
+        cleanup_failed_env_dir(&env_dir).await;
+
+        assert!(!env_dir.exists());
     }
 
     #[tokio::test]
