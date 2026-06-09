@@ -212,6 +212,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_accepts_partial_network_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "privileged-dev",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "800%",
+        "memory_max": "32G",
+        "pids_max": 8192,
+        "disk_max": "200G",
+        "network": "private-nat",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      },
+      "network_policy": {
+        "egress_proxy": "https://proxy.example.invalid"
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
+
+        let config = AgentConfig::load(&path).await.unwrap();
+        let policy = &config.profile("privileged-dev").unwrap().network_policy;
+        assert_eq!(
+            policy.egress_proxy.as_deref(),
+            Some("https://proxy.example.invalid")
+        );
+        assert!(policy.allowlist.is_empty());
+    }
+
+    #[tokio::test]
     async fn config_rejects_invalid_network_policy() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent-forkd.json");
@@ -236,6 +277,45 @@ mod tests {
       "network_policy": {
         "egress_proxy": "socks5://proxy.example.invalid",
         "allowlist": []
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
+
+        assert!(AgentConfig::load(&path)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid network_policy for profile privileged-dev"));
+    }
+
+    #[tokio::test]
+    async fn config_rejects_duplicate_allowlist_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "privileged-dev",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "800%",
+        "memory_max": "32G",
+        "pids_max": 8192,
+        "disk_max": "200G",
+        "network": "private-nat",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      },
+      "network_policy": {
+        "allowlist": ["github.com", "github.com"]
       }
     }
   ]
@@ -432,6 +512,7 @@ impl Profile {
 #[serde(deny_unknown_fields)]
 pub struct NetworkPolicy {
     pub egress_proxy: Option<String>,
+    #[serde(default)]
     pub allowlist: Vec<String>,
 }
 
@@ -442,9 +523,13 @@ impl NetworkPolicy {
                 anyhow::bail!("egress_proxy must start with http:// or https://");
             }
         }
+        let mut seen = BTreeSet::new();
         for entry in &self.allowlist {
             if entry.trim().is_empty() {
                 anyhow::bail!("allowlist entries must not be empty");
+            }
+            if !seen.insert(entry) {
+                anyhow::bail!("allowlist entries must be unique");
             }
         }
         Ok(())
