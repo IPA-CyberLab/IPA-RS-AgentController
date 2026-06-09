@@ -232,7 +232,13 @@ impl AgentService {
                 .await?;
             return Err(error);
         }
-        self.nspawn.start(&env, Some(&nspawn_log)).await?;
+        if let Err(error) = self.nspawn.start(&env, Some(&nspawn_log)).await {
+            env.state = EnvState::Failed;
+            self.layout.write_env(&env).await?;
+            self.log_lifecycle(id, &format!("failed start: {error:#}"))
+                .await?;
+            return Err(error);
+        }
         env.state = EnvState::Running;
         self.log_lifecycle(id, "running").await?;
         self.layout.write_env(&env).await?;
@@ -288,11 +294,17 @@ impl AgentService {
         if command.is_empty() {
             return Err(anyhow!("exec command cannot be empty"));
         }
-        let env = self.layout.read_env(id).await?;
+        let mut env = self.layout.read_env(id).await?;
         let log_path = self.layout.env_logs(id).join("exec.log");
         self.log_lifecycle(id, &format!("exec {}", command.join(" ")))
             .await?;
-        self.nspawn.exec(&env, command, &log_path).await
+        let output = self.nspawn.exec(&env, command, &log_path).await?;
+        if self.btrfs.quota_exceeded(&env.rootfs_path).await? {
+            env.state = EnvState::QuotaExceeded;
+            self.layout.write_env(&env).await?;
+            self.log_lifecycle(id, "quota exceeded after exec").await?;
+        }
+        Ok(output)
     }
 
     pub async fn session_create(

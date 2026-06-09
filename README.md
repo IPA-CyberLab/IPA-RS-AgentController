@@ -89,6 +89,8 @@ Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such a
 
 Env start validates that the child rootfs contains `/bin/bash`, `sudo`, `apt` or `apt-get`, and `tmux`. If those tools are missing, the env is marked `failed` and nspawn is not launched.
 
+If nspawn launch fails, the env is marked `failed`. After exec, the daemon checks the Btrfs qgroup and marks the env `quota_exceeded` when the child has reached its disk quota.
+
 Session operations invoke `tmux` through `machinectl shell` inside the child nspawn machine. For interactive attach, `agent-forkd` prepares or resolves the target session and returns the child machine/session to `agentctl`; the CLI then runs `machinectl shell ... tmux attach-session` with the user's terminal attached. The child tmux transcript is piped to `/var/log/agent-forkd/sessions/<session-id>.log` inside the child rootfs so `/agentfs` does not need to be bind-mounted into the child. `agentctl session logs` pulls that transcript through `machinectl` and writes it to `/agentfs/envs/<env-id>/logs/sessions/<session-id>.log`.
 
 ## Security Model
