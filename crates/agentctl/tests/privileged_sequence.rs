@@ -45,6 +45,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     ]);
     run(&["agentctl", "env", "start", "codex-1"]);
     run(&["agentctl", "env", "start", "claude-1"]);
+    assert!(Path::new("/agentfs/envs/codex-1/logs/nspawn.log").exists());
 
     let codex_status = json(&["agentctl", "env", "status", "codex-1"]);
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
@@ -63,6 +64,10 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     run(&[
         "agentctl", "exec", "codex-1", "--", "sudo", "apt", "install", "-y", "ripgrep",
     ]);
+    assert_file_contains(
+        "/agentfs/envs/codex-1/logs/exec.log",
+        "sudo apt install -y ripgrep",
+    );
     assert!(text(&["agentctl", "exec", "codex-1", "--", "rg", "--version"]).contains("ripgrep"));
     assert_eq!(
         text(&[
@@ -134,6 +139,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(changed_paths.contains("/root/marker.txt"));
 
     run(&["agentctl", "env", "stop", "codex-1"]);
+    assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "stopped");
     run(&["agentctl", "env", "destroy", "codex-1"]);
     assert!(!Path::new("/agentfs/envs/codex-1/rootfs").exists());
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
@@ -155,6 +161,16 @@ fn assert_btrfs_readonly(path: &str, readonly: bool) {
     assert_eq!(
         text(&["btrfs", "property", "get", "-ts", path, "ro"]).trim(),
         expected
+    );
+}
+
+fn assert_file_contains(path: &str, expected: &str) {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("failed to read {path}: {error}");
+    });
+    assert!(
+        text.contains(expected),
+        "{path} did not contain {expected:?}"
     );
 }
 
