@@ -374,12 +374,14 @@ impl AgentService {
 
     pub async fn session_logs(&self, env_id: &str, session_id: &str) -> Result<String> {
         let env = self.layout.read_env(env_id).await?;
-        ensure_running_env(&env)?;
         let session = self.layout.read_session(env_id, session_id).await?;
-        let logs = self
-            .sessions
-            .logs(&env, session_id, &session.log_path)
-            .await?;
+        let logs = if env.state == EnvState::Running {
+            self.sessions
+                .logs(&env, session_id, &session.log_path)
+                .await?
+        } else {
+            read_session_log_file(&session.log_path).await?
+        };
         self.log_lifecycle(env_id, &format!("session {session_id} logs synced"))
             .await?;
         Ok(logs)
@@ -588,6 +590,14 @@ fn ensure_running_env(env: &Env) -> Result<()> {
     }
 }
 
+async fn read_session_log_file(path: &Path) -> Result<String> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
     let mut missing = Vec::new();
     for (name, candidates) in [
@@ -617,8 +627,8 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_running_env, should_check_quota, should_mark_stopped, should_refresh_live_state,
-        validate_child_rootfs_requirements, AgentService,
+        ensure_running_env, read_session_log_file, should_check_quota, should_mark_stopped,
+        should_refresh_live_state, validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits};
@@ -722,6 +732,25 @@ mod tests {
         assert!(!dir.path().join("agentfs/envs").exists());
         assert!(!dir.path().join("agentfs/cache").exists());
         assert!(!dir.path().join("agentfs/runtime").exists());
+    }
+
+    #[tokio::test]
+    async fn persisted_session_logs_are_available_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("sessions/dev.log");
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        fs::write(&log_path, "hello from tmux\n").unwrap();
+
+        assert_eq!(
+            read_session_log_file(&log_path).await.unwrap(),
+            "hello from tmux\n"
+        );
+        assert_eq!(
+            read_session_log_file(&dir.path().join("missing.log"))
+                .await
+                .unwrap(),
+            ""
+        );
     }
 
     fn test_env(state: EnvState) -> Env {
