@@ -47,6 +47,8 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     ]);
     run(&["agentctl", "env", "start", "codex-1"]);
     run(&["agentctl", "env", "start", "claude-1"]);
+    assert_nspawn_config_for("codex-1");
+    assert_private_nat_network_config();
     assert!(Path::new("/agentfs/envs/codex-1/logs/nspawn.log").exists());
     assert_file_contains("/agentfs/envs/codex-1/logs/agent-forkd.log", "env created");
     assert_file_contains("/agentfs/envs/codex-1/logs/lifecycle.log", "running");
@@ -340,6 +342,29 @@ fn assert_session_running(env_id: &str, session_id: &str) {
             .any(|line| line.contains(session_id) && line.contains("running")),
         "session {session_id} in env {env_id} was not listed as running:\n{sessions}"
     );
+}
+
+fn assert_nspawn_config_for(env_id: &str) {
+    let path = format!("/etc/systemd/nspawn/af-{env_id}.nspawn");
+    assert_file_contains(&path, "Boot=yes");
+    assert_file_contains(&path, "PrivateUsers=yes");
+    assert_file_contains(&path, &format!("Hostname=af-{env_id}"));
+    assert_file_contains(&path, "ReadOnly=no");
+    assert_file_contains(&path, "Inaccessible=/agentfs");
+    assert_file_contains(&path, "Inaccessible=/run/agent-forkd.sock");
+    assert_file_contains(&path, "Inaccessible=/run/docker.sock");
+    assert_file_contains(&path, "Inaccessible=/var/run/docker.sock");
+    assert_file_contains(&path, "VirtualEthernet=yes");
+    assert_file_contains(&path, "Zone=agent-forkd");
+}
+
+fn assert_private_nat_network_config() {
+    let path = "/etc/systemd/network/80-agent-forkd-private-nat.network";
+    assert_file_contains(path, "Name=vz-agent-forkd");
+    assert_file_contains(path, "Address=10.77.0.1/24");
+    assert_file_contains(path, "DHCPServer=yes");
+    assert_file_contains(path, "IPMasquerade=ipv4");
+    assert_file_contains(path, "IPForward=ipv4");
 }
 
 fn assert_btrfs_subvolume(path: &str) {
