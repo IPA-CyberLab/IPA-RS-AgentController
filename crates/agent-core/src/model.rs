@@ -191,7 +191,10 @@ fn is_unlimited(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::Limits;
+    use super::{Base, Env, EnvState, Limits, Session, SessionState, SessionType};
+    use chrono::Utc;
+    use serde_json::Value;
+    use std::path::PathBuf;
 
     #[test]
     fn limits_accept_supported_network_modes() {
@@ -261,6 +264,184 @@ mod tests {
         };
 
         limits.validate().unwrap();
+    }
+
+    #[test]
+    fn metadata_schemas_require_model_fields() {
+        assert_schema_required_fields(
+            include_str!("../../../schemas/base.schema.json"),
+            &[
+                "id",
+                "rootfs_path",
+                "readonly",
+                "created_at",
+                "source",
+                "dpkg_manifest",
+            ],
+        );
+        assert_schema_required_fields(
+            include_str!("../../../schemas/env.schema.json"),
+            &[
+                "id",
+                "base_id",
+                "rootfs_path",
+                "machine_name",
+                "state",
+                "profile",
+                "created_at",
+                "limits",
+                "sessions",
+            ],
+        );
+        assert_schema_required_fields(
+            include_str!("../../../schemas/session.schema.json"),
+            &[
+                "id",
+                "env_id",
+                "command",
+                "state",
+                "created_at",
+                "type",
+                "log_path",
+            ],
+        );
+    }
+
+    #[test]
+    fn metadata_schema_states_match_serde_wire_values() {
+        assert_schema_enum_values(
+            include_str!("../../../schemas/env.schema.json"),
+            &["properties", "state", "enum"],
+            &["created", "running", "stopped", "failed", "quota_exceeded"],
+        );
+        assert_schema_enum_values(
+            include_str!("../../../schemas/session.schema.json"),
+            &["properties", "state", "enum"],
+            &["running", "stopped", "failed"],
+        );
+        assert_schema_enum_values(
+            include_str!("../../../schemas/session.schema.json"),
+            &["properties", "type", "enum"],
+            &["pty"],
+        );
+
+        assert_eq!(
+            serde_json::to_value(EnvState::QuotaExceeded).unwrap(),
+            Value::String("quota_exceeded".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(SessionState::Running).unwrap(),
+            Value::String("running".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(SessionType::Pty).unwrap(),
+            Value::String("pty".to_string())
+        );
+    }
+
+    #[test]
+    fn metadata_model_serializes_schema_fields() {
+        let base = Base {
+            id: "base-001".to_string(),
+            rootfs_path: PathBuf::from("/agentfs/bases/base-001/rootfs"),
+            readonly: true,
+            created_at: Utc::now(),
+            source: "current-project-vm".to_string(),
+            dpkg_manifest: PathBuf::from("/agentfs/bases/base-001/dpkg.list"),
+        };
+        assert_json_object_fields(
+            serde_json::to_value(base).unwrap(),
+            &[
+                "id",
+                "rootfs_path",
+                "readonly",
+                "created_at",
+                "source",
+                "dpkg_manifest",
+            ],
+        );
+
+        let env = Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: PathBuf::from("/agentfs/envs/codex-1/rootfs"),
+            machine_name: "af-codex-1".to_string(),
+            state: EnvState::Running,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: vec!["dev".to_string()],
+        };
+        assert_json_object_fields(
+            serde_json::to_value(env).unwrap(),
+            &[
+                "id",
+                "base_id",
+                "rootfs_path",
+                "machine_name",
+                "state",
+                "profile",
+                "created_at",
+                "limits",
+                "sessions",
+            ],
+        );
+
+        let session = Session {
+            id: "dev".to_string(),
+            env_id: "codex-1".to_string(),
+            command: "bash".to_string(),
+            state: SessionState::Running,
+            created_at: Utc::now(),
+            session_type: SessionType::Pty,
+            log_path: PathBuf::from("/agentfs/envs/codex-1/logs/sessions/dev.log"),
+        };
+        assert_json_object_fields(
+            serde_json::to_value(session).unwrap(),
+            &[
+                "id",
+                "env_id",
+                "command",
+                "state",
+                "created_at",
+                "type",
+                "log_path",
+            ],
+        );
+    }
+
+    fn assert_schema_required_fields(schema: &str, expected: &[&str]) {
+        assert_schema_array(schema, &["required"], expected);
+    }
+
+    fn assert_schema_enum_values(schema: &str, path: &[&str], expected: &[&str]) {
+        assert_schema_array(schema, path, expected);
+    }
+
+    fn assert_schema_array(schema: &str, path: &[&str], expected: &[&str]) {
+        let value: Value = serde_json::from_str(schema).unwrap();
+        let mut current = &value;
+        for segment in path {
+            current = current
+                .get(*segment)
+                .unwrap_or_else(|| panic!("schema path {path:?} missing {segment}"));
+        }
+        let actual = current
+            .as_array()
+            .unwrap_or_else(|| panic!("schema path {path:?} was not an array"))
+            .iter()
+            .map(|item| item.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    fn assert_json_object_fields(value: Value, expected: &[&str]) {
+        let object = value.as_object().unwrap();
+        let mut actual = object.keys().map(String::as_str).collect::<Vec<_>>();
+        let mut expected = expected.to_vec();
+        actual.sort();
+        expected.sort();
+        assert_eq!(actual, expected);
     }
 }
 
