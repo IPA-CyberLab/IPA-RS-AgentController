@@ -381,8 +381,20 @@ impl AgentService {
         }
         let mut env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
-        let metadata_exists = self.layout.read_session(env_id, session_id).await.is_ok();
-        let running = metadata_exists && self.sessions.is_running(&env, session_id).await?;
+        let metadata_path = self
+            .layout
+            .sessions_dir(env_id)
+            .join(format!("{session_id}.json"));
+        let metadata_exists = tokio::fs::try_exists(&metadata_path).await?;
+        let running = match self.layout.read_session(env_id, session_id).await {
+            Ok(_) => self.sessions.is_running(&env, session_id).await?,
+            Err(_) if !metadata_exists => false,
+            Err(error) => {
+                return Err(error.context(format!(
+                    "session {session_id} metadata exists but could not be read"
+                )));
+            }
+        };
         if should_reject_session_create(metadata_exists, running) {
             return Err(anyhow!(
                 "session {session_id} is already running in env {env_id}"
@@ -408,9 +420,19 @@ impl AgentService {
         let env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
         let session_id = "shell";
-        if self.layout.read_session(env_id, session_id).await.is_err()
-            || !self.sessions.is_running(&env, session_id).await?
-        {
+        let metadata_path = self
+            .layout
+            .sessions_dir(env_id)
+            .join(format!("{session_id}.json"));
+        let metadata_exists = tokio::fs::try_exists(&metadata_path).await?;
+        let running = match self.layout.read_session(env_id, session_id).await {
+            Ok(_) => self.sessions.is_running(&env, session_id).await?,
+            Err(_) if !metadata_exists => false,
+            Err(error) => {
+                return Err(error.context("shell session metadata exists but could not be read"));
+            }
+        };
+        if !running {
             self.session_create(env_id, session_id, &default_shell_command())
                 .await?;
         }
