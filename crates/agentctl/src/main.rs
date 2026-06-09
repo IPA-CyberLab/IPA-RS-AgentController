@@ -458,6 +458,7 @@ mod tests {
         config.profiles.push(Profile {
             name: "custom-dev".to_string(),
             limits: Default::default(),
+            network_policy: Default::default(),
         });
 
         match to_request(&cli, &config).unwrap() {

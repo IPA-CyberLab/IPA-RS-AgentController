@@ -13,6 +13,10 @@
         "network": "private-nat",
         "idle_timeout": "0",
         "max_runtime": "0"
+      },
+      "network_policy": {
+        "egress_proxy": null,
+        "allowlist": []
       }
     }
   ]

@@ -27,6 +27,18 @@
               "max_runtime": { "type": "string", "pattern": "^(0|[Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]|[Ii][Nn][Ff][Ii][Nn][Ii][Tt][Yy]|[Nn][Oo][Nn][Ee]|[0-9]+(\\.[0-9]+)?([Ss]|[Ss][Ee][Cc]|[Mm]|[Mm][Ii][Nn]|[Hh]|[Hh][Rr]|[Dd]|[Dd][Aa][Yy]))$" }
             },
             "additionalProperties": false
+          },
+          "network_policy": {
+            "type": "object",
+            "properties": {
+              "egress_proxy": { "type": ["string", "null"], "pattern": "^https?://.+" },
+              "allowlist": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 },
+                "uniqueItems": true
+              }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false

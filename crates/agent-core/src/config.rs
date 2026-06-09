@@ -60,6 +60,10 @@ impl AgentConfig {
                 .limits
                 .validate()
                 .with_context(|| format!("invalid limits for profile {}", profile.name))?;
+            profile
+                .network_policy
+                .validate()
+                .with_context(|| format!("invalid network_policy for profile {}", profile.name))?;
         }
         if !names.contains(&self.default_profile) {
             return Err(anyhow!(
@@ -73,10 +77,83 @@ impl AgentConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentConfig;
+    use super::{AgentConfig, NetworkPolicy};
 
     #[tokio::test]
     async fn config_loads_from_json_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "privileged-dev",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "800%",
+        "memory_max": "32G",
+        "pids_max": 8192,
+        "disk_max": "200G",
+        "network": "private-nat",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      },
+      "network_policy": {
+        "egress_proxy": "https://proxy.example.invalid:8443",
+        "allowlist": ["api.openai.com", "github.com"]
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
+
+        let config = AgentConfig::load(&path).await.unwrap();
+        assert_eq!(config.agentfs.to_string_lossy(), "/tmp/agentfs");
+        assert_eq!(
+            config.profile("privileged-dev").unwrap().limits.memory_max,
+            "32G"
+        );
+        assert_eq!(
+            config
+                .profile("privileged-dev")
+                .unwrap()
+                .network_policy
+                .allowlist,
+            vec!["api.openai.com".to_string(), "github.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn packaged_config_matches_runtime_parser() {
+        let config: AgentConfig =
+            serde_json::from_str(include_str!("../../../packaging/agent-forkd/config.json"))
+                .unwrap();
+
+        config.validate().unwrap();
+        assert_eq!(config.agentfs.to_string_lossy(), "/agentfs");
+        assert_eq!(
+            config.socket_path.to_string_lossy(),
+            "/agentfs/runtime/sockets/agent-forkd.sock"
+        );
+        assert_eq!(config.default_profile, "privileged-dev");
+        assert_eq!(config.profiles.len(), 1);
+        assert_eq!(
+            config.profile("privileged-dev").unwrap().limits,
+            crate::model::Limits::default()
+        );
+        assert_eq!(
+            config.profile("privileged-dev").unwrap().network_policy,
+            NetworkPolicy::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn config_accepts_missing_network_policy_for_backward_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent-forkd.json");
         tokio::fs::write(
@@ -105,31 +182,50 @@ mod tests {
         .unwrap();
 
         let config = AgentConfig::load(&path).await.unwrap();
-        assert_eq!(config.agentfs.to_string_lossy(), "/tmp/agentfs");
         assert_eq!(
-            config.profile("privileged-dev").unwrap().limits.memory_max,
-            "32G"
+            config.profile("privileged-dev").unwrap().network_policy,
+            NetworkPolicy::default()
         );
     }
 
-    #[test]
-    fn packaged_config_matches_runtime_parser() {
-        let config: AgentConfig =
-            serde_json::from_str(include_str!("../../../packaging/agent-forkd/config.json"))
-                .unwrap();
+    #[tokio::test]
+    async fn config_rejects_invalid_network_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-forkd.json");
+        tokio::fs::write(
+            &path,
+            r#"{
+  "agentfs": "/tmp/agentfs",
+  "socket_path": "/tmp/agentfs/runtime/sockets/agent-forkd.sock",
+  "default_profile": "privileged-dev",
+  "profiles": [
+    {
+      "name": "privileged-dev",
+      "limits": {
+        "cpu_max": "800%",
+        "memory_max": "32G",
+        "pids_max": 8192,
+        "disk_max": "200G",
+        "network": "private-nat",
+        "idle_timeout": "0",
+        "max_runtime": "0"
+      },
+      "network_policy": {
+        "egress_proxy": "socks5://proxy.example.invalid",
+        "allowlist": []
+      }
+    }
+  ]
+}"#,
+        )
+        .await
+        .unwrap();
 
-        config.validate().unwrap();
-        assert_eq!(config.agentfs.to_string_lossy(), "/agentfs");
-        assert_eq!(
-            config.socket_path.to_string_lossy(),
-            "/agentfs/runtime/sockets/agent-forkd.sock"
-        );
-        assert_eq!(config.default_profile, "privileged-dev");
-        assert_eq!(config.profiles.len(), 1);
-        assert_eq!(
-            config.profile("privileged-dev").unwrap().limits,
-            crate::model::Limits::default()
-        );
+        assert!(AgentConfig::load(&path)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid network_policy for profile privileged-dev"));
     }
 
     #[tokio::test]
@@ -295,6 +391,8 @@ mod tests {
 pub struct Profile {
     pub name: String,
     pub limits: Limits,
+    #[serde(default)]
+    pub network_policy: NetworkPolicy,
 }
 
 impl Profile {
@@ -302,6 +400,30 @@ impl Profile {
         Self {
             name: "privileged-dev".to_string(),
             limits: Limits::default(),
+            network_policy: NetworkPolicy::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicy {
+    pub egress_proxy: Option<String>,
+    pub allowlist: Vec<String>,
+}
+
+impl NetworkPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(proxy) = &self.egress_proxy {
+            if !(proxy.starts_with("http://") || proxy.starts_with("https://")) {
+                anyhow::bail!("egress_proxy must start with http:// or https://");
+            }
+        }
+        for entry in &self.allowlist {
+            if entry.trim().is_empty() {
+                anyhow::bail!("allowlist entries must not be empty");
+            }
+        }
+        Ok(())
     }
 }
