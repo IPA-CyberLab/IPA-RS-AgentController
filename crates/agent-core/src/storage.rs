@@ -94,22 +94,28 @@ impl Layout {
     }
 
     pub async fn write_base(&self, base: &Base) -> Result<()> {
+        validate_id(&base.id)?;
         write_json(&self.base_dir(&base.id).join("manifest.json"), base).await
     }
 
     pub async fn read_base(&self, id: &str) -> Result<Base> {
+        validate_id(id)?;
         read_json(&self.base_dir(id).join("manifest.json")).await
     }
 
     pub async fn write_env(&self, env: &Env) -> Result<()> {
+        validate_id(&env.id)?;
         write_json(&self.env_dir(&env.id).join("meta.json"), env).await
     }
 
     pub async fn read_env(&self, id: &str) -> Result<Env> {
+        validate_id(id)?;
         read_json(&self.env_dir(id).join("meta.json")).await
     }
 
     pub async fn write_session(&self, session: &Session) -> Result<()> {
+        validate_id(&session.env_id)?;
+        validate_id(&session.id)?;
         write_json(
             &self
                 .sessions_dir(&session.env_id)
@@ -120,6 +126,8 @@ impl Layout {
     }
 
     pub async fn read_session(&self, env_id: &str, session_id: &str) -> Result<Session> {
+        validate_id(env_id)?;
+        validate_id(session_id)?;
         read_json(&self.sessions_dir(env_id).join(format!("{session_id}.json"))).await
     }
 
@@ -137,6 +145,7 @@ impl Layout {
     }
 
     pub async fn list_sessions(&self, env_id: &str) -> Result<Vec<Session>> {
+        validate_id(env_id)?;
         let dir = self.sessions_dir(env_id);
         if !dir.exists() {
             return Ok(Vec::new());
@@ -189,5 +198,52 @@ pub fn validate_id(id: &str) -> Result<()> {
         Err(anyhow!(
             "invalid id {id:?}; use ASCII letters, numbers, '-' or '_'"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Layout;
+    use crate::model::{Env, EnvState, Limits, Session, SessionState, SessionType};
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn storage_rejects_path_traversal_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+
+        assert!(layout.read_base("../base").await.is_err());
+        assert!(layout.read_env("../env").await.is_err());
+        assert!(layout.read_session("codex-1", "../session").await.is_err());
+        assert!(layout.list_sessions("../env").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn storage_validates_ids_before_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::new(dir.path().to_path_buf());
+        let env = Env {
+            id: "../env".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: dir.path().join("rootfs"),
+            machine_name: "af-env".to_string(),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+        assert!(layout.write_env(&env).await.is_err());
+
+        let session = Session {
+            id: "../session".to_string(),
+            env_id: "codex-1".to_string(),
+            command: "bash".to_string(),
+            state: SessionState::Running,
+            created_at: Utc::now(),
+            session_type: SessionType::Pty,
+            log_path: dir.path().join("session.log"),
+        };
+        assert!(layout.write_session(&session).await.is_err());
     }
 }
