@@ -298,6 +298,7 @@ impl AgentService {
             return Err(anyhow!("exec command cannot be empty"));
         }
         let mut env = self.layout.read_env(id).await?;
+        ensure_running_env(&env)?;
         let log_path = self.layout.env_logs(id).join("exec.log");
         self.log_lifecycle(id, &format!("exec {}", command.join(" ")))
             .await?;
@@ -321,6 +322,7 @@ impl AgentService {
             return Err(anyhow!("session command cannot be empty"));
         }
         let mut env = self.layout.read_env(env_id).await?;
+        ensure_running_env(&env)?;
         let log_path = TmuxSessionBackend::log_path(&self.layout.session_logs(env_id), session_id);
         let session = self
             .sessions
@@ -339,6 +341,7 @@ impl AgentService {
 
     pub async fn shell_attach_target(&self, env_id: &str) -> Result<(String, String)> {
         let env = self.layout.read_env(env_id).await?;
+        ensure_running_env(&env)?;
         let session_id = "shell";
         if self.layout.read_session(env_id, session_id).await.is_err()
             || !self.sessions.is_running(&env, session_id).await?
@@ -351,6 +354,7 @@ impl AgentService {
 
     pub async fn session_attach_target(&self, env_id: &str, session_id: &str) -> Result<Env> {
         let env = self.layout.read_env(env_id).await?;
+        ensure_running_env(&env)?;
         let mut session = self.layout.read_session(env_id, session_id).await?;
         if !self.sessions.is_running(&env, session_id).await? {
             session.state = SessionState::Stopped;
@@ -368,6 +372,7 @@ impl AgentService {
 
     pub async fn session_logs(&self, env_id: &str, session_id: &str) -> Result<String> {
         let env = self.layout.read_env(env_id).await?;
+        ensure_running_env(&env)?;
         let session = self.layout.read_session(env_id, session_id).await?;
         let logs = self
             .sessions
@@ -380,6 +385,7 @@ impl AgentService {
 
     pub async fn session_detach(&self, env_id: &str, session_id: &str) -> Result<()> {
         let env = self.layout.read_env(env_id).await?;
+        ensure_running_env(&env)?;
         let session = self.layout.read_session(env_id, session_id).await?;
         self.sessions.detach(&env, &session.id).await?;
         self.log_lifecycle(env_id, &format!("session {session_id} detached"))
@@ -389,6 +395,7 @@ impl AgentService {
 
     pub async fn session_kill(&self, env_id: &str, session_id: &str) -> Result<()> {
         let env = self.layout.read_env(env_id).await?;
+        ensure_running_env(&env)?;
         let mut session = self.layout.read_session(env_id, session_id).await?;
         self.sessions.kill(&env, &session.id).await?;
         session.state = SessionState::Stopped;
@@ -551,6 +558,18 @@ fn should_check_quota(state: &EnvState) -> bool {
     !matches!(state, EnvState::Failed | EnvState::QuotaExceeded)
 }
 
+fn ensure_running_env(env: &Env) -> Result<()> {
+    if env.state == EnvState::Running {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "env {} is {:?}; start it before running commands or sessions",
+            env.id,
+            env.state
+        ))
+    }
+}
+
 fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
     let mut missing = Vec::new();
     for (name, candidates) in [
@@ -580,11 +599,12 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_check_quota, should_refresh_live_state, validate_child_rootfs_requirements,
-        AgentService,
+        ensure_running_env, should_check_quota, should_refresh_live_state,
+        validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
-    use crate::model::EnvState;
+    use crate::model::{machine_name, Env, EnvState, Limits};
+    use chrono::Utc;
     use std::fs;
 
     #[test]
@@ -628,6 +648,21 @@ mod tests {
         assert!(!should_check_quota(&EnvState::QuotaExceeded));
     }
 
+    #[test]
+    fn running_env_guard_blocks_inactive_envs() {
+        let mut env = test_env(EnvState::Running);
+        ensure_running_env(&env).unwrap();
+
+        env.state = EnvState::Stopped;
+        assert!(ensure_running_env(&env)
+            .unwrap_err()
+            .to_string()
+            .contains("start it before running commands or sessions"));
+
+        env.state = EnvState::QuotaExceeded;
+        assert!(ensure_running_env(&env).is_err());
+    }
+
     #[tokio::test]
     async fn base_cleanup_removes_host_agentfs_state() {
         let dir = tempfile::tempdir().unwrap();
@@ -660,5 +695,19 @@ mod tests {
         assert!(!dir.path().join("agentfs/envs").exists());
         assert!(!dir.path().join("agentfs/cache").exists());
         assert!(!dir.path().join("agentfs/runtime").exists());
+    }
+
+    fn test_env(state: EnvState) -> Env {
+        Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
+            machine_name: machine_name("codex-1"),
+            state,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        }
     }
 }
