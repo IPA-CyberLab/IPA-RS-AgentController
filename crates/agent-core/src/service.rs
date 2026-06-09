@@ -597,17 +597,7 @@ impl AgentService {
     }
 
     async fn clean_runtime_paths(&self, rootfs: &Path) -> Result<()> {
-        for rel in [
-            "proc",
-            "sys",
-            "dev",
-            "run",
-            "tmp",
-            "agentfs/bases",
-            "agentfs/envs",
-            "agentfs/cache",
-            "agentfs/runtime",
-        ] {
+        for rel in ["proc", "sys", "dev", "run", "tmp", "agentfs"] {
             let path = rootfs.join(rel);
             remove_path_if_exists(&path).await?;
             if matches!(rel, "proc" | "sys" | "dev" | "run" | "tmp") {
@@ -987,11 +977,13 @@ mod tests {
             "agentfs/envs/sibling",
             "agentfs/cache/apt",
             "agentfs/runtime/sockets",
+            "agentfs/stray",
         ] {
             fs::create_dir_all(dir.path().join(rel)).unwrap();
         }
         fs::write(dir.path().join("agentfs/bases/base-001/secret"), "").unwrap();
         fs::write(dir.path().join("agentfs/envs/sibling/secret"), "").unwrap();
+        fs::write(dir.path().join("agentfs/stray/file"), "").unwrap();
 
         let service = AgentService::new(AgentConfig::new(dir.path().join("agentfs-host")));
         service.clean_runtime_paths(dir.path()).await.unwrap();
@@ -1014,6 +1006,7 @@ mod tests {
         assert!(!dir.path().join("agentfs/envs").exists());
         assert!(!dir.path().join("agentfs/cache").exists());
         assert!(!dir.path().join("agentfs/runtime").exists());
+        assert!(!dir.path().join("agentfs/stray").exists());
     }
 
     #[tokio::test]
