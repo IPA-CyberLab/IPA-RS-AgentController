@@ -172,6 +172,7 @@ impl Nspawn {
             .run_checked("systemd-run", Self::start_args(env, log_path)?)
             .await?;
         self.wait_until_running(env).await?;
+        self.wait_until_shell_ready(env).await?;
         Ok(())
     }
 
@@ -299,6 +300,34 @@ impl Nspawn {
         }
         Err(anyhow!(
             "machine {} did not reach running state after start: {}",
+            env.machine_name,
+            last_status
+        ))
+    }
+
+    async fn wait_until_shell_ready(&self, env: &Env) -> Result<()> {
+        let mut last_status = String::new();
+        for _ in 0..100 {
+            let output = self
+                .runner
+                .run("machinectl", ["shell", &env.machine_name, "/bin/true"])
+                .await?;
+            if output.status == 0 {
+                return Ok(());
+            }
+            if machinectl_reports_missing_machine(&output.stderr) {
+                return Err(anyhow!(
+                    "machine {} disappeared while waiting for shell readiness: {}{}",
+                    env.machine_name,
+                    output.stdout,
+                    output.stderr
+                ));
+            }
+            last_status = format!("{}{}", output.stdout, output.stderr);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(anyhow!(
+            "machine {} did not become shell-ready after start: {}",
             env.machine_name,
             last_status
         ))
