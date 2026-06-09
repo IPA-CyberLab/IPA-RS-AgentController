@@ -114,6 +114,14 @@ impl TmuxSessionBackend {
         ]
     }
 
+    pub fn attach_args(env: &Env, session_id: &str) -> Vec<String> {
+        let command = format!(
+            "tmux attach-session -t {}",
+            shell_quote(&Self::child_tmux_name(session_id))
+        );
+        Self::machinectl_shell_args(&env.machine_name, &command)
+    }
+
     pub async fn create(
         &self,
         env: &Env,
@@ -151,15 +159,8 @@ impl TmuxSessionBackend {
     }
 
     pub async fn attach(&self, env: &Env, session_id: &str) -> Result<()> {
-        let command = format!(
-            "tmux attach-session -t {}",
-            shell_quote(&Self::child_tmux_name(session_id))
-        );
         self.runner
-            .run_checked(
-                "machinectl",
-                Self::machinectl_shell_args(&env.machine_name, &command),
-            )
+            .run_checked("machinectl", Self::attach_args(env, session_id))
             .await?;
         Ok(())
     }
@@ -311,5 +312,30 @@ mod tests {
         let path = TmuxSessionBackend::child_transcript_path("codex");
         assert_eq!(path, "/var/log/agent-forkd/sessions/codex.log");
         assert!(!path.starts_with("/agentfs"));
+    }
+
+    #[test]
+    fn attach_args_target_child_tmux() {
+        use crate::model::{machine_name, Env, EnvState, Limits};
+        use chrono::Utc;
+
+        let env = Env {
+            id: "codex-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
+            machine_name: machine_name("codex-1"),
+            state: EnvState::Running,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: vec!["dev".to_string()],
+        };
+        let args = TmuxSessionBackend::attach_args(&env, "dev");
+        assert_eq!(args[0], "shell");
+        assert_eq!(args[1], "af-codex-1");
+        assert!(args
+            .last()
+            .unwrap()
+            .contains("tmux attach-session -t 'dev'"));
     }
 }

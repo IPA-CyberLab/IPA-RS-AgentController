@@ -4,6 +4,7 @@ use agent_core::protocol::{Request, Response};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use std::process::Command as StdCommand;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -290,6 +291,19 @@ fn print_response(response: Response) -> Result<()> {
                 );
             }
             Ok(())
+        }
+        Response::Attach {
+            machine_name,
+            session_id,
+        } => {
+            let command = format!(
+                "tmux attach-session -t '{}'",
+                session_id.replace('\'', "'\\''")
+            );
+            let status = StdCommand::new("machinectl")
+                .args(["shell", &machine_name, "/bin/bash", "-lc", &command])
+                .status()?;
+            std::process::exit(status.code().unwrap_or(128));
         }
         Response::Error { message } => Err(anyhow!(message)),
     }

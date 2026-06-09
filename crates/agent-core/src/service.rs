@@ -91,8 +91,11 @@ impl AgentService {
                 })
             }
             Request::Shell { id } => {
-                self.shell(&id).await?;
-                Ok(Response::Ok)
+                let (machine_name, session_id) = self.shell_attach_target(&id).await?;
+                Ok(Response::Attach {
+                    machine_name,
+                    session_id,
+                })
             }
             Request::SessionCreate {
                 env_id,
@@ -104,8 +107,10 @@ impl AgentService {
             }
             Request::SessionAttach { env_id, session_id } => {
                 let env = self.layout.read_env(&env_id).await?;
-                self.sessions.attach(&env, &session_id).await?;
-                Ok(Response::Ok)
+                Ok(Response::Attach {
+                    machine_name: env.machine_name,
+                    session_id,
+                })
             }
             Request::SessionList { env_id } => Ok(Response::Sessions {
                 sessions: self.layout.list_sessions(&env_id).await?,
@@ -293,7 +298,7 @@ impl AgentService {
         Ok(())
     }
 
-    pub async fn shell(&self, env_id: &str) -> Result<()> {
+    pub async fn shell_attach_target(&self, env_id: &str) -> Result<(String, String)> {
         let env = self.layout.read_env(env_id).await?;
         let session_id = "shell";
         if self.layout.read_session(env_id, session_id).await.is_err()
@@ -302,7 +307,7 @@ impl AgentService {
             self.session_create(env_id, session_id, &["bash".to_string()])
                 .await?;
         }
-        self.sessions.attach(&env, session_id).await
+        Ok((env.machine_name, session_id.to_string()))
     }
 
     pub async fn session_logs(&self, env_id: &str, session_id: &str) -> Result<String> {

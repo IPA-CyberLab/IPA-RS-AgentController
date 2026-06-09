@@ -85,6 +85,10 @@ pub enum Response {
     Sessions {
         sessions: Vec<Session>,
     },
+    Attach {
+        machine_name: String,
+        session_id: String,
+    },
     Error {
         message: String,
     },
