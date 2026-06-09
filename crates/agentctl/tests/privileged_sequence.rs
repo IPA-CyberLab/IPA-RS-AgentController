@@ -53,6 +53,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     let claude_status = json(&["agentctl", "env", "status", "claude-1"]);
     assert_env_status(&codex_status, "codex-1", "base-001", "running");
     assert_env_status(&claude_status, "claude-1", "base-001", "running");
+    assert_env_list_contains_running(&["codex-1", "claude-1"]);
     assert_ne!(
         codex_status["env"]["rootfs_path"],
         claude_status["env"]["rootfs_path"]
@@ -126,6 +127,23 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "-lc",
         "test ! -e /root/marker.txt",
     ]);
+    run(&[
+        "agentctl",
+        "exec",
+        "codex-1",
+        "--",
+        "bash",
+        "-lc",
+        "mkdir -p /workspace && \
+         cd /workspace && \
+         git init --quiet && \
+         git config user.email test@example.invalid && \
+         git config user.name 'Agent Forkd Test' && \
+         printf 'old\n' > README.md && \
+         git add README.md && \
+         git commit --quiet -m initial && \
+         printf 'new\n' > README.md",
+    ]);
 
     run(&[
         "agentctl", "session", "create", "codex-1", "dev", "--", "bash",
@@ -150,6 +168,13 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     let dpkg_delta = text(&["agentctl", "export", "codex-1", "--type", "dpkg-delta"]);
     assert!(dpkg_delta.contains("ripgrep"));
     assert_file_contains("/agentfs/envs/codex-1/exports/dpkg-delta.txt", "ripgrep");
+    let workspace_patch = text(&["agentctl", "export", "codex-1", "--type", "workspace-patch"]);
+    assert!(workspace_patch.contains("-old"));
+    assert!(workspace_patch.contains("+new"));
+    assert_file_contains(
+        "/agentfs/envs/codex-1/exports/workspace-patch.patch",
+        "+new",
+    );
     let changed_paths = text(&[
         "agentctl",
         "export",
@@ -250,6 +275,35 @@ fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
     assert_eq!(status["env"]["id"], id);
     assert_eq!(status["env"]["base_id"], base_id);
     assert_eq!(status["env"]["state"], state);
+}
+
+fn assert_env_list_contains_running(env_ids: &[&str]) {
+    let list = text(&["agentctl", "env", "list"]);
+    assert!(list.contains("ENV"), "env list omitted ENV header:\n{list}");
+    assert!(
+        list.contains("BASE"),
+        "env list omitted BASE header:\n{list}"
+    );
+    assert!(
+        list.contains("STATE"),
+        "env list omitted STATE header:\n{list}"
+    );
+    assert!(
+        list.contains("DISK_USED"),
+        "env list omitted DISK_USED header:\n{list}"
+    );
+    assert!(
+        list.contains("SESSIONS"),
+        "env list omitted SESSIONS header:\n{list}"
+    );
+
+    for env_id in env_ids {
+        assert!(
+            list.lines()
+                .any(|line| line.contains(env_id) && line.contains("running")),
+            "env list did not show {env_id} as running:\n{list}"
+        );
+    }
 }
 
 fn assert_env_sessions(env_id: &str, expected: &[&str]) {
