@@ -102,11 +102,18 @@ impl TmuxSessionBackend {
         let tmux = Self::child_tmux_name(session_id);
         let transcript = Self::child_transcript_path(session_id);
         let command = shell_join(command);
+        let wrapped = shell_join(&[
+            "/bin/bash".to_string(),
+            "-lc".to_string(),
+            format!(
+                "exec > >(cat >> {}) 2>&1; exec {command}",
+                shell_quote(&transcript)
+            ),
+        ]);
         format!(
-            "mkdir -p /var/log/agent-forkd/sessions && tmux new-session -d -s {tmux} {command} && tmux pipe-pane -o -t {tmux} {pipe}",
+            "mkdir -p /var/log/agent-forkd/sessions && tmux new-session -d -s {tmux} {wrapped}",
             tmux = shell_quote(&tmux),
-            command = shell_quote(&command),
-            pipe = shell_quote(&format!("cat >> {transcript}")),
+            wrapped = shell_quote(&wrapped),
         )
     }
 
@@ -299,7 +306,7 @@ mod tests {
         parse_tmux_session_names, tmux_detach_reports_no_current_client,
         tmux_list_reports_no_sessions, TmuxSessionBackend,
     };
-    use crate::command::{shell_join, shell_quote};
+    use crate::command::shell_join;
 
     #[test]
     fn tmux_name_scopes_by_env() {
@@ -316,8 +323,8 @@ mod tests {
             &["bash".to_string(), "-l".to_string()],
         );
         assert!(command.contains("tmux new-session -d -s 'dev'"));
-        assert!(command.contains("tmux pipe-pane -o -t 'dev'"));
         assert!(command.contains("/var/log/agent-forkd/sessions/dev.log"));
+        assert!(command.contains("exec > >("));
         assert!(!command.contains("machinectl"));
     }
 
@@ -332,10 +339,23 @@ mod tests {
     #[test]
     fn child_create_command_quotes_command_for_tmux() {
         let argv = ["bash".into(), "-lc".into(), "echo 'hello world'".into()];
-        let rendered = shell_join(&argv);
         let command = TmuxSessionBackend::child_create_command("dev", &argv);
 
-        assert!(command.contains(&shell_quote(&rendered)));
+        assert!(command.contains("bash"));
+        assert!(command.contains("-lc"));
+        assert!(command.contains("echo"));
+        assert!(command.contains("hello world"));
+    }
+
+    #[test]
+    fn child_create_command_redirects_before_user_command() {
+        let command =
+            TmuxSessionBackend::child_create_command("quick", &["printf".into(), "done".into()]);
+        let redirect = command.find("exec > >(").unwrap();
+        let user_command = command.find("printf done").unwrap();
+
+        assert!(redirect < user_command);
+        assert!(!command.contains("pipe-pane"));
     }
 
     #[test]
