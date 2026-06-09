@@ -201,6 +201,36 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "running",
     );
     assert_session_logs_contain("codex-1", "logger", "session-log-sentinel");
+    run(&[
+        "agentctl",
+        "session",
+        "create",
+        "codex-1",
+        "killme",
+        "--",
+        "bash",
+        "-lc",
+        "printf 'killme-ready\n'; sleep infinity",
+    ]);
+    assert_session_metadata(
+        "codex-1",
+        "killme",
+        "bash -lc 'printf '\\''killme-ready\n'\\''; sleep infinity'",
+        "running",
+    );
+    assert_session_logs_contain("codex-1", "killme", "killme-ready");
+    run(&["agentctl", "session", "kill", "codex-1", "killme"]);
+    assert_session_stopped("codex-1", "killme");
+    assert_session_metadata(
+        "codex-1",
+        "killme",
+        "bash -lc 'printf '\\''killme-ready\n'\\''; sleep infinity'",
+        "stopped",
+    );
+    assert_file_contains(
+        "/agentfs/envs/codex-1/logs/lifecycle.log",
+        "session killme killed",
+    );
 
     run(&[
         "agentctl", "session", "create", "codex-1", "codex", "--", "codex",
@@ -517,12 +547,14 @@ fn assert_env_artifacts_persist_after_stop(env_id: &str) {
         format!("/agentfs/envs/{env_id}/rootfs"),
         format!("/agentfs/envs/{env_id}/meta.json"),
         format!("/agentfs/envs/{env_id}/sessions/dev.json"),
+        format!("/agentfs/envs/{env_id}/sessions/killme.json"),
         format!("/agentfs/envs/{env_id}/sessions/logger.json"),
         format!("/agentfs/envs/{env_id}/sessions/codex.json"),
         format!("/agentfs/envs/{env_id}/logs/agent-forkd.log"),
         format!("/agentfs/envs/{env_id}/logs/lifecycle.log"),
         format!("/agentfs/envs/{env_id}/logs/exec.log"),
         format!("/agentfs/envs/{env_id}/logs/nspawn.log"),
+        format!("/agentfs/envs/{env_id}/logs/sessions/killme.log"),
         format!("/agentfs/envs/{env_id}/logs/sessions/logger.log"),
         format!("/agentfs/envs/{env_id}/logs/sessions/codex.log"),
         format!("/agentfs/envs/{env_id}/exports/dpkg-delta.txt"),
@@ -623,6 +655,17 @@ fn assert_session_running(env_id: &str, session_id: &str) {
             .lines()
             .any(|line| line.contains(session_id) && line.contains("running")),
         "session {session_id} in env {env_id} was not listed as running:\n{sessions}"
+    );
+}
+
+fn assert_session_stopped(env_id: &str, session_id: &str) {
+    let sessions = text(&["agentctl", "session", "list", env_id]);
+
+    assert!(
+        sessions
+            .lines()
+            .any(|line| line.contains(session_id) && line.contains("stopped")),
+        "session {session_id} in env {env_id} was not listed as stopped:\n{sessions}"
     );
 }
 
