@@ -9,6 +9,8 @@ use crate::session::TmuxSessionBackend;
 use crate::storage::{validate_id, Layout};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -587,6 +589,9 @@ impl AgentService {
             remove_path_if_exists(&path).await?;
             if matches!(rel, "proc" | "sys" | "dev" | "run" | "tmp") {
                 tokio::fs::create_dir_all(&path).await?;
+                if rel == "tmp" {
+                    tokio::fs::set_permissions(&path, Permissions::from_mode(0o1777)).await?;
+                }
             }
         }
         tokio::fs::create_dir_all(rootfs.join("agentfs")).await?;
@@ -730,6 +735,7 @@ mod tests {
     use crate::model::{machine_name, Env, EnvState, Limits};
     use chrono::Utc;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn rootfs_preflight_requires_sudo_apt_tmux_and_bash() {
@@ -830,6 +836,14 @@ mod tests {
         assert!(dir.path().join("dev").is_dir());
         assert!(dir.path().join("run").is_dir());
         assert!(dir.path().join("tmp").is_dir());
+        assert_eq!(
+            fs::metadata(dir.path().join("tmp"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o1777
+        );
         assert!(dir.path().join("agentfs").is_dir());
         assert!(!dir.path().join("agentfs/bases").exists());
         assert!(!dir.path().join("agentfs/envs").exists());
