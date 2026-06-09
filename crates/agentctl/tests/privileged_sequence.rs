@@ -351,6 +351,7 @@ fn require_privileged_test_environment() {
     for program in [
         "agentctl",
         "agent-forkd",
+        "awk",
         "btrfs",
         "cargo",
         "chroot",

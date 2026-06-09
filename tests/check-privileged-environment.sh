@@ -127,6 +127,7 @@ main() {
   check_userns
 
   for program in \
+    awk \
     btrfs \
     cargo \
     chroot \

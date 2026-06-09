@@ -127,6 +127,8 @@ command -v sudo
 command -v apt || command -v apt-get
 command -v tmux
 command -v tee
+command -v awk
+command -v readlink
 command -v codex
 ```
 
