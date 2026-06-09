@@ -3,6 +3,8 @@ use agent_core::protocol::{Request, Response};
 use agent_core::AgentService;
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -26,8 +28,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let config = AgentConfig::load_or_default(args.config.as_deref(), args.agentfs).await?;
     let service = AgentService::new(config.clone());
-    prepare_socket_path(&config.socket_path).await?;
-    let listener = UnixListener::bind(&config.socket_path)?;
+    let listener = bind_control_socket(&config.socket_path).await?;
     info!("listening on {}", config.socket_path.display());
 
     loop {
@@ -39,6 +40,13 @@ async fn main() -> Result<()> {
             }
         });
     }
+}
+
+async fn bind_control_socket(path: &Path) -> Result<UnixListener> {
+    prepare_socket_path(path).await?;
+    let listener = UnixListener::bind(path)?;
+    tokio::fs::set_permissions(path, Permissions::from_mode(0o666)).await?;
+    Ok(listener)
 }
 
 async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> {
@@ -97,8 +105,9 @@ async fn prepare_socket_path(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_request_line, prepare_socket_path};
+    use super::{bind_control_socket, parse_request_line, prepare_socket_path};
     use agent_core::protocol::Response;
+    use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -122,6 +131,22 @@ mod tests {
 
         assert!(error.to_string().contains("already accepting connections"));
         assert!(socket.exists());
+    }
+
+    #[tokio::test]
+    async fn bind_control_socket_allows_local_agentctl_clients() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-forkd.sock");
+        let _listener = bind_control_socket(&socket).await.unwrap();
+
+        let mode = tokio::fs::metadata(&socket)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(mode, 0o666);
     }
 
     #[test]
