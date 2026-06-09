@@ -157,21 +157,41 @@ impl AgentService {
         }
         tokio::fs::create_dir_all(&base_dir).await?;
         let rootfs = self.layout.base_rootfs(name);
-        self.btrfs.snapshot_writable(from, &rootfs).await?;
-        self.clean_runtime_paths(&rootfs).await?;
-        self.btrfs.set_readonly(&rootfs, true).await?;
+        if let Err(error) = self.btrfs.snapshot_writable(from, &rootfs).await {
+            cleanup_failed_base_dir(&base_dir).await;
+            return Err(error);
+        }
+        if let Err(error) = self.clean_runtime_paths(&rootfs).await {
+            self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
+            return Err(error);
+        }
+        if let Err(error) = self.btrfs.set_readonly(&rootfs, true).await {
+            self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
+            return Err(error);
+        }
         let dpkg_manifest = base_dir.join("dpkg.list");
-        self.write_dpkg_manifest(&rootfs, &dpkg_manifest).await?;
-        tokio::fs::write(base_dir.join("created_at"), Utc::now().to_rfc3339()).await?;
+        if let Err(error) = self.write_dpkg_manifest(&rootfs, &dpkg_manifest).await {
+            self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
+            return Err(error);
+        }
+        if let Err(error) =
+            tokio::fs::write(base_dir.join("created_at"), Utc::now().to_rfc3339()).await
+        {
+            self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
+            return Err(error.into());
+        }
         let base = Base {
             id: name.to_string(),
-            rootfs_path: rootfs,
+            rootfs_path: rootfs.clone(),
             readonly: true,
             created_at: Utc::now(),
             source: from.display().to_string(),
             dpkg_manifest,
         };
-        self.layout.write_base(&base).await?;
+        if let Err(error) = self.layout.write_base(&base).await {
+            self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
+            return Err(error);
+        }
         Ok(base)
     }
 
@@ -601,6 +621,16 @@ impl AgentService {
         let _ = self.btrfs.delete_subvolume(rootfs).await;
         cleanup_failed_env_dir(env_dir).await;
     }
+
+    async fn cleanup_failed_base_freeze(&self, rootfs: &Path, base_dir: &Path) {
+        let _ = self.btrfs.set_readonly(rootfs, false).await;
+        let _ = self.btrfs.delete_subvolume(rootfs).await;
+        cleanup_failed_base_dir(base_dir).await;
+    }
+}
+
+async fn cleanup_failed_base_dir(base_dir: &Path) {
+    let _ = tokio::fs::remove_dir_all(base_dir).await;
 }
 
 async fn cleanup_failed_env_dir(env_dir: &Path) {
@@ -692,8 +722,8 @@ fn validate_child_rootfs_requirements(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_failed_env_dir, ensure_running_env, read_session_log_file, remove_path_if_exists,
-        should_check_quota, should_mark_stopped, should_refresh_live_state,
+        cleanup_failed_base_dir, cleanup_failed_env_dir, ensure_running_env, read_session_log_file,
+        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
         should_reject_session_create, validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
@@ -818,6 +848,19 @@ mod tests {
         cleanup_failed_env_dir(&env_dir).await;
 
         assert!(!env_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn failed_base_dir_cleanup_removes_partial_metadata_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let base_dir = dir.path().join("bases/base-001");
+        fs::create_dir_all(base_dir.join("rootfs")).unwrap();
+        fs::write(base_dir.join("dpkg.list"), "bash 1.0\n").unwrap();
+        fs::write(base_dir.join("created_at"), "now").unwrap();
+
+        cleanup_failed_base_dir(&base_dir).await;
+
+        assert!(!base_dir.exists());
     }
 
     #[tokio::test]
