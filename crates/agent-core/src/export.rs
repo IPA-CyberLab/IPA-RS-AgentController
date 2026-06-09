@@ -1,7 +1,7 @@
 use crate::command::CommandRunner;
 use crate::model::Env;
 use anyhow::Result;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -51,16 +51,22 @@ impl Exporter {
     }
 
     pub fn dpkg_delta(base_manifest: &Path, env_manifest: &Path) -> Result<String> {
-        let base = package_names(base_manifest)?;
-        let env = package_names(env_manifest)?;
-        let installed = env.difference(&base).cloned().collect::<Vec<_>>();
-        let removed = base.difference(&env).cloned().collect::<Vec<_>>();
+        let base = package_versions(base_manifest)?;
+        let env = package_versions(env_manifest)?;
         let mut out = String::new();
-        for pkg in installed {
-            out.push_str(&format!("installed {pkg}\n"));
+        for (pkg, version) in &env {
+            match base.get(pkg) {
+                None => out.push_str(&format!("installed {pkg} {version}\n")),
+                Some(base_version) if base_version != version => {
+                    out.push_str(&format!("upgraded {pkg} {base_version} -> {version}\n"));
+                }
+                _ => {}
+            }
         }
-        for pkg in removed {
-            out.push_str(&format!("removed {pkg}\n"));
+        for (pkg, version) in &base {
+            if !env.contains_key(pkg) {
+                out.push_str(&format!("removed {pkg} {version}\n"));
+            }
         }
         Ok(out)
     }
@@ -99,13 +105,18 @@ fn files_differ(left: &Path, right: &Path) -> Result<bool> {
     Ok(fs::read(left)? != fs::read(right)?)
 }
 
-fn package_names(path: &Path) -> Result<BTreeSet<String>> {
+fn package_versions(path: &Path) -> Result<BTreeMap<String, String>> {
     let text = std::fs::read_to_string(path)?;
-    Ok(text
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .map(ToOwned::to_owned)
-        .collect())
+    let mut packages = BTreeMap::new();
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(name) = fields.next() else {
+            continue;
+        };
+        let version = fields.next().unwrap_or("unknown");
+        packages.insert(name.to_string(), version.to_string());
+    }
+    Ok(packages)
 }
 
 #[cfg(test)]
@@ -118,11 +129,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("base");
         let env = dir.path().join("env");
-        fs::write(&base, "bash install\ncurl install\n").unwrap();
-        fs::write(&env, "bash install\nripgrep install\n").unwrap();
+        fs::write(&base, "bash 1.0\ncurl 8.0\n").unwrap();
+        fs::write(&env, "bash 1.0\nripgrep 14.0\n").unwrap();
         let delta = Exporter::dpkg_delta(&base, &env).unwrap();
-        assert!(delta.contains("installed ripgrep"));
-        assert!(delta.contains("removed curl"));
+        assert!(delta.contains("installed ripgrep 14.0"));
+        assert!(delta.contains("removed curl 8.0"));
+    }
+
+    #[test]
+    fn dpkg_delta_reports_upgrades() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let env = dir.path().join("env");
+        fs::write(&base, "bash 1.0\ncurl 8.0\n").unwrap();
+        fs::write(&env, "bash 1.1\ncurl 8.0\n").unwrap();
+        let delta = Exporter::dpkg_delta(&base, &env).unwrap();
+        assert!(delta.contains("upgraded bash 1.0 -> 1.1"));
+        assert!(!delta.contains("curl"));
     }
 
     #[test]

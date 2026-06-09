@@ -57,6 +57,8 @@ agentctl env stop codex-1
 agentctl env destroy codex-1
 ```
 
+`dpkg-delta` compares package names and versions, reporting installed, removed, and upgraded packages.
+
 `agentctl env create` accepts resource overrides for the `privileged-dev` defaults:
 
 ```bash

@@ -446,8 +446,12 @@ impl AgentService {
                     .lines()
                     .find_map(|line| line.strip_prefix("Status: "))
                     .unwrap_or_default();
+                let version = block
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Version: "))
+                    .unwrap_or("unknown");
                 if !name.is_empty() && state.contains(" installed") {
-                    packages.push(format!("{name} install"));
+                    packages.push(format!("{name} {version}"));
                 }
             }
             packages.sort();
@@ -463,7 +467,7 @@ impl AgentService {
                     rootfs.display().to_string(),
                     "dpkg-query".to_string(),
                     "-W".to_string(),
-                    "-f=${Package} install\\n".to_string(),
+                    "-f=${Package} ${Version}\\n".to_string(),
                 ],
             )
             .await
