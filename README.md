@@ -97,7 +97,7 @@ Session operations invoke `tmux` through `machinectl shell` inside the child nsp
 
 ## Security Model
 
-Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users and private networking/private NAT, does not bind `/agentfs` into children, and keeps base and sibling rootfs trees outside the child view.
+Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users and private networking/private NAT, marks `/agentfs` and common Docker socket paths inaccessible, and keeps base and sibling rootfs trees outside the child view.
 
 ## Test Notes
 

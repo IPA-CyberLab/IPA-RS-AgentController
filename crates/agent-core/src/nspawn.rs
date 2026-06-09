@@ -23,6 +23,12 @@ impl Default for Nspawn {
 impl Nspawn {
     const PRIVATE_NAT_ZONE: &str = "agent-forkd";
     const PRIVATE_NAT_BRIDGE: &str = "vz-agent-forkd";
+    const INACCESSIBLE_PATHS: &[&str] = &[
+        "/agentfs",
+        "/run/agent-forkd.sock",
+        "/run/docker.sock",
+        "/var/run/docker.sock",
+    ];
 
     pub fn config_text(env: &Env) -> String {
         let network = if env.limits.network == "private-nat" {
@@ -90,6 +96,11 @@ impl Nspawn {
             "--private-users=yes".to_string(),
             "--register=yes".to_string(),
         ]);
+        args.extend(
+            Self::INACCESSIBLE_PATHS
+                .iter()
+                .map(|path| format!("--inaccessible={path}")),
+        );
         if env.limits.network == "private-nat" {
             args.push("--network-veth".to_string());
             args.push(format!("--network-zone={}", Self::PRIVATE_NAT_ZONE));
@@ -255,6 +266,9 @@ mod tests {
         assert!(args.contains(&"--private-users=yes".to_string()));
         assert!(args.contains(&"--network-veth".to_string()));
         assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
+        assert!(args.contains(&"--inaccessible=/agentfs".to_string()));
+        assert!(args.contains(&"--inaccessible=/run/docker.sock".to_string()));
+        assert!(args.contains(&"--inaccessible=/var/run/docker.sock".to_string()));
         assert!(args.contains(&"--property=CPUQuota=400%".to_string()));
         assert!(args.contains(&"--property=MemoryMax=16G".to_string()));
         assert!(args.contains(&"--property=TasksMax=4096".to_string()));
