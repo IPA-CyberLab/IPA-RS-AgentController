@@ -129,7 +129,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     ]);
     let sessions = text(&["agentctl", "session", "list", "codex-1"]);
     assert!(sessions.contains("dev"));
-    assert!(sessions.contains("Running"));
+    assert!(sessions.contains("running"));
     assert_env_sessions("codex-1", &["dev"]);
 
     run(&[
@@ -137,7 +137,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     ]);
     let sessions = text(&["agentctl", "session", "list", "codex-1"]);
     assert!(sessions.contains("codex"));
-    assert!(sessions.contains("Running"));
+    assert!(sessions.contains("running"));
     assert_env_sessions("codex-1", &["dev", "codex"]);
     let _ = text(&["agentctl", "session", "logs", "codex-1", "codex"]);
     assert!(Path::new("/agentfs/envs/codex-1/logs/sessions/codex.log").exists());
@@ -197,7 +197,7 @@ fn assert_session_running(env_id: &str, session_id: &str) {
     assert!(
         sessions
             .lines()
-            .any(|line| line.contains(session_id) && line.contains("Running")),
+            .any(|line| line.contains(session_id) && line.contains("running")),
         "session {session_id} in env {env_id} was not listed as running:\n{sessions}"
     );
 }
