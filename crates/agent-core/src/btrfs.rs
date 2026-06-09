@@ -164,25 +164,39 @@ impl Btrfs {
     }
 
     pub async fn destroy_qgroup(&self, qgroup_id: &str, filesystem: &Path) -> Result<()> {
-        let output = self
-            .runner
-            .run(
-                "btrfs",
-                [
-                    "qgroup",
-                    "destroy",
-                    qgroup_id,
-                    &filesystem.display().to_string(),
-                ],
-            )
-            .await?;
-        if output.status == 0 || qgroup_destroy_reports_missing(&output.stderr) {
-            return Ok(());
+        for attempt in 0..10 {
+            let output = self
+                .runner
+                .run(
+                    "btrfs",
+                    [
+                        "qgroup",
+                        "destroy",
+                        qgroup_id,
+                        &filesystem.display().to_string(),
+                    ],
+                )
+                .await?;
+            if output.status == 0 || qgroup_destroy_reports_missing(&output.stderr) {
+                return Ok(());
+            }
+            if qgroup_destroy_reports_busy(&output.stderr) && attempt < 9 {
+                let _ = self
+                    .runner
+                    .run(
+                        "btrfs",
+                        ["filesystem", "sync", &filesystem.display().to_string()],
+                    )
+                    .await?;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            return Err(anyhow!(
+                "failed to destroy Btrfs qgroup {qgroup_id}: {}",
+                output.stderr
+            ));
         }
-        Err(anyhow!(
-            "failed to destroy Btrfs qgroup {qgroup_id}: {}",
-            output.stderr
-        ))
+        Ok(())
     }
 
     pub async fn changed_paths(&self, base: &Path, env: &Path) -> Result<String> {
@@ -289,6 +303,12 @@ fn qgroup_destroy_reports_missing(stderr: &str) -> bool {
         || stderr.contains("not found")
 }
 
+fn qgroup_destroy_reports_busy(stderr: &str) -> bool {
+    stderr
+        .to_ascii_lowercase()
+        .contains("device or resource busy")
+}
+
 fn subvolume_delete_reports_missing(stderr: &str) -> bool {
     let stderr = stderr.to_ascii_lowercase();
     stderr.contains("no such file or directory")
@@ -307,9 +327,9 @@ fn subvolume_show_reports_missing(stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_unlimited, qgroup_destroy_reports_missing, qgroup_show_reports_exceeded,
-        qgroup_show_result, quota_enable_reports_already_enabled, subvolume_delete_reports_missing,
-        subvolume_show_reports_missing,
+        is_unlimited, qgroup_destroy_reports_busy, qgroup_destroy_reports_missing,
+        qgroup_show_reports_exceeded, qgroup_show_result, quota_enable_reports_already_enabled,
+        subvolume_delete_reports_missing, subvolume_show_reports_missing,
     };
     use std::path::Path;
 
@@ -393,6 +413,16 @@ qgroupid         excl         max_excl    rfer     max_rfer
             "ERROR: qgroup 0/257 does not exist"
         ));
         assert!(!qgroup_destroy_reports_missing(
+            "ERROR: unable to destroy quota group: Permission denied"
+        ));
+    }
+
+    #[test]
+    fn qgroup_destroy_busy_errors_are_retriable() {
+        assert!(qgroup_destroy_reports_busy(
+            "ERROR: unable to destroy quota group: Device or resource busy"
+        ));
+        assert!(!qgroup_destroy_reports_busy(
             "ERROR: unable to destroy quota group: Permission denied"
         ));
     }
