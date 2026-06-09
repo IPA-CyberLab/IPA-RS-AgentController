@@ -158,6 +158,13 @@ Confirm the daemon socket exists:
 test -S /agentfs/runtime/sockets/agent-forkd.sock
 ```
 
+Run the non-destructive environment preflight script after installing and
+starting `agent-forkd`:
+
+```bash
+sudo tests/check-privileged-environment.sh
+```
+
 ## Running The Test
 
 Run the normal local gates first:
