@@ -180,18 +180,51 @@ fn require_privileged_test_environment() {
         "0",
         "run this ignored integration test as root; it invokes chroot and btrfs inspection commands"
     );
+    assert_eq!(
+        text(&["ps", "-p", "1", "-o", "comm="]).trim(),
+        "systemd",
+        "PID 1 must be systemd"
+    );
+    assert_eq!(
+        text(&["stat", "-fc", "%T", "/sys/fs/cgroup"]).trim(),
+        "cgroup2fs",
+        "/sys/fs/cgroup must be cgroup v2"
+    );
+    let userns = text(&[
+        "bash",
+        "-lc",
+        "sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true",
+    ]);
+    assert!(
+        userns.trim().is_empty() || userns.trim() == "1",
+        "kernel.unprivileged_userns_clone must be 1 or unavailable, got {userns:?}"
+    );
     for program in [
         "agentctl",
         "agent-forkd",
         "btrfs",
+        "cargo",
+        "chroot",
+        "dpkg",
+        "findmnt",
+        "git",
         "machinectl",
+        "rustc",
+        "sudo",
+        "systemctl",
         "systemd-nspawn",
         "systemd-run",
+        "tee",
         "tmux",
         "codex",
     ] {
         run(&["bash", "-lc", &format!("command -v {program}")]);
     }
+    assert!(
+        command_available("apt") || command_available("apt-get"),
+        "apt or apt-get must be available"
+    );
+    run(&["bash", "-lc", "test -x /bin/bash"]);
     assert_eq!(
         text(&["findmnt", "-n", "-o", "FSTYPE", "--target", "/"]).trim(),
         "btrfs",
@@ -203,7 +236,14 @@ fn require_privileged_test_environment() {
         "/agentfs must be on Btrfs"
     );
     run(&["btrfs", "subvolume", "show", "/"]);
+    run(&["systemctl", "cat", "systemd-machined"]);
+    run(&["systemctl", "is-active", "--quiet", "systemd-networkd"]);
     run(&["systemctl", "is-active", "--quiet", "agent-forkd"]);
+    run(&[
+        "bash",
+        "-lc",
+        "test -S /agentfs/runtime/sockets/agent-forkd.sock",
+    ]);
 }
 
 fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
@@ -310,6 +350,14 @@ fn assert_file_contains(path: &str, expected: &str) {
         text.contains(expected),
         "{path} did not contain {expected:?}"
     );
+}
+
+fn command_available(program: &str) -> bool {
+    Command::new("bash")
+        .args(["-lc", &format!("command -v {program}")])
+        .status()
+        .unwrap_or_else(|error| panic!("failed to inspect command {program}: {error}"))
+        .success()
 }
 
 fn json(command: &[&str]) -> Value {
