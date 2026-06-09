@@ -105,6 +105,7 @@ JSON schemas for daemon config and metadata live in `schemas/`.
 `agent-forkd` and `agentctl` accept `--config /etc/agent-forkd/config.json` or `AGENT_FORKD_CONFIG` for the daemon config schema in `schemas/config.schema.json`. Base, env, and session metadata are described by `schemas/base.schema.json`, `schemas/env.schema.json`, and `schemas/session.schema.json`.
 
 Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`, scrubs host `/agentfs` state, and then marks the base snapshot read-only. Env destroy deletes the child subvolume and explicitly releases the qgroup when Btrfs still exposes it. Export commands print their output and persist the latest artifact under `/agentfs/envs/<env-id>/exports/`. The `rootfs-changed-paths` export omits runtime-only trees such as `/proc`, `/sys`, `/dev`, `/run`, and `/tmp`.
+When freezing from `/`, base metadata records `source` as `current-project-vm`.
 
 Env start validates that the child rootfs contains `/bin/bash`, `sudo`, `apt` or `apt-get`, `tmux`, and `tee`. If those tools are missing, the env is marked `failed` and nspawn is not launched.
 

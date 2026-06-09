@@ -190,7 +190,7 @@ impl AgentService {
             rootfs_path: rootfs.clone(),
             readonly: true,
             created_at,
-            source: from.display().to_string(),
+            source: base_source_label(from),
             dpkg_manifest,
         };
         if let Err(error) = self.layout.write_base(&base).await {
@@ -809,6 +809,14 @@ fn default_shell_command() -> Vec<String> {
     vec!["/bin/bash".to_string()]
 }
 
+fn base_source_label(from: &Path) -> String {
+    if from == Path::new("/") {
+        "current-project-vm".to_string()
+    } else {
+        from.display().to_string()
+    }
+}
+
 async fn read_session_log_file(path: &Path) -> Result<String> {
     match tokio::fs::read_to_string(path).await {
         Ok(text) => Ok(text),
@@ -894,7 +902,7 @@ async fn ensure_inaccessible_mask_targets(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_stopped_state, cleanup_failed_base_dir, cleanup_failed_env_dir,
+        apply_stopped_state, base_source_label, cleanup_failed_base_dir, cleanup_failed_env_dir,
         default_shell_command, ensure_inaccessible_mask_targets, ensure_running_env,
         idle_timeout_expired, read_offline_session_log, read_session_log_file,
         remove_dir_all_if_exists, remove_path_if_exists, should_check_quota, should_mark_stopped,
@@ -1036,6 +1044,12 @@ mod tests {
         env.state = EnvState::Running;
         env.limits.idle_timeout = "0".to_string();
         assert!(!idle_timeout_expired(&env, now));
+    }
+
+    #[test]
+    fn base_source_labels_current_project_vm_root() {
+        assert_eq!(base_source_label(Path::new("/")), "current-project-vm");
+        assert_eq!(base_source_label(Path::new("/mnt/rootfs")), "/mnt/rootfs");
     }
 
     #[test]

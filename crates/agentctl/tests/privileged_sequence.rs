@@ -463,7 +463,7 @@ fn assert_base_metadata(base_id: &str) {
         format!("/agentfs/bases/{base_id}/rootfs")
     );
     assert_eq!(metadata["readonly"], true);
-    assert_eq!(metadata["source"], "/");
+    assert_eq!(metadata["source"], "current-project-vm");
     assert_eq!(
         metadata["dpkg_manifest"],
         format!("/agentfs/bases/{base_id}/dpkg.list")
