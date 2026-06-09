@@ -88,6 +88,9 @@ impl Exporter {
                 continue;
             }
             let rel = entry.path().strip_prefix(env)?;
+            if is_runtime_only_path(rel) {
+                continue;
+            }
             let base_path = base.join(rel);
             if path_changed(&base_path, entry.path())? {
                 changed.insert(format!("/{}", rel.display()));
@@ -99,6 +102,9 @@ impl Exporter {
                 continue;
             }
             let rel = entry.path().strip_prefix(base)?;
+            if is_runtime_only_path(rel) {
+                continue;
+            }
             if symlink_metadata_if_exists(&env.join(rel))?.is_none() {
                 changed.insert(format!("deleted /{}", rel.display()));
             }
@@ -163,9 +169,18 @@ fn package_versions(path: &Path) -> Result<BTreeMap<String, String>> {
     Ok(packages)
 }
 
+fn is_runtime_only_path(path: &Path) -> bool {
+    matches!(
+        path.components()
+            .next()
+            .and_then(|component| component.as_os_str().to_str()),
+        Some("proc" | "sys" | "dev" | "run" | "tmp")
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExportType, Exporter};
+    use super::{is_runtime_only_path, ExportType, Exporter};
     use crate::model::{machine_name, Env, EnvState, Limits};
     use chrono::Utc;
     use std::fs;
@@ -284,6 +299,27 @@ mod tests {
 
         assert!(changed.contains("/root/mode-file"));
         assert!(changed.contains("/root/mode-dir"));
+    }
+
+    #[test]
+    fn changed_paths_ignores_runtime_only_trees() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let env = dir.path().join("env");
+        fs::create_dir_all(base.join("run")).unwrap();
+        fs::create_dir_all(env.join("run/systemd")).unwrap();
+        fs::create_dir_all(env.join("proc/1")).unwrap();
+        fs::create_dir_all(env.join("tmp")).unwrap();
+        fs::write(env.join("run/systemd/machine-id"), "runtime").unwrap();
+        fs::write(env.join("tmp/scratch"), "runtime").unwrap();
+
+        let changed = Exporter::changed_paths_by_walk(&base, &env).unwrap();
+
+        assert!(changed.is_empty(), "{changed}");
+        assert!(is_runtime_only_path(std::path::Path::new("run/systemd")));
+        assert!(!is_runtime_only_path(std::path::Path::new(
+            "root/marker.txt"
+        )));
     }
 
     fn run_git(workdir: &std::path::Path, args: &[&str]) {
