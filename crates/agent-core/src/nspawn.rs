@@ -1,5 +1,5 @@
 use crate::command::{shell_join, CmdOutput, CommandRunner};
-use crate::model::{unit_name, Env, EnvState};
+use crate::model::{unit_name, Env, EnvState, RootfsBackend};
 use crate::storage::write_text_file;
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
@@ -50,8 +50,14 @@ impl Nspawn {
             .iter()
             .map(|path| format!("BindReadOnly=/dev/null:{path}\n"))
             .collect::<String>();
+        let private_users = if env.backend == RootfsBackend::Btrfs {
+            "PrivateUsers=pick\nPrivateUsersOwnership=map\n"
+        } else {
+            ""
+        };
         format!(
-            "[Exec]\nBoot=yes\nPrivateUsers=pick\nPrivateUsersOwnership=map\nHostname={machine}\n\n[Files]\nReadOnly=no\nResolvConf=copy-host\n{inaccessible_paths}{masked_socket_paths}\n[Network]\n{network}",
+            "[Exec]\nBoot=yes\n{private_users}Hostname={machine}\n\n[Files]\nReadOnly=no\nResolvConf=copy-host\n{inaccessible_paths}{masked_socket_paths}\n[Network]\n{network}",
+            private_users = private_users,
             machine = env.machine_name,
             inaccessible_paths = inaccessible_paths,
             masked_socket_paths = masked_socket_paths,
@@ -124,13 +130,15 @@ impl Nspawn {
             "--directory".to_string(),
             env.rootfs_path.display().to_string(),
             "--boot".to_string(),
-            "--private-users=pick".to_string(),
-            "--private-users-ownership=map".to_string(),
             "--resolv-conf=copy-host".to_string(),
             "--register=yes".to_string(),
             "--tmpfs=/run".to_string(),
             "--tmpfs=/tmp".to_string(),
         ]);
+        if env.backend == RootfsBackend::Btrfs {
+            args.push("--private-users=pick".to_string());
+            args.push("--private-users-ownership=map".to_string());
+        }
         args.extend(
             Self::INACCESSIBLE_PATHS
                 .iter()
@@ -474,6 +482,38 @@ mod tests {
         let args = Nspawn::start_args(&env, None).unwrap();
         assert!(args.contains(&"--private-network".to_string()));
         assert!(!args.iter().any(|arg| arg.starts_with("--network-zone")));
+    }
+
+    #[test]
+    fn overlay_backend_omits_private_user_mapping() {
+        let mut env = Env {
+            id: "overlay-1".to_string(),
+            base_id: "base-001".to_string(),
+            backend: RootfsBackend::Overlay,
+            rootfs_path: "/agentfs/envs/overlay-1/rootfs".into(),
+            machine_name: machine_name("overlay-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            last_active_at: Utc::now(),
+            network_policy: Default::default(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+
+        let config = Nspawn::config_text(&env);
+        let args = Nspawn::start_args(&env, None).unwrap();
+
+        assert!(!config.contains("PrivateUsers=pick"));
+        assert!(!config.contains("PrivateUsersOwnership=map"));
+        assert!(!args.contains(&"--private-users=pick".to_string()));
+        assert!(!args.contains(&"--private-users-ownership=map".to_string()));
+
+        env.backend = RootfsBackend::Btrfs;
+        assert!(Nspawn::config_text(&env).contains("PrivateUsers=pick"));
+        assert!(Nspawn::start_args(&env, None)
+            .unwrap()
+            .contains(&"--private-users=pick".to_string()));
     }
 
     #[test]
