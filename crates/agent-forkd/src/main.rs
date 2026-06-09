@@ -173,4 +173,18 @@ mod tests {
             other => panic!("unexpected response {other:?}"),
         }
     }
+
+    #[test]
+    fn packaged_systemd_unit_starts_daemon_with_config() {
+        let unit = include_str!("../../../packaging/systemd/agent-forkd.service");
+
+        assert!(unit.contains("Requires=systemd-networkd.service systemd-machined.service"));
+        assert!(unit.contains("Environment=AGENTFS=/agentfs"));
+        assert!(unit.contains("Environment=AGENT_FORKD_CONFIG=/etc/agent-forkd/config.json"));
+        assert!(unit.contains(
+            "ExecStart=/usr/local/bin/agent-forkd --agentfs ${AGENTFS} --config ${AGENT_FORKD_CONFIG}"
+        ));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("WantedBy=multi-user.target"));
+    }
 }
