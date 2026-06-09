@@ -191,7 +191,7 @@ fn is_unlimited(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Base, Env, EnvState, Limits, Session, SessionState, SessionType};
+    use super::{Base, Env, EnvState, LimitOverrides, Limits, Session, SessionState, SessionType};
     use chrono::Utc;
     use serde_json::Value;
     use std::path::PathBuf;
@@ -264,6 +264,35 @@ mod tests {
         };
 
         limits.validate().unwrap();
+    }
+
+    #[test]
+    fn limit_overrides_replace_only_specified_fields() {
+        let limits = Limits::default().with_overrides(LimitOverrides {
+            cpu_max: Some("800%".to_string()),
+            memory_max: Some("32G".to_string()),
+            pids_max: Some(8192),
+            disk_max: Some("200G".to_string()),
+            network: Some("private".to_string()),
+            idle_timeout: Some("30m".to_string()),
+            max_runtime: Some("6h".to_string()),
+        });
+
+        assert_eq!(limits.cpu_max, "800%");
+        assert_eq!(limits.memory_max, "32G");
+        assert_eq!(limits.pids_max, 8192);
+        assert_eq!(limits.disk_max, "200G");
+        assert_eq!(limits.network, "private");
+        assert_eq!(limits.idle_timeout, "30m");
+        assert_eq!(limits.max_runtime, "6h");
+    }
+
+    #[test]
+    fn empty_limit_overrides_preserve_profile_defaults() {
+        assert_eq!(
+            Limits::default().with_overrides(LimitOverrides::default()),
+            Limits::default()
+        );
     }
 
     #[test]
