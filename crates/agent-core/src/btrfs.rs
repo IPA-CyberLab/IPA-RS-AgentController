@@ -107,6 +107,9 @@ impl Btrfs {
     }
 
     pub async fn set_limit(&self, size: &str, path: &Path) -> Result<()> {
+        if is_unlimited(size) {
+            return Ok(());
+        }
         self.runner
             .run_checked(
                 "btrfs",
@@ -211,5 +214,23 @@ impl Btrfs {
             }
         }
         Ok(false)
+    }
+}
+
+fn is_unlimited(value: &str) -> bool {
+    let value = value.trim();
+    value == "0" || value.eq_ignore_ascii_case("unlimited") || value.eq_ignore_ascii_case("none")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_unlimited;
+
+    #[test]
+    fn qgroup_unlimited_values_are_recognized() {
+        assert!(is_unlimited("0"));
+        assert!(is_unlimited(" unlimited "));
+        assert!(is_unlimited("none"));
+        assert!(!is_unlimited("100G"));
     }
 }

@@ -64,6 +64,8 @@ agentctl env create codex-1 --from base-001 \
   --cpu-max 800% --memory-max 32G --pids-max 8192 --disk-max 200G
 ```
 
+For `cpu_max`, `memory_max`, `pids_max`, `disk_max`, and `max_runtime`, `0` means unlimited. Unlimited systemd properties are omitted, and unlimited disk does not apply a Btrfs qgroup limit.
+
 The default `network=private-nat` profile launches nspawn with a veth in the `agent-forkd` network zone and writes `/etc/systemd/network/80-agent-forkd-private-nat.network` for the `vz-agent-forkd` bridge. Use `--network private` to request an isolated namespace without egress.
 
 ## Metadata Layout

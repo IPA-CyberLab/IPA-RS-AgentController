@@ -68,10 +68,8 @@ impl Nspawn {
             format!("--unit={unit}"),
             "--collect".to_string(),
             "--property=Delegate=yes".to_string(),
-            format!("--property=CPUQuota={}", env.limits.cpu_max),
-            format!("--property=MemoryMax={}", env.limits.memory_max),
-            format!("--property=TasksMax={}", env.limits.pids_max),
         ];
+        args.extend(systemd_limit_properties(env));
         if let Some(path) = log_path {
             args.push(format!(
                 "--property=StandardOutput=append:{}",
@@ -165,6 +163,33 @@ impl Nspawn {
         };
         Ok(())
     }
+}
+
+fn systemd_limit_properties(env: &Env) -> Vec<String> {
+    let mut properties = Vec::new();
+    if !is_unlimited_str(&env.limits.cpu_max) {
+        properties.push(format!("--property=CPUQuota={}", env.limits.cpu_max));
+    }
+    if !is_unlimited_str(&env.limits.memory_max) {
+        properties.push(format!("--property=MemoryMax={}", env.limits.memory_max));
+    }
+    if env.limits.pids_max != 0 {
+        properties.push(format!("--property=TasksMax={}", env.limits.pids_max));
+    }
+    if !is_unlimited_str(&env.limits.max_runtime) {
+        properties.push(format!(
+            "--property=RuntimeMaxSec={}",
+            env.limits.max_runtime
+        ));
+    }
+    properties
+}
+
+fn is_unlimited_str(value: &str) -> bool {
+    let value = value.trim();
+    value == "0"
+        || value.eq_ignore_ascii_case("unlimited")
+        || value.eq_ignore_ascii_case("infinity")
 }
 
 fn shell_join(command: &[String]) -> String {
@@ -264,6 +289,48 @@ mod tests {
         assert!(text.contains("DHCPServer=yes"));
         assert!(text.contains("IPMasquerade=ipv4"));
         assert!(text.contains("IPForward=ipv4"));
+    }
+
+    #[test]
+    fn zero_limits_are_omitted_as_unlimited() {
+        let mut env = Env {
+            id: "unlimited-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/unlimited-1/rootfs".into(),
+            machine_name: machine_name("unlimited-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+        env.limits.cpu_max = "0".to_string();
+        env.limits.memory_max = "0".to_string();
+        env.limits.pids_max = 0;
+        env.limits.max_runtime = "0".to_string();
+        let args = Nspawn::start_args(&env, None);
+        assert!(!args.iter().any(|arg| arg.contains("CPUQuota")));
+        assert!(!args.iter().any(|arg| arg.contains("MemoryMax")));
+        assert!(!args.iter().any(|arg| arg.contains("TasksMax")));
+        assert!(!args.iter().any(|arg| arg.contains("RuntimeMaxSec")));
+    }
+
+    #[test]
+    fn nonzero_max_runtime_sets_systemd_runtime_limit() {
+        let mut env = Env {
+            id: "timed-1".to_string(),
+            base_id: "base-001".to_string(),
+            rootfs_path: "/agentfs/envs/timed-1/rootfs".into(),
+            machine_name: machine_name("timed-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+        env.limits.max_runtime = "6h".to_string();
+        let args = Nspawn::start_args(&env, None);
+        assert!(args.contains(&"--property=RuntimeMaxSec=6h".to_string()));
     }
 
     #[test]
