@@ -86,8 +86,7 @@ impl AgentService {
                 })
             }
             Request::Shell { id } => {
-                let env = self.layout.read_env(&id).await?;
-                self.nspawn.shell(&env.machine_name).await?;
+                self.shell(&id).await?;
                 Ok(Response::Ok)
             }
             Request::SessionCreate {
@@ -217,6 +216,9 @@ impl AgentService {
     pub async fn env_status(&self, id: &str) -> Result<EnvStatus> {
         let mut env = self.layout.read_env(id).await?;
         self.nspawn.refresh_state(&mut env).await?;
+        if self.btrfs.quota_exceeded(&env.rootfs_path).await? {
+            env.state = EnvState::QuotaExceeded;
+        }
         self.layout.write_env(&env).await?;
         let disk_used = self.disk_used(&env.rootfs_path).await.ok();
         Ok(EnvStatus { env, disk_used })
@@ -254,6 +256,17 @@ impl AgentService {
         self.layout.write_session(&session).await?;
         self.layout.write_env(&env).await?;
         Ok(())
+    }
+
+    pub async fn shell(&self, env_id: &str) -> Result<()> {
+        let session_id = "shell";
+        if self.layout.read_session(env_id, session_id).await.is_err()
+            || !self.sessions.is_running(env_id, session_id).await?
+        {
+            self.session_create(env_id, session_id, &["bash".to_string()])
+                .await?;
+        }
+        self.sessions.attach(env_id, session_id).await
     }
 
     pub async fn diff(&self, env_id: &str) -> Result<String> {

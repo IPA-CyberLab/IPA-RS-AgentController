@@ -2,6 +2,7 @@ use crate::command::CommandRunner;
 use crate::model::Env;
 use anyhow::Result;
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -65,20 +66,37 @@ impl Exporter {
     }
 
     pub fn changed_paths_by_walk(base: &Path, env: &Path) -> Result<String> {
-        let mut paths = Vec::new();
+        let mut changed = BTreeSet::new();
         for entry in WalkDir::new(env).into_iter().filter_map(Result::ok) {
             if !entry.file_type().is_file() {
                 continue;
             }
             let rel = entry.path().strip_prefix(env)?;
             let base_path = base.join(rel);
-            if !base_path.exists() {
-                paths.push(format!("/{}", rel.display()));
+            if !base_path.exists() || files_differ(&base_path, entry.path())? {
+                changed.insert(format!("/{}", rel.display()));
             }
         }
-        paths.sort();
-        Ok(paths.join("\n"))
+        for entry in WalkDir::new(base).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let rel = entry.path().strip_prefix(base)?;
+            if !env.join(rel).exists() {
+                changed.insert(format!("deleted /{}", rel.display()));
+            }
+        }
+        Ok(changed.into_iter().collect::<Vec<_>>().join("\n"))
     }
+}
+
+fn files_differ(left: &Path, right: &Path) -> Result<bool> {
+    let left_meta = fs::metadata(left)?;
+    let right_meta = fs::metadata(right)?;
+    if left_meta.len() != right_meta.len() {
+        return Ok(true);
+    }
+    Ok(fs::read(left)? != fs::read(right)?)
 }
 
 fn package_names(path: &Path) -> Result<BTreeSet<String>> {
@@ -105,5 +123,26 @@ mod tests {
         let delta = Exporter::dpkg_delta(&base, &env).unwrap();
         assert!(delta.contains("installed ripgrep"));
         assert!(delta.contains("removed curl"));
+    }
+
+    #[test]
+    fn changed_paths_reports_added_modified_and_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let env = dir.path().join("env");
+        fs::create_dir_all(base.join("root")).unwrap();
+        fs::create_dir_all(env.join("root")).unwrap();
+        fs::write(base.join("root/old.txt"), "old").unwrap();
+        fs::write(base.join("root/same.txt"), "same").unwrap();
+        fs::write(base.join("root/delete.txt"), "delete").unwrap();
+        fs::write(env.join("root/old.txt"), "new").unwrap();
+        fs::write(env.join("root/same.txt"), "same").unwrap();
+        fs::write(env.join("root/add.txt"), "add").unwrap();
+
+        let changed = Exporter::changed_paths_by_walk(&base, &env).unwrap();
+        assert!(changed.contains("/root/add.txt"));
+        assert!(changed.contains("/root/old.txt"));
+        assert!(changed.contains("deleted /root/delete.txt"));
+        assert!(!changed.contains("/root/same.txt"));
     }
 }

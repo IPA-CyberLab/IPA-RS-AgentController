@@ -1,8 +1,26 @@
 use crate::command::CommandRunner;
 use crate::model::{Env, Session, SessionState, SessionType};
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::Utc;
 use std::path::{Path, PathBuf};
+
+#[async_trait]
+pub trait SessionBackend {
+    async fn create(
+        &self,
+        env: &Env,
+        session_id: &str,
+        command: &[String],
+        log_path: PathBuf,
+    ) -> Result<Session>;
+    async fn attach(&self, env_id: &str, session_id: &str) -> Result<()>;
+    async fn kill(&self, env_id: &str, session_id: &str) -> Result<()>;
+    async fn is_running(&self, env_id: &str, session_id: &str) -> Result<bool>;
+    fn log_path(log_dir: &Path, session_id: &str) -> PathBuf
+    where
+        Self: Sized;
+}
 
 #[derive(Debug, Clone)]
 pub struct TmuxSessionBackend {
@@ -14,6 +32,35 @@ impl Default for TmuxSessionBackend {
         Self {
             runner: CommandRunner,
         }
+    }
+}
+
+#[async_trait]
+impl SessionBackend for TmuxSessionBackend {
+    async fn create(
+        &self,
+        env: &Env,
+        session_id: &str,
+        command: &[String],
+        log_path: PathBuf,
+    ) -> Result<Session> {
+        self.create(env, session_id, command, log_path).await
+    }
+
+    async fn attach(&self, env_id: &str, session_id: &str) -> Result<()> {
+        self.attach(env_id, session_id).await
+    }
+
+    async fn kill(&self, env_id: &str, session_id: &str) -> Result<()> {
+        self.kill(env_id, session_id).await
+    }
+
+    async fn is_running(&self, env_id: &str, session_id: &str) -> Result<bool> {
+        self.is_running(env_id, session_id).await
+    }
+
+    fn log_path(log_dir: &Path, session_id: &str) -> PathBuf {
+        Self::log_path(log_dir, session_id)
     }
 }
 

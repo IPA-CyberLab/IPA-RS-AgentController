@@ -125,4 +125,35 @@ impl Btrfs {
             .await?;
         Ok(output.stdout)
     }
+
+    pub async fn quota_exceeded(&self, path: &Path) -> Result<bool> {
+        let output = self
+            .runner
+            .run(
+                "btrfs",
+                ["qgroup", "show", "-reF", &path.display().to_string()],
+            )
+            .await?;
+        if output.status != 0 {
+            return Ok(false);
+        }
+        for line in output.stdout.lines().skip(2) {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 4 {
+                continue;
+            }
+            let referenced = fields
+                .get(1)
+                .and_then(|value| value.parse::<u128>().ok())
+                .unwrap_or(0);
+            let max_referenced = fields
+                .last()
+                .and_then(|value| value.parse::<u128>().ok())
+                .unwrap_or(0);
+            if max_referenced > 0 && referenced >= max_referenced {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
