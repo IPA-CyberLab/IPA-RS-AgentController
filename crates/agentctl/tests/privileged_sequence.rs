@@ -22,6 +22,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_btrfs_subvolume("/agentfs/bases/base-001/rootfs");
     assert_btrfs_readonly("/agentfs/bases/base-001/rootfs", true);
     assert_base_metadata("base-001");
+    assert_dpkg_manifest("base-001");
     assert_base_runtime_paths_scrubbed("base-001");
 
     run(&[
@@ -349,6 +350,29 @@ fn assert_base_metadata(base_id: &str) {
         "base metadata omitted created_at: {metadata}"
     );
     assert_eq!(metadata["created_at"].as_str().unwrap(), created_at);
+}
+
+fn assert_dpkg_manifest(base_id: &str) {
+    let path = format!("/agentfs/bases/{base_id}/dpkg.list");
+    let manifest = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read base dpkg manifest {path}: {error}"));
+    let entries: Vec<_> = manifest
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert!(!entries.is_empty(), "{path} was empty");
+    assert!(
+        entries
+            .iter()
+            .any(|line| line.split_whitespace().next() == Some("bash")),
+        "{path} did not include bash package:\n{manifest}"
+    );
+    for line in entries.iter().take(20) {
+        assert!(
+            line.split_whitespace().count() >= 2,
+            "dpkg manifest line lacked package/version: {line:?}"
+        );
+    }
 }
 
 fn assert_base_runtime_paths_scrubbed(base_id: &str) {
