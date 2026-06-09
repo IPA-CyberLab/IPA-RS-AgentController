@@ -149,6 +149,9 @@ fn goal_sequence_runs_in_privileged_project_vm() {
          git commit --quiet -m initial && \
          printf 'new\n' > README.md",
     ]);
+    let workspace_diff = text(&["agentctl", "diff", "codex-1"]);
+    assert!(workspace_diff.contains("-old"));
+    assert!(workspace_diff.contains("+new"));
 
     run(&[
         "agentctl", "session", "create", "codex-1", "dev", "--", "bash",
