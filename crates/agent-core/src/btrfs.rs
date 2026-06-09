@@ -120,13 +120,22 @@ impl Btrfs {
     }
 
     pub async fn delete_subvolume(&self, path: &Path) -> Result<()> {
-        self.runner
-            .run_checked(
+        let output = self
+            .runner
+            .run(
                 "btrfs",
                 ["subvolume", "delete", &path.display().to_string()],
             )
             .await?;
-        Ok(())
+        if output.status == 0 || subvolume_delete_reports_missing(&output.stderr) {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "failed to delete Btrfs subvolume {}: {}{}",
+            path.display(),
+            output.stdout,
+            output.stderr
+        ))
     }
 
     pub async fn qgroup_id(&self, path: &Path) -> Result<Option<String>> {
@@ -270,11 +279,18 @@ fn qgroup_destroy_reports_missing(stderr: &str) -> bool {
         || stderr.contains("not found")
 }
 
+fn subvolume_delete_reports_missing(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no such file or directory")
+        || stderr.contains("not exist")
+        || stderr.contains("not found")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         is_unlimited, qgroup_destroy_reports_missing, qgroup_show_reports_exceeded,
-        qgroup_show_result, quota_enable_reports_already_enabled,
+        qgroup_show_result, quota_enable_reports_already_enabled, subvolume_delete_reports_missing,
     };
     use std::path::Path;
 
@@ -358,6 +374,19 @@ qgroupid         excl         max_excl    rfer     max_rfer
         ));
         assert!(!qgroup_destroy_reports_missing(
             "ERROR: unable to destroy quota group: Permission denied"
+        ));
+    }
+
+    #[test]
+    fn subvolume_delete_missing_errors_are_idempotent() {
+        assert!(subvolume_delete_reports_missing(
+            "ERROR: Could not statfs: No such file or directory"
+        ));
+        assert!(subvolume_delete_reports_missing(
+            "ERROR: subvolume /agentfs/envs/codex-1/rootfs does not exist"
+        ));
+        assert!(!subvolume_delete_reports_missing(
+            "ERROR: failed to delete subvolume: Directory not empty"
         ));
     }
 
