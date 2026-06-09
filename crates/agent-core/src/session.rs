@@ -129,7 +129,7 @@ impl TmuxSessionBackend {
         command: &[String],
         log_path: PathBuf,
     ) -> Result<Session> {
-        let inside = command.join(" ");
+        let inside = shell_join(command);
         let child_command = Self::child_create_command(session_id, command);
         self.runner
             .run_checked(
@@ -306,7 +306,8 @@ fn tmux_detach_reports_no_current_client(stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_tmux_session_names, tmux_detach_reports_no_current_client, TmuxSessionBackend,
+        parse_tmux_session_names, shell_join, shell_quote, tmux_detach_reports_no_current_client,
+        TmuxSessionBackend,
     };
 
     #[test]
@@ -327,6 +328,23 @@ mod tests {
         assert!(command.contains("tmux pipe-pane -o -t 'dev'"));
         assert!(command.contains("/var/log/agent-forkd/sessions/dev.log"));
         assert!(!command.contains("machinectl"));
+    }
+
+    #[test]
+    fn session_command_display_preserves_shell_words() {
+        assert_eq!(
+            shell_join(&["bash".into(), "-lc".into(), "echo 'hello world'".into()]),
+            "bash -lc 'echo '\\''hello world'\\'''"
+        );
+    }
+
+    #[test]
+    fn child_create_command_quotes_command_for_tmux() {
+        let argv = ["bash".into(), "-lc".into(), "echo 'hello world'".into()];
+        let rendered = shell_join(&argv);
+        let command = TmuxSessionBackend::child_create_command("dev", &argv);
+
+        assert!(command.contains(&shell_quote(&rendered)));
     }
 
     #[test]
