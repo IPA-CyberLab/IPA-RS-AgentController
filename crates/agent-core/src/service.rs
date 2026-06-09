@@ -8,7 +8,7 @@ use crate::model::{
 use crate::nspawn::Nspawn;
 use crate::protocol::{Request, Response};
 use crate::session::TmuxSessionBackend;
-use crate::storage::{validate_id, Layout};
+use crate::storage::{validate_id, write_text_file, Layout};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use std::fs::Permissions;
@@ -179,10 +179,10 @@ impl AgentService {
             return Err(error);
         }
         if let Err(error) =
-            tokio::fs::write(base_dir.join("created_at"), Utc::now().to_rfc3339()).await
+            write_text_file(&base_dir.join("created_at"), Utc::now().to_rfc3339()).await
         {
             self.cleanup_failed_base_freeze(&rootfs, &base_dir).await;
-            return Err(error.into());
+            return Err(error);
         }
         let base = Base {
             id: name.to_string(),
@@ -523,7 +523,7 @@ impl AgentService {
             .env_dir(env_id)
             .join("exports")
             .join(export_type.artifact_name());
-        tokio::fs::write(&artifact, &text).await?;
+        write_text_file(&artifact, &text).await?;
         self.log_lifecycle(env_id, &format!("exported {}", artifact.display()))
             .await?;
         Ok(text)
@@ -552,7 +552,7 @@ impl AgentService {
                 }
             }
             packages.sort();
-            tokio::fs::write(target, format!("{}\n", packages.join("\n"))).await?;
+            write_text_file(target, format!("{}\n", packages.join("\n"))).await?;
             return Ok(());
         }
 
@@ -572,7 +572,7 @@ impl AgentService {
         if output.status != 0 {
             return Err(anyhow!("dpkg-query failed: {}", output.stderr));
         }
-        tokio::fs::write(target, output.stdout).await?;
+        write_text_file(target, output.stdout).await?;
         Ok(())
     }
 
@@ -735,7 +735,7 @@ async fn read_offline_session_log(child_transcript: &Path, agentfs_log: &Path) -
             if let Some(parent) = agentfs_log.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            tokio::fs::write(agentfs_log, &text).await?;
+            write_text_file(agentfs_log, &text).await?;
             Ok(text)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

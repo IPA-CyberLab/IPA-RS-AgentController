@@ -314,15 +314,44 @@ pub async fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+pub async fn write_text_file(path: &Path, text: impl AsRef<str>) -> Result<()> {
+    write_bytes_file(path, text.as_ref().as_bytes()).await
+}
+
+pub async fn write_bytes_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("path {} has no parent", path.display()))?;
+    tokio::fs::create_dir_all(parent).await?;
+    let tmp = unique_tmp_path(path);
+    if let Err(error) = write_tmp_and_rename(path, parent, &tmp, bytes, false).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn write_json_tmp_and_rename(
     path: &Path,
     parent: &Path,
     tmp: &Path,
     bytes: &[u8],
 ) -> Result<()> {
+    write_tmp_and_rename(path, parent, tmp, bytes, true).await
+}
+
+async fn write_tmp_and_rename(
+    path: &Path,
+    parent: &Path,
+    tmp: &Path,
+    bytes: &[u8],
+    trailing_newline: bool,
+) -> Result<()> {
     let mut file = tokio::fs::File::create(tmp).await?;
     file.write_all(bytes).await?;
-    file.write_all(b"\n").await?;
+    if trailing_newline {
+        file.write_all(b"\n").await?;
+    }
     file.sync_all().await?;
     drop(file);
     tokio::fs::rename(tmp, path)
@@ -371,7 +400,7 @@ pub fn validate_id(id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{unique_tmp_path, write_json, Layout};
+    use super::{unique_tmp_path, write_json, write_text_file, Layout};
     use crate::model::{
         machine_name, Base, Env, EnvState, Limits, Session, SessionState, SessionType,
     };
@@ -442,6 +471,17 @@ mod tests {
                 entry.path().display()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn write_text_file_replaces_contents_without_forcing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exports/rootfs-changed-paths.txt");
+
+        write_text_file(&path, "/root/file").await.unwrap();
+        write_text_file(&path, "").await.unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(path).await.unwrap(), "");
     }
 
     #[tokio::test]
