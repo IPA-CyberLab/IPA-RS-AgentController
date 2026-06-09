@@ -306,6 +306,15 @@ impl AgentService {
                 .await?;
             return Err(error);
         }
+        if let Err(error) = ensure_child_network_config(&env).await {
+            env.state = EnvState::Failed;
+            self.layout.write_env(&env).await?;
+            self.log_daemon(id, &format!("env start failed network setup: {error:#}"))
+                .await?;
+            self.log_lifecycle(id, &format!("failed network setup: {error:#}"))
+                .await?;
+            return Err(error);
+        }
         if let Err(error) = self.nspawn.start(&env, Some(&nspawn_log)).await {
             env.state = EnvState::Failed;
             self.layout.write_env(&env).await?;
@@ -939,15 +948,45 @@ async fn ensure_child_hostname(rootfs: &Path, hostname: &str) -> Result<()> {
     write_text_file(&rootfs.join("etc/hostname"), &format!("{hostname}\n")).await
 }
 
+async fn ensure_child_network_config(env: &Env) -> Result<()> {
+    if env.limits.network != "private-nat" {
+        return Ok(());
+    }
+    let network_path = env
+        .rootfs_path
+        .join("etc/systemd/network/80-agent-forkd-host0.network");
+    write_text_file(
+        &network_path,
+        "[Match]\nName=host0\n\n[Network]\nDHCP=yes\nIPv6AcceptRA=no\n",
+    )
+    .await?;
+    enable_child_systemd_unit(&env.rootfs_path, "systemd-networkd.service").await?;
+    enable_child_systemd_unit(&env.rootfs_path, "systemd-resolved.service").await?;
+    Ok(())
+}
+
+async fn enable_child_systemd_unit(rootfs: &Path, unit: &str) -> Result<()> {
+    let wants = rootfs.join("etc/systemd/system/multi-user.target.wants");
+    tokio::fs::create_dir_all(&wants).await?;
+    let link = wants.join(unit);
+    if tokio::fs::symlink_metadata(&link).await.is_ok() {
+        return Ok(());
+    }
+    let target = format!("/usr/lib/systemd/system/{unit}");
+    std::os::unix::fs::symlink(&target, &link)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_stopped_state, base_source_label, cleanup_failed_base_dir, cleanup_failed_env_dir,
-        default_shell_command, ensure_child_hostname, ensure_inaccessible_mask_targets,
-        ensure_running_env, idle_timeout_expired, read_offline_session_log, read_session_log_file,
-        remove_dir_all_if_exists, remove_path_if_exists, should_check_quota, should_mark_stopped,
-        should_refresh_live_state, should_reject_session_create, sync_env_session_index,
-        validate_child_rootfs_requirements, AgentService,
+        default_shell_command, ensure_child_hostname, ensure_child_network_config,
+        ensure_inaccessible_mask_targets, ensure_running_env, idle_timeout_expired,
+        read_offline_session_log, read_session_log_file, remove_dir_all_if_exists,
+        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
+        should_reject_session_create, sync_env_session_index, validate_child_rootfs_requirements,
+        AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
@@ -1037,6 +1076,34 @@ mod tests {
             fs::read_to_string(dir.path().join("etc/hostname")).unwrap(),
             "af-codex-1\n"
         );
+    }
+
+    #[tokio::test]
+    async fn private_nat_enables_child_networkd_for_host0_dhcp() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = test_env(EnvState::Created);
+        env.rootfs_path = dir.path().to_path_buf();
+
+        ensure_child_network_config(&env).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(
+                dir.path()
+                    .join("etc/systemd/network/80-agent-forkd-host0.network")
+            )
+            .unwrap(),
+            "[Match]\nName=host0\n\n[Network]\nDHCP=yes\nIPv6AcceptRA=no\n"
+        );
+        assert!(fs::symlink_metadata(
+            dir.path()
+                .join("etc/systemd/system/multi-user.target.wants/systemd-networkd.service")
+        )
+        .is_ok());
+        assert!(fs::symlink_metadata(
+            dir.path()
+                .join("etc/systemd/system/multi-user.target.wants/systemd-resolved.service")
+        )
+        .is_ok());
     }
 
     #[test]
