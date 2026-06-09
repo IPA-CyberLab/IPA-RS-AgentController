@@ -83,26 +83,52 @@ impl Exporter {
         let mut changed = BTreeSet::new();
         for entry in WalkDir::new(env) {
             let entry = entry.with_context(|| format!("failed to walk {}", env.display()))?;
-            if !entry.file_type().is_file() {
+            if entry.depth() == 0 {
                 continue;
             }
             let rel = entry.path().strip_prefix(env)?;
             let base_path = base.join(rel);
-            if !base_path.exists() || files_differ(&base_path, entry.path())? {
+            if path_changed(&base_path, entry.path())? {
                 changed.insert(format!("/{}", rel.display()));
             }
         }
         for entry in WalkDir::new(base) {
             let entry = entry.with_context(|| format!("failed to walk {}", base.display()))?;
-            if !entry.file_type().is_file() {
+            if entry.depth() == 0 {
                 continue;
             }
             let rel = entry.path().strip_prefix(base)?;
-            if !env.join(rel).exists() {
+            if symlink_metadata_if_exists(&env.join(rel))?.is_none() {
                 changed.insert(format!("deleted /{}", rel.display()));
             }
         }
         Ok(changed.into_iter().collect::<Vec<_>>().join("\n"))
+    }
+}
+
+fn path_changed(base: &Path, env: &Path) -> Result<bool> {
+    let Some(base_meta) = symlink_metadata_if_exists(base)? else {
+        return Ok(true);
+    };
+    let env_meta = fs::symlink_metadata(env)?;
+    let base_type = base_meta.file_type();
+    let env_type = env_meta.file_type();
+    if base_type.is_file() && env_type.is_file() {
+        return files_differ(base, env);
+    }
+    if base_type.is_symlink() && env_type.is_symlink() {
+        return Ok(fs::read_link(base)? != fs::read_link(env)?);
+    }
+    Ok(base_type.is_dir() != env_type.is_dir()
+        || base_type.is_file() != env_type.is_file()
+        || base_type.is_symlink() != env_type.is_symlink())
+}
+
+fn symlink_metadata_if_exists(path: &Path) -> Result<Option<fs::Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -135,6 +161,7 @@ mod tests {
     use crate::model::{machine_name, Env, EnvState, Limits};
     use chrono::Utc;
     use std::fs;
+    use std::os::unix::fs::symlink;
     use std::process::Command;
 
     #[test]
@@ -206,16 +233,23 @@ mod tests {
         let env = dir.path().join("env");
         fs::create_dir_all(base.join("root")).unwrap();
         fs::create_dir_all(env.join("root")).unwrap();
+        fs::create_dir_all(env.join("root/new-dir")).unwrap();
         fs::write(base.join("root/old.txt"), "old").unwrap();
         fs::write(base.join("root/same.txt"), "same").unwrap();
         fs::write(base.join("root/delete.txt"), "delete").unwrap();
         fs::write(env.join("root/old.txt"), "new").unwrap();
         fs::write(env.join("root/same.txt"), "same").unwrap();
         fs::write(env.join("root/add.txt"), "add").unwrap();
+        symlink("/old-target", base.join("root/link")).unwrap();
+        symlink("/new-target", env.join("root/link")).unwrap();
+        symlink("/added-target", env.join("root/added-link")).unwrap();
 
         let changed = Exporter::changed_paths_by_walk(&base, &env).unwrap();
         assert!(changed.contains("/root/add.txt"));
         assert!(changed.contains("/root/old.txt"));
+        assert!(changed.contains("/root/new-dir"));
+        assert!(changed.contains("/root/link"));
+        assert!(changed.contains("/root/added-link"));
         assert!(changed.contains("deleted /root/delete.txt"));
         assert!(!changed.contains("/root/same.txt"));
     }
