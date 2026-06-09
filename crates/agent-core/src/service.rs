@@ -303,15 +303,14 @@ impl AgentService {
         let mut env = self.layout.read_env(id).await?;
         self.log_lifecycle(id, "stopping").await?;
         self.nspawn.stop(&env.machine_name).await?;
-        self.nspawn.refresh_state(&mut env).await?;
-        if env.state == EnvState::Running {
+        let mut refreshed = env.clone();
+        self.nspawn.refresh_state(&mut refreshed).await?;
+        if refreshed.state == EnvState::Running {
             self.log_lifecycle(id, "stop requested but machine is still running")
                 .await?;
             return Err(anyhow!("env {id} is still running after stop"));
         }
-        if should_mark_stopped(&env.state) {
-            env.state = EnvState::Stopped;
-        }
+        apply_stopped_state(&mut env);
         self.log_lifecycle(id, "stopped").await?;
         self.layout.write_env(&env).await?;
         Ok(())
@@ -730,6 +729,12 @@ fn should_mark_stopped(state: &EnvState) -> bool {
     )
 }
 
+fn apply_stopped_state(env: &mut Env) {
+    if should_mark_stopped(&env.state) {
+        env.state = EnvState::Stopped;
+    }
+}
+
 fn ensure_running_env(env: &Env) -> Result<()> {
     if env.state == EnvState::Running {
         Ok(())
@@ -850,11 +855,12 @@ async fn ensure_inaccessible_mask_targets(rootfs: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_failed_base_dir, cleanup_failed_env_dir, default_shell_command,
-        ensure_inaccessible_mask_targets, ensure_running_env, read_offline_session_log,
-        read_session_log_file, remove_dir_all_if_exists, remove_path_if_exists, should_check_quota,
-        should_mark_stopped, should_refresh_live_state, should_reject_session_create,
-        sync_env_session_index, validate_child_rootfs_requirements, AgentService,
+        apply_stopped_state, cleanup_failed_base_dir, cleanup_failed_env_dir,
+        default_shell_command, ensure_inaccessible_mask_targets, ensure_running_env,
+        read_offline_session_log, read_session_log_file, remove_dir_all_if_exists,
+        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
+        should_reject_session_create, sync_env_session_index, validate_child_rootfs_requirements,
+        AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
@@ -956,6 +962,21 @@ mod tests {
         assert!(should_mark_stopped(&EnvState::Stopped));
         assert!(!should_mark_stopped(&EnvState::Failed));
         assert!(!should_mark_stopped(&EnvState::QuotaExceeded));
+    }
+
+    #[test]
+    fn stop_state_update_preserves_terminal_env_states() {
+        let mut failed = test_env(EnvState::Failed);
+        apply_stopped_state(&mut failed);
+        assert_eq!(failed.state, EnvState::Failed);
+
+        let mut quota = test_env(EnvState::QuotaExceeded);
+        apply_stopped_state(&mut quota);
+        assert_eq!(quota.state, EnvState::QuotaExceeded);
+
+        let mut running = test_env(EnvState::Running);
+        apply_stopped_state(&mut running);
+        assert_eq!(running.state, EnvState::Stopped);
     }
 
     #[test]
