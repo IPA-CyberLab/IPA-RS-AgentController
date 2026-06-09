@@ -2,7 +2,7 @@ use crate::btrfs::Btrfs;
 use crate::command::CommandRunner;
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
-use crate::model::{machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides};
+use crate::model::{machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, SessionState};
 use crate::nspawn::Nspawn;
 use crate::protocol::{Request, Response};
 use crate::session::TmuxSessionBackend;
@@ -106,7 +106,7 @@ impl AgentService {
                 Ok(Response::Ok)
             }
             Request::SessionAttach { env_id, session_id } => {
-                let env = self.layout.read_env(&env_id).await?;
+                let env = self.session_attach_target(&env_id, &session_id).await?;
                 Ok(Response::Attach {
                     machine_name: env.machine_name,
                     session_id,
@@ -317,6 +317,23 @@ impl AgentService {
                 .await?;
         }
         Ok((env.machine_name, session_id.to_string()))
+    }
+
+    pub async fn session_attach_target(&self, env_id: &str, session_id: &str) -> Result<Env> {
+        let env = self.layout.read_env(env_id).await?;
+        let mut session = self.layout.read_session(env_id, session_id).await?;
+        if !self.sessions.is_running(&env, session_id).await? {
+            session.state = SessionState::Stopped;
+            self.layout.write_session(&session).await?;
+            return Err(anyhow!(
+                "session {session_id} in env {env_id} is not running"
+            ));
+        }
+        if session.state != SessionState::Running {
+            session.state = SessionState::Running;
+            self.layout.write_session(&session).await?;
+        }
+        Ok(env)
     }
 
     pub async fn session_logs(&self, env_id: &str, session_id: &str) -> Result<String> {
