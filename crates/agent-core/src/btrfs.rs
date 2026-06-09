@@ -164,7 +164,7 @@ impl Btrfs {
     }
 
     pub async fn destroy_qgroup(&self, qgroup_id: &str, filesystem: &Path) -> Result<()> {
-        for attempt in 0..10 {
+        for attempt in 0..50 {
             let output = self
                 .runner
                 .run(
@@ -180,12 +180,26 @@ impl Btrfs {
             if output.status == 0 || qgroup_destroy_reports_missing(&output.stderr) {
                 return Ok(());
             }
-            if qgroup_destroy_reports_busy(&output.stderr) && attempt < 9 {
+            if qgroup_destroy_reports_busy(&output.stderr) && attempt < 49 {
                 let _ = self
                     .runner
                     .run(
                         "btrfs",
                         ["filesystem", "sync", &filesystem.display().to_string()],
+                    )
+                    .await?;
+                let _ = self
+                    .runner
+                    .run(
+                        "btrfs",
+                        ["subvolume", "sync", &filesystem.display().to_string()],
+                    )
+                    .await?;
+                let _ = self
+                    .runner
+                    .run(
+                        "btrfs",
+                        ["quota", "rescan", "-w", &filesystem.display().to_string()],
                     )
                     .await?;
                 std::thread::sleep(std::time::Duration::from_millis(100));
