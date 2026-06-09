@@ -17,6 +17,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(Path::new("/agentfs/bases/base-001/rootfs").exists());
     assert!(Path::new("/agentfs/bases/base-001/manifest.json").exists());
     assert!(Path::new("/agentfs/bases/base-001/dpkg.list").exists());
+    assert!(Path::new("/agentfs/bases/base-001/created_at").exists());
     assert_btrfs_subvolume("/agentfs/bases/base-001/rootfs");
     assert_btrfs_readonly("/agentfs/bases/base-001/rootfs", true);
     assert_base_metadata("base-001");
@@ -328,6 +329,8 @@ fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
 
 fn assert_base_metadata(base_id: &str) {
     let metadata = json_file(&format!("/agentfs/bases/{base_id}/manifest.json"));
+    let created_at = std::fs::read_to_string(format!("/agentfs/bases/{base_id}/created_at"))
+        .unwrap_or_else(|error| panic!("failed to read base created_at file: {error}"));
     assert_eq!(metadata["id"], base_id);
     assert_eq!(
         metadata["rootfs_path"],
@@ -343,6 +346,7 @@ fn assert_base_metadata(base_id: &str) {
         metadata["created_at"].as_str().is_some(),
         "base metadata omitted created_at: {metadata}"
     );
+    assert_eq!(metadata["created_at"].as_str().unwrap(), created_at);
 }
 
 fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
