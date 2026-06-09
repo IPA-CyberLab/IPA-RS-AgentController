@@ -97,6 +97,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
     assert_btrfs_qgroup_has_referenced_limit(&codex_qgroup, "/agentfs/envs/codex-1/rootfs");
     assert_child_cannot_see_project_vm_state("codex-1");
+    assert_last_active_advances_after_exec("codex-1");
 
     assert_eq!(
         text(&["agentctl", "exec", "codex-1", "--", "sudo", "whoami"]).trim(),
@@ -398,6 +399,23 @@ fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
     assert_eq!(status["env"]["id"], id);
     assert_eq!(status["env"]["base_id"], base_id);
     assert_eq!(status["env"]["state"], state);
+}
+
+fn assert_last_active_advances_after_exec(env_id: &str) {
+    let before = json(&["agentctl", "env", "status", env_id])["env"]["last_active_at"]
+        .as_str()
+        .unwrap_or_else(|| panic!("env {env_id} status omitted last_active_at"))
+        .to_string();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    run(&["agentctl", "exec", env_id, "--", "true"]);
+    let after = json(&["agentctl", "env", "status", env_id])["env"]["last_active_at"]
+        .as_str()
+        .unwrap_or_else(|| panic!("env {env_id} status omitted last_active_at"))
+        .to_string();
+    assert!(
+        after > before,
+        "env {env_id} last_active_at did not advance after exec: before={before}, after={after}"
+    );
 }
 
 fn assert_base_metadata(base_id: &str) {
