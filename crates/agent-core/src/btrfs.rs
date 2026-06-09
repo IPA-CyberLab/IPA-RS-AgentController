@@ -144,7 +144,15 @@ impl Btrfs {
             .run("btrfs", ["subvolume", "show", &path.display().to_string()])
             .await?;
         if output.status != 0 {
-            return Ok(None);
+            if subvolume_show_reports_missing(&output.stderr) {
+                return Ok(None);
+            }
+            return Err(anyhow!(
+                "failed to inspect Btrfs subvolume {} for qgroup cleanup: {}{}",
+                path.display(),
+                output.stdout,
+                output.stderr
+            ));
         }
         for line in output.stdout.lines() {
             let trimmed = line.trim();
@@ -288,11 +296,20 @@ fn subvolume_delete_reports_missing(stderr: &str) -> bool {
         || stderr.contains("not found")
 }
 
+fn subvolume_show_reports_missing(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no such file or directory")
+        || stderr.contains("not a btrfs subvolume")
+        || stderr.contains("not exist")
+        || stderr.contains("not found")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         is_unlimited, qgroup_destroy_reports_missing, qgroup_show_reports_exceeded,
         qgroup_show_result, quota_enable_reports_already_enabled, subvolume_delete_reports_missing,
+        subvolume_show_reports_missing,
     };
     use std::path::Path;
 
@@ -390,6 +407,19 @@ qgroupid         excl         max_excl    rfer     max_rfer
         ));
         assert!(!subvolume_delete_reports_missing(
             "ERROR: failed to delete subvolume: Directory not empty"
+        ));
+    }
+
+    #[test]
+    fn subvolume_show_missing_errors_are_idempotent() {
+        assert!(subvolume_show_reports_missing(
+            "ERROR: Could not statfs: No such file or directory"
+        ));
+        assert!(subvolume_show_reports_missing(
+            "ERROR: not a btrfs subvolume: /agentfs/envs/codex-1/rootfs"
+        ));
+        assert!(!subvolume_show_reports_missing(
+            "ERROR: failed to inspect subvolume: Permission denied"
         ));
     }
 
