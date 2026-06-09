@@ -466,6 +466,10 @@ fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
         metadata["created_at"].as_str().is_some(),
         "env metadata omitted created_at: {metadata}"
     );
+    assert!(
+        metadata["last_active_at"].as_str().is_some(),
+        "env metadata omitted last_active_at: {metadata}"
+    );
 }
 
 fn assert_session_metadata(env_id: &str, session_id: &str, command: &str, state: &str) {

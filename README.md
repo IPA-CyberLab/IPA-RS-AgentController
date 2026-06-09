@@ -79,7 +79,7 @@ agentctl env create codex-1 --from base-001 \
   --cpu-max 800% --memory-max 32G --pids-max 8192 --disk-max 200G
 ```
 
-For `cpu_max`, `memory_max`, `pids_max`, `disk_max`, and `max_runtime`, `0` means unlimited. Unlimited systemd properties are omitted, and unlimited disk does not apply a Btrfs qgroup limit.
+For `cpu_max`, `memory_max`, `pids_max`, `disk_max`, `idle_timeout`, and `max_runtime`, `0` means unlimited. Unlimited systemd properties are omitted, and unlimited disk does not apply a Btrfs qgroup limit. Nonzero `idle_timeout` values are checked during status/list refresh and stop a running env after the recorded `last_active_at` age exceeds the limit.
 
 The default `network=private-nat` profile launches nspawn with a veth in the `agent-forkd` network zone and writes `/etc/systemd/network/80-agent-forkd-private-nat.network` for the `vz-agent-forkd` bridge. Use `--network private` to request an isolated namespace without egress.
 
@@ -108,7 +108,7 @@ Base freeze creates a writable Btrfs snapshot, removes runtime-only paths such a
 
 Env start validates that the child rootfs contains `/bin/bash`, `sudo`, `apt` or `apt-get`, `tmux`, and `tee`. If those tools are missing, the env is marked `failed` and nspawn is not launched.
 
-If nspawn launch fails, the env is marked `failed`. After exec, the daemon checks the Btrfs qgroup and marks the env `quota_exceeded` when the child has reached its disk quota.
+If nspawn launch fails, the env is marked `failed`. After exec, the daemon checks the Btrfs qgroup and marks the env `quota_exceeded` when the child has reached its disk quota. Env activity updates `last_active_at` for exec, session, shell, diff, and export requests.
 
 Session operations invoke `tmux` through `machinectl shell` inside the child nspawn machine. For interactive attach, `agent-forkd` prepares or resolves the target session and returns the child machine/session to `agentctl`; the CLI then runs `machinectl shell ... tmux attach-session` with the user's terminal attached. The child session command mirrors stdout/stderr through `tee -a` into `/var/log/agent-forkd/sessions/<session-id>.log` inside the child rootfs so pane output stays visible and `/agentfs` does not need to be bind-mounted into the child. `agentctl session logs` pulls that transcript through `machinectl` and writes it to `/agentfs/envs/<env-id>/logs/sessions/<session-id>.log`.
 

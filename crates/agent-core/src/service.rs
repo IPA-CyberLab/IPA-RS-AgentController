@@ -246,6 +246,7 @@ impl AgentService {
             state: EnvState::Created,
             profile: profile.name.clone(),
             created_at: Utc::now(),
+            last_active_at: Utc::now(),
             limits,
             sessions: Vec::new(),
         };
@@ -295,6 +296,7 @@ impl AgentService {
             return Err(error);
         }
         env.state = EnvState::Running;
+        mark_env_active(&mut env);
         self.log_lifecycle(id, "running").await?;
         self.layout.write_env(&env).await?;
         Ok(())
@@ -338,6 +340,11 @@ impl AgentService {
         if should_refresh_live_state(&env.state) {
             self.nspawn.refresh_state(&mut env).await?;
         }
+        if idle_timeout_expired(&env, Utc::now()) {
+            self.nspawn.stop(&env.machine_name).await?;
+            apply_stopped_state(&mut env);
+            self.log_lifecycle(id, "idle timeout exceeded").await?;
+        }
         if should_check_quota(&env.state) && self.btrfs.quota_exceeded(&env.rootfs_path).await? {
             env.state = EnvState::QuotaExceeded;
             self.log_lifecycle(id, "quota exceeded during status refresh")
@@ -367,11 +374,12 @@ impl AgentService {
         self.log_lifecycle(id, &format!("exec {}", shell_join(command)))
             .await?;
         let output = self.nspawn.exec(&env, command, &log_path).await?;
+        mark_env_active(&mut env);
         if self.btrfs.quota_exceeded(&env.rootfs_path).await? {
             env.state = EnvState::QuotaExceeded;
-            self.layout.write_env(&env).await?;
             self.log_lifecycle(id, "quota exceeded after exec").await?;
         }
+        self.layout.write_env(&env).await?;
         Ok(output)
     }
 
@@ -415,6 +423,7 @@ impl AgentService {
             env.sessions.push(session_id.to_string());
             env.sessions.sort();
         }
+        mark_env_active(&mut env);
         self.layout.write_session(&session).await?;
         self.layout.write_env(&env).await?;
         self.log_lifecycle(env_id, &format!("session {session_id} created"))
@@ -423,7 +432,7 @@ impl AgentService {
     }
 
     pub async fn shell_attach_target(&self, env_id: &str) -> Result<(String, String)> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
         let session_id = "shell";
         let metadata_path = self
@@ -441,12 +450,15 @@ impl AgentService {
         if !running {
             self.session_create(env_id, session_id, &default_shell_command())
                 .await?;
+            env = self.layout.read_env(env_id).await?;
         }
+        mark_env_active(&mut env);
+        self.layout.write_env(&env).await?;
         Ok((env.machine_name, session_id.to_string()))
     }
 
     pub async fn session_attach_target(&self, env_id: &str, session_id: &str) -> Result<Env> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
         let mut session = self.layout.read_session(env_id, session_id).await?;
         if !self.sessions.is_running(&env, session_id).await? {
@@ -460,11 +472,13 @@ impl AgentService {
             session.state = SessionState::Running;
             self.layout.write_session(&session).await?;
         }
+        mark_env_active(&mut env);
+        self.layout.write_env(&env).await?;
         Ok(env)
     }
 
     pub async fn session_logs(&self, env_id: &str, session_id: &str) -> Result<String> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
         let session = self.layout.read_session(env_id, session_id).await?;
         let logs = if env.state == EnvState::Running {
             self.sessions
@@ -479,11 +493,13 @@ impl AgentService {
         };
         self.log_lifecycle(env_id, &format!("session {session_id} logs synced"))
             .await?;
+        mark_env_active(&mut env);
+        self.layout.write_env(&env).await?;
         Ok(logs)
     }
 
     pub async fn session_detach(&self, env_id: &str, session_id: &str) -> Result<()> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
         let mut session = self.layout.read_session(env_id, session_id).await?;
         if !self.sessions.is_running(&env, &session.id).await? {
@@ -494,18 +510,22 @@ impl AgentService {
             ));
         }
         self.sessions.detach(&env, &session.id).await?;
+        mark_env_active(&mut env);
+        self.layout.write_env(&env).await?;
         self.log_lifecycle(env_id, &format!("session {session_id} detached"))
             .await?;
         Ok(())
     }
 
     pub async fn session_kill(&self, env_id: &str, session_id: &str) -> Result<()> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
         ensure_running_env(&env)?;
         let mut session = self.layout.read_session(env_id, session_id).await?;
         self.sessions.kill(&env, &session.id).await?;
         session.state = SessionState::Stopped;
         self.layout.write_session(&session).await?;
+        mark_env_active(&mut env);
+        self.layout.write_env(&env).await?;
         self.log_lifecycle(env_id, &format!("session {session_id} killed"))
             .await?;
         Ok(())
@@ -534,12 +554,14 @@ impl AgentService {
     }
 
     pub async fn diff(&self, env_id: &str) -> Result<String> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
+        mark_env_active(&mut env);
+        self.layout.write_env(&env).await?;
         self.exporter.workspace_patch(&env).await
     }
 
     pub async fn export(&self, env_id: &str, export_type: ExportType) -> Result<String> {
-        let env = self.layout.read_env(env_id).await?;
+        let mut env = self.layout.read_env(env_id).await?;
         let base = self.layout.read_base(&env.base_id).await?;
         let text = match export_type {
             ExportType::WorkspacePatch => self.exporter.workspace_patch(&env).await,
@@ -559,6 +581,8 @@ impl AgentService {
             .join("exports")
             .join(export_type.artifact_name());
         write_text_file(&artifact, &text).await?;
+        mark_env_active(&mut env);
+        self.layout.write_env(&env).await?;
         self.log_lifecycle(env_id, &format!("exported {}", artifact.display()))
             .await?;
         Ok(text)
@@ -736,6 +760,20 @@ fn apply_stopped_state(env: &mut Env) {
     }
 }
 
+fn mark_env_active(env: &mut Env) {
+    env.last_active_at = Utc::now();
+}
+
+fn idle_timeout_expired(env: &Env, now: chrono::DateTime<Utc>) -> bool {
+    if env.state != EnvState::Running {
+        return false;
+    }
+    let Ok(Some(timeout)) = env.limits.idle_timeout_duration() else {
+        return false;
+    };
+    now.signed_duration_since(env.last_active_at) >= timeout
+}
+
 fn ensure_running_env(env: &Env) -> Result<()> {
     if env.state == EnvState::Running {
         Ok(())
@@ -858,10 +896,10 @@ mod tests {
     use super::{
         apply_stopped_state, cleanup_failed_base_dir, cleanup_failed_env_dir,
         default_shell_command, ensure_inaccessible_mask_targets, ensure_running_env,
-        read_offline_session_log, read_session_log_file, remove_dir_all_if_exists,
-        remove_path_if_exists, should_check_quota, should_mark_stopped, should_refresh_live_state,
-        should_reject_session_create, sync_env_session_index, validate_child_rootfs_requirements,
-        AgentService,
+        idle_timeout_expired, read_offline_session_log, read_session_log_file,
+        remove_dir_all_if_exists, remove_path_if_exists, should_check_quota, should_mark_stopped,
+        should_refresh_live_state, should_reject_session_create, sync_env_session_index,
+        validate_child_rootfs_requirements, AgentService,
     };
     use crate::config::AgentConfig;
     use crate::model::{machine_name, Env, EnvState, Limits, Session, SessionState, SessionType};
@@ -978,6 +1016,26 @@ mod tests {
         let mut running = test_env(EnvState::Running);
         apply_stopped_state(&mut running);
         assert_eq!(running.state, EnvState::Stopped);
+    }
+
+    #[test]
+    fn idle_timeout_only_expires_running_envs_after_inactivity_window() {
+        let now = Utc::now();
+        let mut env = test_env(EnvState::Running);
+        env.limits.idle_timeout = "30m".to_string();
+        env.last_active_at = now - chrono::Duration::minutes(31);
+        assert!(idle_timeout_expired(&env, now));
+
+        env.last_active_at = now - chrono::Duration::minutes(29);
+        assert!(!idle_timeout_expired(&env, now));
+
+        env.state = EnvState::Stopped;
+        env.last_active_at = now - chrono::Duration::hours(1);
+        assert!(!idle_timeout_expired(&env, now));
+
+        env.state = EnvState::Running;
+        env.limits.idle_timeout = "0".to_string();
+        assert!(!idle_timeout_expired(&env, now));
     }
 
     #[test]
@@ -1202,6 +1260,7 @@ mod tests {
             state,
             profile: "privileged-dev".to_string(),
             created_at: Utc::now(),
+            last_active_at: Utc::now(),
             limits: Limits::default(),
             sessions: Vec::new(),
         }

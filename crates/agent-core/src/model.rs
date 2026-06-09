@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration as StdDuration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +25,8 @@ pub struct Env {
     pub state: EnvState,
     pub profile: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default = "Utc::now")]
+    pub last_active_at: DateTime<Utc>,
     pub limits: Limits,
     pub sessions: Vec<String>,
 }
@@ -116,6 +119,10 @@ impl Limits {
         }
         self
     }
+
+    pub fn idle_timeout_duration(&self) -> Result<Option<Duration>> {
+        duration_limit("idle_timeout", &self.idle_timeout)
+    }
 }
 
 fn validate_cpu_max(value: &str) -> Result<()> {
@@ -147,9 +154,13 @@ fn validate_size_limit(name: &str, value: &str) -> Result<()> {
 }
 
 fn validate_duration_limit(name: &str, value: &str) -> Result<()> {
+    duration_limit(name, value).map(|_| ())
+}
+
+fn duration_limit(name: &str, value: &str) -> Result<Option<Duration>> {
     let value = value.trim();
     if is_unlimited(value) {
-        return Ok(());
+        return Ok(None);
     }
     let Some((number, unit)) = split_number_unit(value) else {
         bail!("{name} must be a positive duration with a unit or 0/unlimited");
@@ -160,7 +171,21 @@ fn validate_duration_limit(name: &str, value: &str) -> Result<()> {
     ) {
         bail!("{name} has unsupported unit {unit}");
     }
-    validate_positive_decimal(name, number)
+    validate_positive_decimal(name, number)?;
+    let value = number
+        .parse::<f64>()
+        .map_err(|_| anyhow::anyhow!("{name} must be positive"))?;
+    let seconds = match unit.to_ascii_lowercase().as_str() {
+        "s" | "sec" => value,
+        "m" | "min" => value * 60.0,
+        "h" | "hr" => value * 60.0 * 60.0,
+        "d" | "day" => value * 60.0 * 60.0 * 24.0,
+        _ => unreachable!("duration unit was validated above"),
+    };
+    let duration = StdDuration::from_secs_f64(seconds);
+    Ok(Some(Duration::from_std(duration).map_err(|_| {
+        anyhow::anyhow!("{name} duration is too large")
+    })?))
 }
 
 fn split_number_unit(value: &str) -> Option<(&str, &str)> {
@@ -288,6 +313,25 @@ mod tests {
     }
 
     #[test]
+    fn idle_timeout_duration_parses_supported_units() {
+        let mut limits = Limits {
+            idle_timeout: "1.5m".to_string(),
+            ..Limits::default()
+        };
+        assert_eq!(
+            limits
+                .idle_timeout_duration()
+                .unwrap()
+                .unwrap()
+                .num_seconds(),
+            90
+        );
+
+        limits.idle_timeout = "0".to_string();
+        assert!(limits.idle_timeout_duration().unwrap().is_none());
+    }
+
+    #[test]
     fn empty_limit_overrides_preserve_profile_defaults() {
         assert_eq!(
             Limits::default().with_overrides(LimitOverrides::default()),
@@ -318,6 +362,7 @@ mod tests {
                 "state",
                 "profile",
                 "created_at",
+                "last_active_at",
                 "limits",
                 "sessions",
             ],
@@ -398,6 +443,7 @@ mod tests {
             state: EnvState::Running,
             profile: "privileged-dev".to_string(),
             created_at: Utc::now(),
+            last_active_at: Utc::now(),
             limits: Limits::default(),
             sessions: vec!["dev".to_string()],
         };
@@ -411,6 +457,7 @@ mod tests {
                 "state",
                 "profile",
                 "created_at",
+                "last_active_at",
                 "limits",
                 "sessions",
             ],

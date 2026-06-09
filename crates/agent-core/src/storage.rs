@@ -507,6 +507,7 @@ mod tests {
             state: EnvState::Created,
             profile: "privileged-dev".to_string(),
             created_at: Utc::now(),
+            last_active_at: Utc::now(),
             limits: Limits::default(),
             sessions: Vec::new(),
         };
@@ -713,6 +714,7 @@ mod tests {
             state: EnvState::Created,
             profile: "privileged-dev".to_string(),
             created_at: Utc::now(),
+            last_active_at: Utc::now(),
             limits: Limits::default(),
             sessions: Vec::new(),
         }
