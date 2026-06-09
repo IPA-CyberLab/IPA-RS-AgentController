@@ -17,6 +17,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert!(Path::new("/agentfs/bases/base-001/dpkg.list").exists());
     assert_btrfs_subvolume("/agentfs/bases/base-001/rootfs");
     assert_btrfs_readonly("/agentfs/bases/base-001/rootfs", true);
+    assert_base_metadata("base-001");
 
     run(&[
         "agentctl",
@@ -46,6 +47,8 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         "--profile",
         "privileged-dev",
     ]);
+    assert_env_metadata("codex-1", "base-001", "created");
+    assert_env_metadata("claude-1", "base-001", "created");
     run(&["agentctl", "env", "start", "codex-1"]);
     run(&["agentctl", "env", "start", "claude-1"]);
     assert_nspawn_config_for("codex-1");
@@ -302,6 +305,50 @@ fn assert_env_status(status: &Value, id: &str, base_id: &str, state: &str) {
     assert_eq!(status["env"]["state"], state);
 }
 
+fn assert_base_metadata(base_id: &str) {
+    let metadata = json_file(&format!("/agentfs/bases/{base_id}/manifest.json"));
+    assert_eq!(metadata["id"], base_id);
+    assert_eq!(
+        metadata["rootfs_path"],
+        format!("/agentfs/bases/{base_id}/rootfs")
+    );
+    assert_eq!(metadata["readonly"], true);
+    assert_eq!(metadata["source"], "/");
+    assert_eq!(
+        metadata["dpkg_manifest"],
+        format!("/agentfs/bases/{base_id}/dpkg.list")
+    );
+    assert!(
+        metadata["created_at"].as_str().is_some(),
+        "base metadata omitted created_at: {metadata}"
+    );
+}
+
+fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
+    let metadata = json_file(&format!("/agentfs/envs/{env_id}/meta.json"));
+    assert_eq!(metadata["id"], env_id);
+    assert_eq!(metadata["base_id"], base_id);
+    assert_eq!(
+        metadata["rootfs_path"],
+        format!("/agentfs/envs/{env_id}/rootfs")
+    );
+    assert_eq!(metadata["machine_name"], format!("af-{env_id}"));
+    assert_eq!(metadata["state"], state);
+    assert_eq!(metadata["profile"], "privileged-dev");
+    assert_eq!(metadata["limits"]["cpu_max"], "400%");
+    assert_eq!(metadata["limits"]["memory_max"], "16G");
+    assert_eq!(metadata["limits"]["pids_max"], 4096);
+    assert_eq!(metadata["limits"]["disk_max"], "100G");
+    assert_eq!(metadata["limits"]["network"], "private-nat");
+    assert_eq!(metadata["limits"]["idle_timeout"], "0");
+    assert_eq!(metadata["limits"]["max_runtime"], "0");
+    assert!(metadata["sessions"].as_array().unwrap().is_empty());
+    assert!(
+        metadata["created_at"].as_str().is_some(),
+        "env metadata omitted created_at: {metadata}"
+    );
+}
+
 fn assert_agentfs_layout_initialized() {
     for dir in [
         "/agentfs/bases",
@@ -515,6 +562,15 @@ fn command_available(program: &str) -> bool {
 fn json(command: &[&str]) -> Value {
     serde_json::from_str(&text(command)).unwrap_or_else(|error| {
         panic!("failed to parse json from {command:?}: {error}");
+    })
+}
+
+fn json_file(path: &str) -> Value {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!("failed to read json file {path}: {error}");
+    });
+    serde_json::from_str(&text).unwrap_or_else(|error| {
+        panic!("failed to parse json file {path}: {error}");
     })
 }
 
