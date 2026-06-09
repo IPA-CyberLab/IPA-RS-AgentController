@@ -1,0 +1,14 @@
+[Unit]
+Description=Forked development environment manager
+After=local-fs.target systemd-machined.service
+Requires=systemd-machined.service
+
+[Service]
+Type=simple
+Environment=AGENTFS=/agentfs
+ExecStart=/usr/local/bin/agent-forkd --agentfs ${AGENTFS}
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

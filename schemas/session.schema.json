@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Fork Session",
+  "type": "object",
+  "required": ["id", "env_id", "command", "state", "created_at", "type", "log_path"],
+  "properties": {
+    "id": { "type": "string" },
+    "env_id": { "type": "string" },
+    "command": { "type": "string" },
+    "state": { "enum": ["running", "stopped", "failed"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "type": { "enum": ["pty"] },
+    "log_path": { "type": "string" }
+  },
+  "additionalProperties": false
+}

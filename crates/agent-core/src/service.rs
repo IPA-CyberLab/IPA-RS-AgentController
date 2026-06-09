@@ -1,0 +1,336 @@
+use crate::btrfs::Btrfs;
+use crate::command::CommandRunner;
+use crate::config::AgentConfig;
+use crate::export::{ExportType, Exporter};
+use crate::model::{machine_name, Base, Env, EnvState, EnvStatus};
+use crate::nspawn::Nspawn;
+use crate::protocol::{Request, Response};
+use crate::session::TmuxSessionBackend;
+use crate::storage::{validate_id, Layout};
+use anyhow::{anyhow, Context, Result};
+use chrono::Utc;
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct AgentService {
+    pub config: AgentConfig,
+    layout: Layout,
+    btrfs: Btrfs,
+    nspawn: Nspawn,
+    sessions: TmuxSessionBackend,
+    exporter: Exporter,
+    runner: CommandRunner,
+}
+
+impl AgentService {
+    pub fn new(config: AgentConfig) -> Self {
+        let layout = Layout::new(config.agentfs.clone());
+        Self {
+            config,
+            layout,
+            btrfs: Btrfs::default(),
+            nspawn: Nspawn::default(),
+            sessions: TmuxSessionBackend::default(),
+            exporter: Exporter::default(),
+            runner: CommandRunner,
+        }
+    }
+
+    pub async fn handle(&self, request: Request) -> Response {
+        match self.handle_result(request).await {
+            Ok(response) => response,
+            Err(error) => Response::Error {
+                message: format!("{error:#}"),
+            },
+        }
+    }
+
+    async fn handle_result(&self, request: Request) -> Result<Response> {
+        match request {
+            Request::Init { agentfs } => {
+                AgentService::new(AgentConfig::new(agentfs)).init().await?;
+                Ok(Response::Ok)
+            }
+            Request::BaseFreeze { name, from } => {
+                self.base_freeze(&name, &from).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvCreate { id, base, profile } => {
+                self.env_create(&id, &base, &profile).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvStart { id } => {
+                self.env_start(&id).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvStop { id } => {
+                self.env_stop(&id).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvDestroy { id } => {
+                self.env_destroy(&id).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvList => Ok(Response::Envs {
+                envs: self.layout.list_envs().await?,
+            }),
+            Request::EnvStatus { id } => Ok(Response::EnvStatus {
+                status: Box::new(self.env_status(&id).await?),
+            }),
+            Request::Exec { id, command } => {
+                let output = self.exec(&id, &command).await?;
+                Ok(Response::Exec {
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                })
+            }
+            Request::Shell { id } => {
+                let env = self.layout.read_env(&id).await?;
+                self.nspawn.shell(&env.machine_name).await?;
+                Ok(Response::Ok)
+            }
+            Request::SessionCreate {
+                env_id,
+                session_id,
+                command,
+            } => {
+                self.session_create(&env_id, &session_id, &command).await?;
+                Ok(Response::Ok)
+            }
+            Request::SessionAttach { env_id, session_id } => {
+                self.sessions.attach(&env_id, &session_id).await?;
+                Ok(Response::Ok)
+            }
+            Request::SessionList { env_id } => Ok(Response::Sessions {
+                sessions: self.layout.list_sessions(&env_id).await?,
+            }),
+            Request::Diff { env_id } => Ok(Response::Text {
+                text: self.diff(&env_id).await?,
+            }),
+            Request::Export {
+                env_id,
+                export_type,
+            } => Ok(Response::Text {
+                text: self
+                    .export(&env_id, ExportType::parse(&export_type)?)
+                    .await?,
+            }),
+            Request::Ping => Ok(Response::Ok),
+        }
+    }
+
+    pub async fn init(&self) -> Result<()> {
+        self.btrfs.ensure_filesystem(&self.config.agentfs).await?;
+        self.layout.ensure_agentfs().await?;
+        self.btrfs.enable_quota(&self.config.agentfs).await?;
+        Ok(())
+    }
+
+    pub async fn base_freeze(&self, name: &str, from: &Path) -> Result<Base> {
+        validate_id(name)?;
+        self.btrfs.ensure_subvolume(from).await?;
+        let base_dir = self.layout.base_dir(name);
+        if base_dir.exists() {
+            return Err(anyhow!("base {name} already exists"));
+        }
+        tokio::fs::create_dir_all(&base_dir).await?;
+        let rootfs = self.layout.base_rootfs(name);
+        self.btrfs.snapshot_readonly(from, &rootfs).await?;
+        let dpkg_manifest = base_dir.join("dpkg.list");
+        self.write_dpkg_manifest(&rootfs, &dpkg_manifest).await?;
+        let base = Base {
+            id: name.to_string(),
+            rootfs_path: rootfs,
+            readonly: true,
+            created_at: Utc::now(),
+            source: from.display().to_string(),
+            dpkg_manifest,
+        };
+        self.layout.write_base(&base).await?;
+        Ok(base)
+    }
+
+    pub async fn env_create(&self, id: &str, base_id: &str, profile_name: &str) -> Result<Env> {
+        validate_id(id)?;
+        validate_id(base_id)?;
+        let profile = self
+            .config
+            .profile(profile_name)
+            .ok_or_else(|| anyhow!("unknown profile {profile_name}"))?;
+        let base = self.layout.read_base(base_id).await?;
+        let env_dir = self.layout.env_dir(id);
+        if env_dir.exists() {
+            return Err(anyhow!("env {id} already exists"));
+        }
+        tokio::fs::create_dir_all(self.layout.session_logs(id)).await?;
+        tokio::fs::create_dir_all(self.layout.sessions_dir(id)).await?;
+        tokio::fs::create_dir_all(env_dir.join("exports")).await?;
+        tokio::fs::create_dir_all(env_dir.join("locks")).await?;
+        let rootfs = self.layout.env_rootfs(id);
+        self.btrfs
+            .snapshot_writable(&base.rootfs_path, &rootfs)
+            .await?;
+        self.btrfs
+            .set_limit(&profile.limits.disk_max, &rootfs)
+            .await?;
+        let env = Env {
+            id: id.to_string(),
+            base_id: base_id.to_string(),
+            rootfs_path: rootfs,
+            machine_name: machine_name(id),
+            state: EnvState::Created,
+            profile: profile.name.clone(),
+            created_at: Utc::now(),
+            limits: profile.limits.clone(),
+            sessions: Vec::new(),
+        };
+        self.nspawn.write_config(&env).await?;
+        self.layout.write_env(&env).await?;
+        Ok(env)
+    }
+
+    pub async fn env_start(&self, id: &str) -> Result<()> {
+        let mut env = self.layout.read_env(id).await?;
+        self.nspawn.start(&env).await?;
+        env.state = EnvState::Running;
+        self.layout.write_env(&env).await?;
+        Ok(())
+    }
+
+    pub async fn env_stop(&self, id: &str) -> Result<()> {
+        let mut env = self.layout.read_env(id).await?;
+        self.nspawn.stop(&env.machine_name).await?;
+        env.state = EnvState::Stopped;
+        self.layout.write_env(&env).await?;
+        Ok(())
+    }
+
+    pub async fn env_destroy(&self, id: &str) -> Result<()> {
+        let env = self.layout.read_env(id).await?;
+        let _ = self.nspawn.stop(&env.machine_name).await;
+        self.btrfs.delete_subvolume(&env.rootfs_path).await?;
+        tokio::fs::remove_dir_all(self.layout.env_dir(id)).await?;
+        Ok(())
+    }
+
+    pub async fn env_status(&self, id: &str) -> Result<EnvStatus> {
+        let mut env = self.layout.read_env(id).await?;
+        self.nspawn.refresh_state(&mut env).await?;
+        self.layout.write_env(&env).await?;
+        let disk_used = self.disk_used(&env.rootfs_path).await.ok();
+        Ok(EnvStatus { env, disk_used })
+    }
+
+    pub async fn exec(&self, id: &str, command: &[String]) -> Result<crate::command::CmdOutput> {
+        if command.is_empty() {
+            return Err(anyhow!("exec command cannot be empty"));
+        }
+        let env = self.layout.read_env(id).await?;
+        let log_path = self.layout.env_logs(id).join("exec.log");
+        self.nspawn.exec(&env, command, &log_path).await
+    }
+
+    pub async fn session_create(
+        &self,
+        env_id: &str,
+        session_id: &str,
+        command: &[String],
+    ) -> Result<()> {
+        validate_id(session_id)?;
+        if command.is_empty() {
+            return Err(anyhow!("session command cannot be empty"));
+        }
+        let mut env = self.layout.read_env(env_id).await?;
+        let log_path = TmuxSessionBackend::log_path(&self.layout.session_logs(env_id), session_id);
+        let session = self
+            .sessions
+            .create(&env, session_id, command, log_path)
+            .await?;
+        if !env.sessions.iter().any(|existing| existing == session_id) {
+            env.sessions.push(session_id.to_string());
+            env.sessions.sort();
+        }
+        self.layout.write_session(&session).await?;
+        self.layout.write_env(&env).await?;
+        Ok(())
+    }
+
+    pub async fn diff(&self, env_id: &str) -> Result<String> {
+        let env = self.layout.read_env(env_id).await?;
+        self.exporter.workspace_patch(&env).await
+    }
+
+    pub async fn export(&self, env_id: &str, export_type: ExportType) -> Result<String> {
+        let env = self.layout.read_env(env_id).await?;
+        let base = self.layout.read_base(&env.base_id).await?;
+        match export_type {
+            ExportType::WorkspacePatch => self.exporter.workspace_patch(&env).await,
+            ExportType::RootfsChangedPaths => {
+                Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
+            }
+            ExportType::DpkgDelta => {
+                let env_manifest = self.layout.env_dir(env_id).join("dpkg.list");
+                self.write_dpkg_manifest(&env.rootfs_path, &env_manifest)
+                    .await?;
+                Exporter::dpkg_delta(&base.dpkg_manifest, &env_manifest)
+            }
+        }
+    }
+
+    async fn write_dpkg_manifest(&self, rootfs: &Path, target: &Path) -> Result<()> {
+        let status = rootfs.join("var/lib/dpkg/status");
+        if status.exists() {
+            let text = tokio::fs::read_to_string(status).await?;
+            let mut packages = Vec::new();
+            for block in text.split("\n\n") {
+                let name = block
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Package: "))
+                    .unwrap_or_default();
+                let state = block
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Status: "))
+                    .unwrap_or_default();
+                if !name.is_empty() && state.contains(" installed") {
+                    packages.push(format!("{name} install"));
+                }
+            }
+            packages.sort();
+            tokio::fs::write(target, format!("{}\n", packages.join("\n"))).await?;
+            return Ok(());
+        }
+
+        let output = self
+            .runner
+            .run(
+                "chroot",
+                vec![
+                    rootfs.display().to_string(),
+                    "dpkg-query".to_string(),
+                    "-W".to_string(),
+                    "-f=${Package} install\\n".to_string(),
+                ],
+            )
+            .await
+            .context("failed to collect dpkg manifest")?;
+        if output.status != 0 {
+            return Err(anyhow!("dpkg-query failed: {}", output.stderr));
+        }
+        tokio::fs::write(target, output.stdout).await?;
+        Ok(())
+    }
+
+    async fn disk_used(&self, path: &Path) -> Result<String> {
+        let output = self
+            .runner
+            .run_checked("du", ["-sh", &path.display().to_string()])
+            .await?;
+        Ok(output
+            .stdout
+            .split_whitespace()
+            .next()
+            .unwrap_or("-")
+            .to_string())
+    }
+}
