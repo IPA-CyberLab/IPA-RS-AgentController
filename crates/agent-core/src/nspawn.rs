@@ -1,4 +1,4 @@
-use crate::command::{CmdOutput, CommandRunner};
+use crate::command::{shell_join, CmdOutput, CommandRunner};
 use crate::model::{unit_name, Env, EnvState};
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
@@ -251,23 +251,6 @@ fn machinectl_show_state_result(
     Err(anyhow!(
         "machinectl show {machine_name} exited with {status}: {stdout}{stderr}"
     ))
-}
-
-fn shell_join(command: &[String]) -> String {
-    command
-        .iter()
-        .map(|arg| {
-            if arg
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_./:=+".contains(&b))
-            {
-                arg.clone()
-            } else {
-                format!("'{}'", arg.replace('\'', "'\\''"))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]

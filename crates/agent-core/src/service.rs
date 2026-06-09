@@ -1,5 +1,5 @@
 use crate::btrfs::Btrfs;
-use crate::command::CommandRunner;
+use crate::command::{shell_join, CommandRunner};
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
 use crate::model::{machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, SessionState};
@@ -349,7 +349,7 @@ impl AgentService {
         let mut env = self.layout.read_env(id).await?;
         ensure_running_env(&env)?;
         let log_path = self.layout.env_logs(id).join("exec.log");
-        self.log_lifecycle(id, &format!("exec {}", command.join(" ")))
+        self.log_lifecycle(id, &format!("exec {}", shell_join(command)))
             .await?;
         let output = self.nspawn.exec(&env, command, &log_path).await?;
         if self.btrfs.quota_exceeded(&env.rootfs_path).await? {

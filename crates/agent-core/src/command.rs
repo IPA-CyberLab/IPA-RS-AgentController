@@ -63,3 +63,42 @@ impl CommandRunner {
         Ok(())
     }
 }
+
+pub(crate) fn shell_join(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|arg| {
+            if arg
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_./:=+".contains(&b))
+            {
+                arg.clone()
+            } else {
+                shell_quote(arg)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(crate) fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shell_join, shell_quote};
+
+    #[test]
+    fn shell_join_quotes_spaces_and_quotes() {
+        assert_eq!(
+            shell_join(&["bash".into(), "-lc".into(), "echo 'hello world'".into()]),
+            "bash -lc 'echo '\\''hello world'\\'''"
+        );
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("shell's dev"), "'shell'\\''s dev'");
+    }
+}

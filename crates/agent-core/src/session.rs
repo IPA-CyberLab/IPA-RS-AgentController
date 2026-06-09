@@ -1,4 +1,4 @@
-use crate::command::CommandRunner;
+use crate::command::{shell_join, shell_quote, CommandRunner};
 use crate::model::{Env, Session, SessionState, SessionType};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -269,27 +269,6 @@ impl TmuxSessionBackend {
     }
 }
 
-fn shell_join(command: &[String]) -> String {
-    command
-        .iter()
-        .map(|arg| {
-            if arg
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_./:=+".contains(&b))
-            {
-                arg.clone()
-            } else {
-                shell_quote(arg)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 fn parse_tmux_session_names(output: &str) -> Vec<String> {
     output
         .lines()
@@ -306,9 +285,9 @@ fn tmux_detach_reports_no_current_client(stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_tmux_session_names, shell_join, shell_quote, tmux_detach_reports_no_current_client,
-        TmuxSessionBackend,
+        parse_tmux_session_names, tmux_detach_reports_no_current_client, TmuxSessionBackend,
     };
+    use crate::command::{shell_join, shell_quote};
 
     #[test]
     fn tmux_name_scopes_by_env() {
