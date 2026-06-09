@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Fork Daemon Config",
+  "type": "object",
+  "required": ["agentfs", "socket_path", "default_profile", "profiles"],
+  "properties": {
+    "agentfs": { "type": "string" },
+    "socket_path": { "type": "string" },
+    "default_profile": { "type": "string" },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "limits"],
+        "properties": {
+          "name": { "type": "string" },
+          "limits": {
+            "type": "object",
+            "required": ["cpu_max", "memory_max", "pids_max", "disk_max", "network", "idle_timeout", "max_runtime"],
+            "properties": {
+              "cpu_max": { "type": "string" },
+              "memory_max": { "type": "string" },
+              "pids_max": { "type": "integer" },
+              "disk_max": { "type": "string" },
+              "network": { "type": "string" },
+              "idle_timeout": { "type": "string" },
+              "max_runtime": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
