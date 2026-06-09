@@ -763,6 +763,34 @@ fn assert_runtime_namespaces_are_isolated(left_env_id: &str, right_env_id: &str)
         left_user.trim(),
         "{left_env_id} reused the host user namespace"
     );
+
+    let uid_map = text(&[
+        "agentctl",
+        "exec",
+        left_env_id,
+        "--",
+        "bash",
+        "-lc",
+        "awk 'NR == 1 { print $1, $2, $3 }' /proc/self/uid_map",
+    ]);
+    let fields = uid_map.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(
+        fields.first().copied(),
+        Some("0"),
+        "{left_env_id} uid_map did not start at child root uid 0:\n{uid_map}"
+    );
+    assert_ne!(
+        fields.get(1).copied(),
+        Some("0"),
+        "{left_env_id} mapped child root directly to Project VM root:\n{uid_map}"
+    );
+    assert!(
+        fields
+            .get(2)
+            .and_then(|extent| extent.parse::<u64>().ok())
+            .is_some_and(|extent| extent > 0),
+        "{left_env_id} uid_map had no positive extent:\n{uid_map}"
+    );
 }
 
 fn assert_systemd_cgroup_limits(env_id: &str) {
