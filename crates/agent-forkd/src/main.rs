@@ -1,5 +1,5 @@
 use agent_core::config::AgentConfig;
-use agent_core::protocol::{Request, Response};
+use agent_core::protocol::{parse_request_json, Request, Response};
 use agent_core::AgentService;
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -70,7 +70,7 @@ async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> 
 }
 
 fn parse_request_line(line: &str) -> std::result::Result<Request, Response> {
-    serde_json::from_str(line).map_err(|error| Response::Error {
+    parse_request_json(line).map_err(|error| Response::Error {
         message: format!("invalid request json: {error}"),
     })
 }
@@ -156,6 +156,19 @@ mod tests {
         match response {
             Response::Error { message } => {
                 assert!(message.contains("invalid request json"));
+            }
+            other => panic!("unexpected response {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_line_rejects_unknown_fields() {
+        let response = parse_request_line(r#"{"type":"ping","unexpected":"field"}"#).unwrap_err();
+
+        match response {
+            Response::Error { message } => {
+                assert!(message.contains("invalid request json"));
+                assert!(message.contains("unexpected"));
             }
             other => panic!("unexpected response {other:?}"),
         }

@@ -1,6 +1,6 @@
 use agent_core::config::AgentConfig;
 use agent_core::model::LimitOverrides;
-use agent_core::protocol::{Request, Response};
+use agent_core::protocol::{parse_response_json, Request, Response};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
@@ -264,7 +264,7 @@ async fn call(socket_path: &PathBuf, request: Request) -> Result<Response> {
 }
 
 fn parse_response_line(socket_path: &Path, line: &str) -> Result<Response> {
-    serde_json::from_str(line).map_err(|error| {
+    parse_response_json(line).map_err(|error| {
         anyhow!(
             "invalid response json from {}: {error}: {}",
             socket_path.display(),
@@ -375,5 +375,18 @@ mod tests {
 
         assert!(error.contains("/agentfs/runtime/sockets/a.sock"));
         assert!(error.contains("{bad"));
+    }
+
+    #[test]
+    fn response_parse_rejects_unknown_fields() {
+        let error = parse_response_line(
+            &PathBuf::from("/agentfs/runtime/sockets/a.sock"),
+            r#"{"type":"ok","unexpected":"field"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("invalid response json"));
+        assert!(error.contains("unexpected"));
     }
 }
