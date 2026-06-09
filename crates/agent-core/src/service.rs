@@ -303,6 +303,12 @@ impl AgentService {
         let mut env = self.layout.read_env(id).await?;
         self.log_lifecycle(id, "stopping").await?;
         self.nspawn.stop(&env.machine_name).await?;
+        self.nspawn.refresh_state(&mut env).await?;
+        if env.state == EnvState::Running {
+            self.log_lifecycle(id, "stop requested but machine is still running")
+                .await?;
+            return Err(anyhow!("env {id} is still running after stop"));
+        }
         if should_mark_stopped(&env.state) {
             env.state = EnvState::Stopped;
         }
