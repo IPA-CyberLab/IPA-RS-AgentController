@@ -64,7 +64,7 @@ jobs:
           fi
           cp -R packaging/agent-forkd "$staging/packaging/"
           cp -R packaging/systemd "$staging/packaging/"
-          cp README.md LICENSE install.sh "$staging/"
+          cp README.md LICENSE install.sh install.ps1 "$staging/"
           tar -czf "dist/${{ matrix.archive }}" -C dist "ipa-rs-isolated-agent-${{ matrix.target }}"
 
       - name: Upload artifact

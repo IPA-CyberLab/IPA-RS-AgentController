@@ -21,6 +21,15 @@ struct Cli {
     agentfs: PathBuf,
     #[arg(long, env = "AGENT_FORKD_CONFIG", global = true)]
     config: Option<PathBuf>,
+    #[arg(long, env = "AGENT_REMOTE", global = true)]
+    remote: Option<String>,
+    #[arg(
+        long,
+        env = "AGENT_REMOTE_AGENTCTL",
+        default_value = "agentctl",
+        global = true
+    )]
+    remote_agentctl: String,
     #[command(subcommand)]
     command: Command,
 }
@@ -185,6 +194,9 @@ impl ExportKind {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(remote) = &cli.remote {
+        exec_remote(remote, &cli)?;
+    }
     let config =
         AgentConfig::load_or_default(cli.config.as_deref(), effective_agentfs(&cli)).await?;
     let request = to_request(&cli, &config)?;
@@ -197,6 +209,202 @@ fn effective_agentfs(cli: &Cli) -> PathBuf {
         Command::Init(args) => args.agentfs.clone().unwrap_or_else(|| cli.agentfs.clone()),
         _ => cli.agentfs.clone(),
     }
+}
+
+fn exec_remote(remote: &str, cli: &Cli) -> Result<()> {
+    let mut command = StdCommand::new("ssh");
+    if needs_remote_tty(&cli.command) {
+        command.arg("-t");
+    }
+    let remote_command = remote_shell_command(&cli.remote_agentctl, &remote_agentctl_args(cli));
+    let status = command.arg(remote).arg(remote_command).status()?;
+    std::process::exit(status.code().unwrap_or(128));
+}
+
+fn needs_remote_tty(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::New(NewArgs {
+            command,
+            ..
+        }) if command.is_empty()
+    ) || matches!(
+        command,
+        Command::Shell { .. }
+            | Command::Session {
+                command: SessionCommand::Attach { .. }
+            }
+    )
+}
+
+fn remote_shell_command(agentctl: &str, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push(shell_quote(agentctl));
+    parts.extend(args.iter().map(|arg| shell_quote(arg)));
+    parts.join(" ")
+}
+
+fn remote_agentctl_args(cli: &Cli) -> Vec<String> {
+    let mut args = Vec::new();
+    args.push("--agentfs".to_string());
+    args.push(cli.agentfs.display().to_string());
+    if let Some(config) = &cli.config {
+        args.push("--config".to_string());
+        args.push(config.display().to_string());
+    }
+    append_command_args(&mut args, &cli.command);
+    args
+}
+
+fn append_command_args(args: &mut Vec<String>, command: &Command) {
+    match command {
+        Command::Init(init) => {
+            args.push("init".to_string());
+            if let Some(agentfs) = &init.agentfs {
+                args.push("--agentfs".to_string());
+                args.push(agentfs.display().to_string());
+            }
+        }
+        Command::New(new) => {
+            args.push("new".to_string());
+            args.push("-t".to_string());
+            args.push(new.target.clone());
+            push_opt(args, "--base", Some(&new.base));
+            push_path(args, "--from", Some(&new.from));
+            push_opt(args, "--profile", new.profile.as_ref());
+            push_opt(args, "--cpu-max", new.cpu_max.as_ref());
+            push_opt(args, "--memory-max", new.memory_max.as_ref());
+            push_u32(args, "--pids-max", new.pids_max);
+            push_opt(args, "--disk-max", new.disk_max.as_ref());
+            push_opt(args, "--network", new.network.as_ref());
+            push_opt(args, "--idle-timeout", new.idle_timeout.as_ref());
+            push_opt(args, "--max-runtime", new.max_runtime.as_ref());
+            push_trailing_command(args, &new.command);
+        }
+        Command::Base { command } => match command {
+            BaseCommand::Freeze { name, from } => {
+                args.extend(["base".to_string(), "freeze".to_string()]);
+                push_opt(args, "--name", Some(name));
+                push_path(args, "--from", Some(from));
+            }
+        },
+        Command::Env { command } => {
+            args.push("env".to_string());
+            match command {
+                EnvCommand::Create {
+                    env_id,
+                    base,
+                    profile,
+                    cpu_max,
+                    memory_max,
+                    pids_max,
+                    disk_max,
+                    network,
+                    idle_timeout,
+                    max_runtime,
+                } => {
+                    args.push("create".to_string());
+                    args.push(env_id.clone());
+                    push_opt(args, "--from", Some(base));
+                    push_opt(args, "--profile", profile.as_ref());
+                    push_opt(args, "--cpu-max", cpu_max.as_ref());
+                    push_opt(args, "--memory-max", memory_max.as_ref());
+                    push_u32(args, "--pids-max", *pids_max);
+                    push_opt(args, "--disk-max", disk_max.as_ref());
+                    push_opt(args, "--network", network.as_ref());
+                    push_opt(args, "--idle-timeout", idle_timeout.as_ref());
+                    push_opt(args, "--max-runtime", max_runtime.as_ref());
+                }
+                EnvCommand::Start { env_id } => push_env_id_command(args, "start", env_id),
+                EnvCommand::Stop { env_id } => push_env_id_command(args, "stop", env_id),
+                EnvCommand::Destroy { env_id } => push_env_id_command(args, "destroy", env_id),
+                EnvCommand::List => args.push("list".to_string()),
+                EnvCommand::Status { env_id } => push_env_id_command(args, "status", env_id),
+            }
+        }
+        Command::Shell { env_id } => {
+            args.push("shell".to_string());
+            args.push(env_id.clone());
+        }
+        Command::Exec(exec) => {
+            args.push("exec".to_string());
+            args.push(exec.env_id.clone());
+            push_trailing_command(args, &exec.command);
+        }
+        Command::Session { command } => {
+            args.push("session".to_string());
+            match command {
+                SessionCommand::Create(create) => {
+                    args.push("create".to_string());
+                    args.push(create.env_id.clone());
+                    args.push(create.session_id.clone());
+                    push_trailing_command(args, &create.command);
+                }
+                SessionCommand::Attach { env_id, session_id } => {
+                    push_session_id_command(args, "attach", env_id, session_id);
+                }
+                SessionCommand::Detach { env_id, session_id } => {
+                    push_session_id_command(args, "detach", env_id, session_id);
+                }
+                SessionCommand::Kill { env_id, session_id } => {
+                    push_session_id_command(args, "kill", env_id, session_id);
+                }
+                SessionCommand::List { env_id } => push_env_id_command(args, "list", env_id),
+                SessionCommand::Logs { env_id, session_id } => {
+                    push_session_id_command(args, "logs", env_id, session_id);
+                }
+            }
+        }
+        Command::Diff { env_id } => {
+            args.push("diff".to_string());
+            args.push(env_id.clone());
+        }
+        Command::Export(export) => {
+            args.push("export".to_string());
+            args.push(export.env_id.clone());
+            args.push("--type".to_string());
+            args.push(export.export_type.as_wire().to_string());
+        }
+    }
+}
+
+fn push_opt(args: &mut Vec<String>, flag: &str, value: Option<&String>) {
+    if let Some(value) = value {
+        args.push(flag.to_string());
+        args.push(value.clone());
+    }
+}
+
+fn push_path(args: &mut Vec<String>, flag: &str, value: Option<&PathBuf>) {
+    if let Some(value) = value {
+        args.push(flag.to_string());
+        args.push(value.display().to_string());
+    }
+}
+
+fn push_u32(args: &mut Vec<String>, flag: &str, value: Option<u32>) {
+    if let Some(value) = value {
+        args.push(flag.to_string());
+        args.push(value.to_string());
+    }
+}
+
+fn push_trailing_command(args: &mut Vec<String>, command: &[String]) {
+    if !command.is_empty() {
+        args.push("--".to_string());
+        args.extend(command.iter().cloned());
+    }
+}
+
+fn push_env_id_command(args: &mut Vec<String>, command: &str, env_id: &str) {
+    args.push(command.to_string());
+    args.push(env_id.to_string());
+}
+
+fn push_session_id_command(args: &mut Vec<String>, command: &str, env_id: &str, session_id: &str) {
+    args.push(command.to_string());
+    args.push(env_id.to_string());
+    args.push(session_id.to_string());
 }
 
 fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
@@ -458,9 +666,10 @@ fn session_state_label(state: &SessionState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_agentfs, env_state_label, machinectl_attach_args, parse_response_line,
-        session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command,
-        EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs,
+        effective_agentfs, env_state_label, machinectl_attach_args, needs_remote_tty,
+        parse_response_line, remote_agentctl_args, remote_shell_command, session_state_label,
+        shell_quote, tmux_attach_command, to_request, Cli, Command, EnvCommand, ExportArgs,
+        ExportKind, InitArgs, NewArgs,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
@@ -472,6 +681,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Init(InitArgs {
                 agentfs: Some(PathBuf::from("/custom-agentfs")),
             }),
@@ -489,6 +700,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: Some(PathBuf::from("/etc/agent-forkd/config.json")),
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Init(InitArgs {
                 agentfs: Some(PathBuf::from("/custom-agentfs")),
             }),
@@ -507,6 +720,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::New(NewArgs {
                 target: "codex".to_string(),
                 base: "base-001".to_string(),
@@ -554,6 +769,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::New(NewArgs {
                 target: "codex".to_string(),
                 base: "base-dev".to_string(),
@@ -600,6 +817,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Env {
                 command: EnvCommand::Create {
                     env_id: "codex-1".to_string(),
@@ -634,6 +853,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Env {
                 command: EnvCommand::Create {
                     env_id: "codex-1".to_string(),
@@ -662,6 +883,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Env {
                 command: EnvCommand::Create {
                     env_id: "codex-1".to_string(),
@@ -705,6 +928,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Shell {
                 env_id: "codex-1".to_string(),
             },
@@ -721,6 +946,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Diff {
                 env_id: "codex-1".to_string(),
             },
@@ -737,6 +964,8 @@ mod tests {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
             config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
             command: Command::Export(ExportArgs {
                 env_id: "codex-1".to_string(),
                 export_type: ExportKind::WorkspacePatch,
@@ -800,6 +1029,92 @@ mod tests {
             tmux_attach_command("shell's dev"),
             "tmux attach-session -t 'shell'\\''s dev'"
         );
+    }
+
+    #[test]
+    fn remote_new_rebuilds_cli_without_remote_options() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            remote: Some("devbox".to_string()),
+            remote_agentctl: "/usr/local/bin/agentctl".to_string(),
+            command: Command::New(NewArgs {
+                target: "codex".to_string(),
+                base: "base-001".to_string(),
+                from: PathBuf::from("/"),
+                profile: Some("privileged-dev".to_string()),
+                cpu_max: None,
+                memory_max: None,
+                pids_max: None,
+                disk_max: None,
+                network: None,
+                idle_timeout: None,
+                max_runtime: None,
+                command: vec!["echo".to_string(), "ready".to_string()],
+            }),
+        };
+
+        assert_eq!(
+            remote_agentctl_args(&cli),
+            vec![
+                "--agentfs",
+                "/agentfs",
+                "new",
+                "-t",
+                "codex",
+                "--base",
+                "base-001",
+                "--from",
+                "/",
+                "--profile",
+                "privileged-dev",
+                "--",
+                "echo",
+                "ready",
+            ]
+        );
+        assert!(!needs_remote_tty(&cli.command));
+    }
+
+    #[test]
+    fn remote_shell_command_quotes_arguments_for_ssh_shell() {
+        let command = remote_shell_command(
+            "/usr/local/bin/agentctl",
+            &[
+                "new".to_string(),
+                "-t".to_string(),
+                "shell's dev".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            command,
+            "'/usr/local/bin/agentctl' 'new' '-t' 'shell'\\''s dev'"
+        );
+    }
+
+    #[test]
+    fn remote_interactive_commands_request_tty() {
+        let new_shell = Command::New(NewArgs {
+            target: "codex".to_string(),
+            base: "base-001".to_string(),
+            from: PathBuf::from("/"),
+            profile: None,
+            cpu_max: None,
+            memory_max: None,
+            pids_max: None,
+            disk_max: None,
+            network: None,
+            idle_timeout: None,
+            max_runtime: None,
+            command: Vec::new(),
+        });
+        let shell = Command::Shell {
+            env_id: "codex".to_string(),
+        };
+
+        assert!(needs_remote_tty(&new_shell));
+        assert!(needs_remote_tty(&shell));
     }
 
     #[test]

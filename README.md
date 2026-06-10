@@ -41,6 +41,28 @@ curl -fsSL https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/m
   AGENT_INSTALL_SERVICE=1 sh
 ```
 
+On Windows, install the release binaries with PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.ps1 -UseB | iex
+```
+
+Windows and macOS builds are client binaries. They do not run the isolation
+backend locally. Point them at a Linux host, WSL VM, or Linux VM where
+`agent-forkd` is installed:
+
+```powershell
+$env:AGENT_REMOTE = "mizuame@100.123.154.79"
+agentctl new -t codex
+agentctl exec codex -- bash -lc "hostname; test -f /home/mizuame/a.text && echo visible"
+```
+
+The same remote mode works on macOS and Linux clients:
+
+```bash
+AGENT_REMOTE=mizuame@100.123.154.79 agentctl new -t codex
+```
+
 By default the installer writes `agentctl` and `agent-forkd` to
 `$HOME/.local/bin`. Override the release or destination with environment
 variables:
@@ -51,15 +73,17 @@ AGENT_VERSION=v0.1.0 AGENT_INSTALL_DIR=/usr/local/bin \
 ```
 
 GitHub Actions builds release archives for Linux, macOS, and Windows on x86_64
-and arm64 targets. `agent-forkd` is operational on Unix-like platforms where the
-runtime requirements below are available; non-Unix builds are packaged so the
-release matrix is complete.
+and arm64 targets. `agent-forkd` is operational on Linux where the runtime
+requirements below are available. Windows and macOS should use `--remote` or
+`AGENT_REMOTE` to delegate commands to a Linux backend.
 
 ## Requirements
 
 The Project VM must provide Linux, Btrfs, `btrfs-progs`, systemd, `systemd-nspawn`, `machinectl`, `systemd-networkd`, cgroup v2, user namespaces, `tmux`, and `tee`. The full privileged goal sequence also expects Debian/Ubuntu package tooling (`apt` or `apt-get`, `dpkg`, and `sudo`) and the `codex` CLI to be available in the host rootfs before freezing a base.
 
-`/agentfs` must be on a Btrfs filesystem. `agentctl base freeze --from /` requires `/` itself to be a Btrfs subvolume. The implementation intentionally fails when that is not true and does not fall back to a full copy.
+`/agentfs` must be on a Btrfs filesystem. If the requested source root is a
+Btrfs subvolume, environments use Btrfs snapshots. Otherwise, Linux hosts can
+fall back to OverlayFS copy-on-write rootfs mounts.
 
 Base, env, session, and profile IDs are hostname-safe identifiers: ASCII
 letters and numbers with optional interior `-`, such as `base-001` or
