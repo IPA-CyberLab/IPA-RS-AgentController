@@ -2,7 +2,6 @@ pub mod btrfs;
 pub mod command;
 pub mod config;
 pub mod desktop;
-#[cfg(unix)]
 pub mod export;
 pub mod model;
 #[cfg(unix)]

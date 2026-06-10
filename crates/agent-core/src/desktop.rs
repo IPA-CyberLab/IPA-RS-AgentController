@@ -1,5 +1,6 @@
 use crate::command::{CmdOutput, CommandRunner};
 use crate::config::AgentConfig;
+use crate::export::{ExportType, Exporter};
 use crate::model::{machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, RootfsBackend};
 use crate::protocol::{Request, Response};
 use crate::reflink;
@@ -12,6 +13,7 @@ use std::path::Path;
 pub struct DesktopService {
     pub config: AgentConfig,
     layout: Layout,
+    exporter: Exporter,
     runner: CommandRunner,
 }
 
@@ -21,6 +23,7 @@ impl DesktopService {
         Self {
             config,
             layout,
+            exporter: Exporter::default(),
             runner: CommandRunner,
         }
     }
@@ -111,9 +114,17 @@ impl DesktopService {
             | Request::SessionLogs { .. } => Err(anyhow!(
                 "persistent sessions are not implemented by the native desktop backend yet"
             )),
-            Request::Diff { .. } | Request::Export { .. } => Err(anyhow!(
-                "diff/export are not implemented by the native desktop backend yet"
-            )),
+            Request::Diff { env_id } => Ok(Response::Text {
+                text: self.diff(&env_id).await?,
+            }),
+            Request::Export {
+                env_id,
+                export_type,
+            } => Ok(Response::Text {
+                text: self
+                    .export(&env_id, ExportType::parse(&export_type)?)
+                    .await?,
+            }),
         }
     }
 
@@ -305,6 +316,47 @@ impl DesktopService {
         Ok(output)
     }
 
+    pub async fn diff(&self, env_id: &str) -> Result<String> {
+        let mut env = self.layout.read_env(env_id).await?;
+        ensure_desktop_backend(&env)?;
+        if env.state != EnvState::Running {
+            return Err(anyhow!("env {env_id} is not running"));
+        }
+        let text = self.exporter.workspace_patch(&env).await?;
+        env.last_active_at = Utc::now();
+        self.layout.write_env(&env).await?;
+        Ok(text)
+    }
+
+    pub async fn export(&self, env_id: &str, export_type: ExportType) -> Result<String> {
+        let mut env = self.layout.read_env(env_id).await?;
+        ensure_desktop_backend(&env)?;
+        if env.state != EnvState::Running {
+            return Err(anyhow!("env {env_id} is not running"));
+        }
+        let base = self.layout.read_base(&env.base_id).await?;
+        let text = match export_type {
+            ExportType::WorkspacePatch => self.exporter.workspace_patch(&env).await?,
+            ExportType::RootfsChangedPaths => {
+                Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)?
+            }
+            ExportType::DpkgDelta => {
+                return Err(anyhow!(
+                    "dpkg-delta is not implemented by the native desktop backend"
+                ));
+            }
+        };
+        let artifact = self
+            .layout
+            .env_dir(env_id)
+            .join("exports")
+            .join(export_type.artifact_name());
+        write_text_file(&artifact, &text).await?;
+        env.last_active_at = Utc::now();
+        self.layout.write_env(&env).await?;
+        Ok(text)
+    }
+
     async fn ensure_base(&self, base_id: &str, from: &Path) -> Result<Base> {
         validate_id(base_id)?;
         let manifest = self.layout.base_dir(base_id).join("manifest.json");
@@ -402,7 +454,10 @@ fn human_bytes(bytes: u64) -> String {
 mod tests {
     use super::{human_bytes, DesktopService};
     use crate::config::AgentConfig;
-    use crate::model::RootfsBackend;
+    use crate::export::ExportType;
+    use crate::model::{machine_name, Base, Env, EnvState, Limits, NetworkPolicy, RootfsBackend};
+    use chrono::Utc;
+    use std::fs;
 
     #[test]
     fn human_bytes_formats_compact_sizes() {
@@ -436,5 +491,93 @@ mod tests {
             .to_string();
 
         assert!(error.contains("supported only on macOS and Windows"));
+    }
+
+    #[tokio::test]
+    async fn desktop_export_reports_rootfs_changed_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        create_native_env_fixture(&service).await;
+
+        let changed = service
+            .export("codex-1", ExportType::RootfsChangedPaths)
+            .await
+            .unwrap();
+
+        assert!(changed.contains("/README.md"));
+        assert!(changed.contains("/new.txt"));
+        assert!(changed.contains("deleted /old.txt"));
+        assert_eq!(
+            fs::read_to_string(
+                service
+                    .layout
+                    .env_dir("codex-1")
+                    .join("exports/rootfs-changed-paths.txt")
+            )
+            .unwrap(),
+            changed
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_export_rejects_dpkg_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        create_native_env_fixture(&service).await;
+
+        let error = service
+            .export("codex-1", ExportType::DpkgDelta)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("dpkg-delta is not implemented"));
+    }
+
+    async fn create_native_env_fixture(service: &DesktopService) {
+        let base_rootfs = service.layout.base_rootfs("base-001");
+        let env_rootfs = service.layout.env_rootfs("codex-1");
+        fs::create_dir_all(&base_rootfs).unwrap();
+        fs::create_dir_all(&env_rootfs).unwrap();
+        fs::create_dir_all(service.layout.env_dir("codex-1").join("exports")).unwrap();
+        fs::write(base_rootfs.join("README.md"), "old\n").unwrap();
+        fs::write(base_rootfs.join("old.txt"), "deleted\n").unwrap();
+        fs::write(env_rootfs.join("README.md"), "new\n").unwrap();
+        fs::write(env_rootfs.join("new.txt"), "added\n").unwrap();
+
+        let created_at = Utc::now();
+        service
+            .layout
+            .write_base(&Base {
+                id: "base-001".to_string(),
+                backend: RootfsBackend::ApfsClone,
+                rootfs_path: base_rootfs,
+                readonly: true,
+                created_at,
+                source: "fixture".to_string(),
+                dpkg_manifest: service.layout.base_dir("base-001").join("dpkg.list"),
+            })
+            .await
+            .unwrap();
+        service
+            .layout
+            .write_env(&Env {
+                id: "codex-1".to_string(),
+                base_id: "base-001".to_string(),
+                backend: RootfsBackend::ApfsClone,
+                rootfs_path: env_rootfs,
+                machine_name: machine_name("codex-1"),
+                state: EnvState::Running,
+                profile: "default".to_string(),
+                created_at,
+                last_active_at: created_at,
+                limits: Limits::default(),
+                network_policy: NetworkPolicy::default(),
+                sessions: Vec::new(),
+            })
+            .await
+            .unwrap();
     }
 }

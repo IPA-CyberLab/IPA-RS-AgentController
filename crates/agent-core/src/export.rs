@@ -3,6 +3,7 @@ use crate::model::Env;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -134,8 +135,14 @@ fn path_changed(base: &Path, env: &Path) -> Result<bool> {
         || base_type.is_symlink() != env_type.is_symlink())
 }
 
+#[cfg(unix)]
 fn metadata_changed(base: &fs::Metadata, env: &fs::Metadata) -> bool {
     base.mode() != env.mode() || base.uid() != env.uid() || base.gid() != env.gid()
+}
+
+#[cfg(not(unix))]
+fn metadata_changed(_base: &fs::Metadata, _env: &fs::Metadata) -> bool {
+    false
 }
 
 fn symlink_metadata_if_exists(path: &Path) -> Result<Option<fs::Metadata>> {
