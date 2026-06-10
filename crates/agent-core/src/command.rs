@@ -103,13 +103,24 @@ impl CommandRunner {
         file.write_all(content.as_bytes()).await?;
         file.sync_all().await?;
         if let Some(parent) = path.parent() {
-            std::fs::File::open(parent)
-                .with_context(|| format!("failed to open log dir {}", parent.display()))?
-                .sync_all()
-                .with_context(|| format!("failed to sync log dir {}", parent.display()))?;
+            sync_parent_dir(parent)?;
         }
         Ok(())
     }
+}
+
+#[cfg(not(windows))]
+fn sync_parent_dir(parent: &Path) -> Result<()> {
+    std::fs::File::open(parent)
+        .with_context(|| format!("failed to open log dir {}", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("failed to sync log dir {}", parent.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sync_parent_dir(_parent: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

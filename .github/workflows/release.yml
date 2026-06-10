@@ -107,14 +107,14 @@ jobs:
           "$agentctl" --agentfs "$agentfs" env list
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- cmd.exe /C "echo desktop-smoke>created.txt && type created.txt" | tee "$runner_temp/exec.out"
+            "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- powershell.exe -NoProfile -Command "Set-Content -Path created.txt -Value desktop-smoke; Get-Content created.txt" | tee "$runner_temp/exec.out"
           else
             "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- /bin/sh -c "cat nested/source.txt && echo desktop-smoke > created.txt && cat created.txt" | tee "$runner_temp/exec.out"
           fi
           grep -q "desktop-smoke" "$runner_temp/exec.out"
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            "$agentctl" --agentfs "$agentfs" session create smoke dev -- cmd.exe /C "echo desktop-session && ping -n 30 127.0.0.1 >NUL"
+            "$agentctl" --agentfs "$agentfs" session create smoke dev -- powershell.exe -NoProfile -Command "Write-Output desktop-session; Start-Sleep -Seconds 30"
           else
             "$agentctl" --agentfs "$agentfs" session create smoke dev -- /bin/sh -c "echo desktop-session; sleep 30"
           fi
