@@ -435,6 +435,7 @@ impl DesktopService {
         if let Some(pid) = read_desktop_session_pid(&self.layout, env_id, session_id).await? {
             kill_process_tree(&self.runner, pid).await?;
         }
+        remove_file_if_exists(&desktop_session_pid_path(&self.layout, env_id, session_id)).await?;
         session.state = SessionState::Stopped;
         env.last_active_at = Utc::now();
         self.layout.write_session(&session).await?;
@@ -627,6 +628,14 @@ async fn read_text_file_or_empty(path: &Path) -> Result<String> {
     }
 }
 
+async fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[cfg(unix)]
 async fn process_running(runner: &CommandRunner, pid: u32) -> Result<bool> {
     let output = runner
@@ -660,6 +669,12 @@ async fn process_running(runner: &CommandRunner, pid: u32) -> Result<bool> {
 
 #[cfg(unix)]
 async fn kill_process_tree(runner: &CommandRunner, pid: u32) -> Result<()> {
+    let output = runner
+        .run("kill", vec!["-TERM".to_string(), format!("-{pid}")])
+        .await?;
+    if output.status == 0 {
+        return Ok(());
+    }
     let output = runner.run("kill", vec![pid.to_string()]).await?;
     if output.status == 0 {
         Ok(())

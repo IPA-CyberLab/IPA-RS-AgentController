@@ -268,6 +268,8 @@ fn spawn_logged(mut command: Command, log_path: &Path) -> Result<u32> {
     let stderr = stdout
         .try_clone()
         .with_context(|| format!("failed to clone session log {}", log_path.display()))?;
+    #[cfg(unix)]
+    command.process_group(0);
     let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
