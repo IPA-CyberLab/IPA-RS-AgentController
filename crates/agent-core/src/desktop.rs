@@ -309,7 +309,7 @@ impl DesktopService {
             .ok_or_else(|| anyhow!("exec command cannot be empty"))?;
         let output = self
             .runner
-            .run_in_dir(&env.rootfs_path, program, args)
+            .run_desktop_isolated(&env.rootfs_path, program, args, &env.limits)
             .await?;
         env.last_active_at = Utc::now();
         self.layout.write_env(&env).await?;

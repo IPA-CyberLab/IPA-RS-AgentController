@@ -107,8 +107,12 @@ daemon locally. The native backend uses APFS `clonefile(2)` on macOS and
 `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block cloning on Windows so base/env trees can
 be derived without full copies on filesystems that support those primitives. It
 currently supports local exec/shell plus `workspace-patch` and
-`rootfs-changed-paths` export; process, network, and persistent-session
-isolation are still weaker than the Linux `systemd-nspawn` backend.
+`rootfs-changed-paths` export. macOS exec runs through `sandbox-exec` with
+network access denied and writes limited to the env rootfs. Windows exec runs
+inside a Job Object so child processes are grouped, capped by `pids_max`, and
+terminated when the job closes. This is still weaker than the Linux
+`systemd-nspawn` backend: native desktop shells are cwd-scoped host shells, and
+persistent sessions are not implemented yet.
 
 ## Requirements
 
@@ -214,6 +218,14 @@ Session operations invoke `tmux` through `machinectl shell` inside the child nsp
 ## Security Model
 
 Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users and private networking/private NAT, marks `/agentfs` and common Docker socket paths inaccessible, and keeps base and sibling rootfs trees outside the child view.
+
+On macOS and Windows, the native desktop backend is copy-on-write workspace
+isolation, not a VM boundary. The env tree is cloned without a full copy where
+the filesystem supports it. macOS exec applies a sandbox profile that denies
+networking and host writes outside the env rootfs while still allowing host
+reads needed to run installed tools. Windows exec uses a Job Object for process
+lifetime and process-count containment, but it does not yet provide filesystem
+or network isolation equivalent to Linux namespaces.
 
 ## Test Notes
 

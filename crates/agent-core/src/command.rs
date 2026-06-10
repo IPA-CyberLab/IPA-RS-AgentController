@@ -1,3 +1,4 @@
+use crate::model::Limits;
 use anyhow::{anyhow, Context, Result};
 use std::ffi::OsStr;
 use std::path::Path;
@@ -66,6 +67,16 @@ impl CommandRunner {
         })
     }
 
+    pub async fn run_desktop_isolated(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[String],
+        limits: &Limits,
+    ) -> Result<CmdOutput> {
+        run_desktop_isolated(cwd, program, args, limits).await
+    }
+
     pub async fn append_to_file(path: &Path, content: &str) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 
@@ -86,6 +97,184 @@ impl CommandRunner {
                 .with_context(|| format!("failed to sync log dir {}", parent.display()))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn run_desktop_isolated(
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    _limits: &Limits,
+) -> Result<CmdOutput> {
+    let profile = macos_sandbox_profile(cwd);
+    let mut command = Command::new("sandbox-exec");
+    command
+        .current_dir(cwd)
+        .arg("-p")
+        .arg(profile)
+        .arg(program)
+        .args(args);
+    let output = command
+        .output()
+        .await
+        .with_context(|| "failed to execute sandbox-exec for native desktop env")?;
+    Ok(CmdOutput {
+        status: output.status.code().unwrap_or(128),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sandbox_profile(rootfs: &Path) -> String {
+    let rootfs = scheme_string(rootfs.display().to_string().as_str());
+    format!(
+        r#"(version 1)
+(deny default)
+(allow process*)
+(allow sysctl-read)
+(allow file-read*)
+(allow file-write* (subpath "{rootfs}"))
+(deny network*)
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn scheme_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(windows)]
+async fn run_desktop_isolated(
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    limits: &Limits,
+) -> Result<CmdOutput> {
+    windows_job::run_in_job(
+        cwd.to_path_buf(),
+        program.to_string(),
+        args.to_vec(),
+        limits.clone(),
+    )
+    .await
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+async fn run_desktop_isolated(
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    _limits: &Limits,
+) -> Result<CmdOutput> {
+    CommandRunner.run_in_dir(cwd, program, args).await
+}
+
+#[cfg(windows)]
+mod windows_job {
+    use super::CmdOutput;
+    use crate::model::Limits;
+    use anyhow::{anyhow, Context, Result};
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::io::AsRawHandle;
+    use std::path::PathBuf;
+    use std::process::{Command as StdCommand, Stdio};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub async fn run_in_job(
+        cwd: PathBuf,
+        program: String,
+        args: Vec<String>,
+        limits: Limits,
+    ) -> Result<CmdOutput> {
+        tokio::task::spawn_blocking(move || run_in_job_blocking(cwd, program, args, limits))
+            .await
+            .context("native desktop job task panicked")?
+    }
+
+    fn run_in_job_blocking(
+        cwd: PathBuf,
+        program: String,
+        args: Vec<String>,
+        limits: Limits,
+    ) -> Result<CmdOutput> {
+        let job = Job::create()?;
+        job.apply_limits(limits.pids_max)?;
+
+        let child = StdCommand::new(&program)
+            .current_dir(&cwd)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to execute {program} in {}", cwd.display()))?;
+
+        job.assign(child.as_raw_handle() as HANDLE)?;
+        let output = child
+            .wait_with_output()
+            .with_context(|| format!("failed to wait for {program}"))?;
+        Ok(CmdOutput {
+            status: output.status.code().unwrap_or(128),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
+
+    struct Job(HANDLE);
+
+    impl Job {
+        fn create() -> Result<Self> {
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle == std::ptr::null_mut() {
+                return Err(anyhow!("failed to create Windows Job Object"));
+            }
+            Ok(Self(handle))
+        }
+
+        fn apply_limits(&self, pids_max: u32) -> Result<()> {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if pids_max > 0 {
+                info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+                info.BasicLimitInformation.ActiveProcessLimit = pids_max;
+            }
+            let ok = unsafe {
+                SetInformationJobObject(
+                    self.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(anyhow!("failed to configure Windows Job Object limits"));
+            }
+            Ok(())
+        }
+
+        fn assign(&self, process: HANDLE) -> Result<()> {
+            let ok = unsafe { AssignProcessToJobObject(self.0, process) };
+            if ok == 0 {
+                return Err(anyhow!("failed to assign process to Windows Job Object"));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
     }
 }
 
