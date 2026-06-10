@@ -47,9 +47,8 @@ On Windows, install the release binaries with PowerShell:
 iwr https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.ps1 -UseB | iex
 ```
 
-Windows and macOS builds are client binaries. They do not run the isolation
-backend locally. Point them at a Linux host, WSL VM, or Linux VM where
-`agent-forkd` is installed:
+For the stable workflow on Windows and macOS, point the client at a Linux host,
+WSL VM, or Linux VM where `agent-forkd` is installed:
 
 ```powershell
 $env:AGENT_REMOTE = "mizuame@100.123.154.79"
@@ -61,6 +60,20 @@ The same remote mode works on macOS and Linux clients:
 
 ```bash
 AGENT_REMOTE=mizuame@100.123.154.79 agentctl new -t codex
+```
+
+The native desktop daemon path is available for development builds. On Windows
+and macOS, `agent-forkd` listens on `tcp_addr` from config, defaulting to
+`127.0.0.1:38475`, and uses the desktop backend instead of `systemd-nspawn`:
+
+```powershell
+agent-forkd --agentfs "$env:USERPROFILE\.agentfs"
+agentctl --agentfs "$env:USERPROFILE\.agentfs" new -t codex --from "$PWD" -- cmd /C ver
+```
+
+```bash
+agent-forkd --agentfs "$HOME/.agentfs"
+agentctl --agentfs "$HOME/.agentfs" new -t codex --from "$PWD" -- uname -a
 ```
 
 By default the installer writes `agentctl` and `agent-forkd` to

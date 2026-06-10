@@ -106,6 +106,9 @@ pub enum Response {
         machine_name: String,
         session_id: String,
     },
+    DesktopShell {
+        rootfs_path: PathBuf,
+    },
     Error {
         message: String,
     },
@@ -180,6 +183,7 @@ fn response_allowed_fields(message_type: &str) -> Option<&'static [&'static str]
         "env_status" => &["type", "status"],
         "sessions" => &["type", "sessions"],
         "attach" => &["type", "machine_name", "session_id"],
+        "desktop_shell" => &["type", "rootfs_path"],
         "error" => &["type", "message"],
         _ => return None,
     })
@@ -346,6 +350,9 @@ mod tests {
             Response::Attach {
                 machine_name: "af-codex-1".to_string(),
                 session_id: "dev".to_string(),
+            },
+            Response::DesktopShell {
+                rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
             },
             Response::Error {
                 message: "error".to_string(),

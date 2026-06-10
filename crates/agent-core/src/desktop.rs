@@ -1,6 +1,7 @@
 use crate::command::{CmdOutput, CommandRunner};
 use crate::config::AgentConfig;
 use crate::model::{machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, RootfsBackend};
+use crate::protocol::{Request, Response};
 use crate::reflink;
 use crate::storage::{validate_id, write_text_file, Layout};
 use anyhow::{anyhow, Result};
@@ -26,6 +27,123 @@ impl DesktopService {
 
     pub async fn init(&self) -> Result<()> {
         self.layout.ensure_agentfs().await
+    }
+
+    pub async fn handle(&self, request: Request) -> Response {
+        match self.handle_result(request).await {
+            Ok(response) => response,
+            Err(error) => Response::Error {
+                message: format!("{error:#}"),
+            },
+        }
+    }
+
+    async fn handle_result(&self, request: Request) -> Result<Response> {
+        match request {
+            Request::Init { agentfs } => {
+                DesktopService::new(AgentConfig::new(agentfs))
+                    .init()
+                    .await?;
+                Ok(Response::Ok)
+            }
+            Request::New {
+                target,
+                base,
+                from,
+                profile,
+                limits,
+                command,
+            } => {
+                self.new_target(&target, &base, &from, &profile, limits, &command)
+                    .await
+            }
+            Request::BaseFreeze { name, from } => {
+                self.base_freeze(&name, &from).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvCreate {
+                id,
+                base,
+                profile,
+                limits,
+            } => {
+                self.env_create(&id, &base, &profile, limits).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvStart { id } => {
+                self.env_start(&id).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvStop { id } => {
+                self.env_stop(&id).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvDestroy { id } => {
+                self.env_destroy(&id).await?;
+                Ok(Response::Ok)
+            }
+            Request::EnvList => Ok(Response::Envs {
+                envs: self.env_list().await?,
+            }),
+            Request::EnvStatus { id } => Ok(Response::EnvStatus {
+                status: Box::new(self.env_status(&id).await?),
+            }),
+            Request::Exec { id, command } => {
+                let output = self.exec(&id, &command).await?;
+                Ok(Response::Exec {
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                })
+            }
+            Request::Shell { id } => {
+                let env = self.shell_target(&id).await?;
+                Ok(Response::DesktopShell {
+                    rootfs_path: env.rootfs_path,
+                })
+            }
+            Request::Ping => Ok(Response::Ok),
+            Request::SessionCreate { .. }
+            | Request::SessionAttach { .. }
+            | Request::SessionDetach { .. }
+            | Request::SessionKill { .. }
+            | Request::SessionList { .. }
+            | Request::SessionLogs { .. } => Err(anyhow!(
+                "persistent sessions are not implemented by the native desktop backend yet"
+            )),
+            Request::Diff { .. } | Request::Export { .. } => Err(anyhow!(
+                "diff/export are not implemented by the native desktop backend yet"
+            )),
+        }
+    }
+
+    pub async fn new_target(
+        &self,
+        target: &str,
+        base_id: &str,
+        from: &Path,
+        profile_name: &str,
+        limit_overrides: LimitOverrides,
+        command: &[String],
+    ) -> Result<Response> {
+        self.init().await?;
+        self.ensure_base(base_id, from).await?;
+        self.ensure_env(target, base_id, profile_name, limit_overrides)
+            .await?;
+        self.ensure_env_started(target).await?;
+        if command.is_empty() {
+            let env = self.shell_target(target).await?;
+            Ok(Response::DesktopShell {
+                rootfs_path: env.rootfs_path,
+            })
+        } else {
+            let output = self.exec(target, command).await?;
+            Ok(Response::Exec {
+                status: output.status,
+                stdout: output.stdout,
+                stderr: output.stderr,
+            })
+        }
     }
 
     pub async fn base_freeze(&self, name: &str, from: &Path) -> Result<Base> {
@@ -157,6 +275,15 @@ impl DesktopService {
         Ok(EnvStatus { env, disk_used })
     }
 
+    pub async fn env_list(&self) -> Result<Vec<EnvStatus>> {
+        let envs = self.layout.list_envs().await?;
+        let mut statuses = Vec::with_capacity(envs.len());
+        for env in envs {
+            statuses.push(self.env_status(&env.id).await?);
+        }
+        Ok(statuses)
+    }
+
     pub async fn exec(&self, id: &str, command: &[String]) -> Result<CmdOutput> {
         if command.is_empty() {
             return Err(anyhow!("exec command cannot be empty"));
@@ -176,6 +303,52 @@ impl DesktopService {
         env.last_active_at = Utc::now();
         self.layout.write_env(&env).await?;
         Ok(output)
+    }
+
+    async fn ensure_base(&self, base_id: &str, from: &Path) -> Result<Base> {
+        validate_id(base_id)?;
+        let manifest = self.layout.base_dir(base_id).join("manifest.json");
+        if tokio::fs::try_exists(&manifest).await? {
+            return self.layout.read_base(base_id).await;
+        }
+        self.base_freeze(base_id, from).await
+    }
+
+    async fn ensure_env(
+        &self,
+        id: &str,
+        base_id: &str,
+        profile_name: &str,
+        limit_overrides: LimitOverrides,
+    ) -> Result<Env> {
+        validate_id(id)?;
+        let metadata = self.layout.env_dir(id).join("meta.json");
+        if tokio::fs::try_exists(&metadata).await? {
+            return self.layout.read_env(id).await;
+        }
+        self.env_create(id, base_id, profile_name, limit_overrides)
+            .await
+    }
+
+    async fn ensure_env_started(&self, id: &str) -> Result<()> {
+        let status = self.env_status(id).await?;
+        match status.env.state {
+            EnvState::Running => Ok(()),
+            EnvState::Created | EnvState::Stopped => self.env_start(id).await,
+            EnvState::Failed | EnvState::QuotaExceeded => Err(anyhow!(
+                "env {id} is {:?}; fix or destroy it before running new",
+                status.env.state
+            )),
+        }
+    }
+
+    async fn shell_target(&self, id: &str) -> Result<Env> {
+        let env = self.layout.read_env(id).await?;
+        ensure_desktop_backend(&env)?;
+        if env.state != EnvState::Running {
+            return Err(anyhow!("env {id} is not running"));
+        }
+        Ok(env)
     }
 }
 

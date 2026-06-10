@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub struct AgentConfig {
     pub agentfs: PathBuf,
     pub socket_path: PathBuf,
+    #[serde(default = "default_tcp_addr")]
+    pub tcp_addr: String,
     pub default_profile: String,
     pub profiles: Vec<Profile>,
 }
@@ -20,6 +22,7 @@ impl AgentConfig {
         Self {
             agentfs,
             socket_path,
+            tcp_addr: default_tcp_addr(),
             default_profile: "privileged-dev".to_string(),
             profiles: vec![Profile::privileged_dev()],
         }
@@ -73,6 +76,10 @@ impl AgentConfig {
         }
         Ok(())
     }
+}
+
+fn default_tcp_addr() -> String {
+    "127.0.0.1:38475".to_string()
 }
 
 #[cfg(test)]

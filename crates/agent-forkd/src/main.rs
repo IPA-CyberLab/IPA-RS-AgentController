@@ -1,27 +1,27 @@
-#[cfg(unix)]
 use agent_core::config::AgentConfig;
-#[cfg(unix)]
+#[cfg(not(target_os = "linux"))]
+use agent_core::desktop::DesktopService;
 use agent_core::protocol::{parse_request_json, Request, Response};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use agent_core::AgentService;
-#[cfg(unix)]
-use anyhow::{anyhow, Result};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+use anyhow::anyhow;
+use anyhow::Result;
 use clap::Parser;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::fs::Permissions;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-#[cfg(unix)]
+#[cfg(not(target_os = "linux"))]
+use tokio::net::{TcpListener, TcpStream};
+#[cfg(target_os = "linux")]
 use tokio::net::{UnixListener, UnixStream};
-#[cfg(unix)]
 use tracing::{error, info};
 
-#[cfg(unix)]
 #[derive(Debug, Parser)]
 #[command(name = "agent-forkd", about = "Forked dev environment daemon")]
 struct Args {
@@ -31,7 +31,6 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -40,6 +39,11 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let config = AgentConfig::load_or_default(args.config.as_deref(), args.agentfs).await?;
+    run_platform_daemon(config).await
+}
+
+#[cfg(target_os = "linux")]
+async fn run_platform_daemon(config: AgentConfig) -> Result<()> {
     let service = AgentService::new(config.clone());
     let listener = bind_control_socket(&config.socket_path).await?;
     info!("listening on {}", config.socket_path.display());
@@ -55,13 +59,24 @@ async fn main() -> Result<()> {
     }
 }
 
-#[cfg(not(unix))]
-fn main() {
-    eprintln!("agent-forkd is supported only on Unix-like platforms.");
-    std::process::exit(1);
+#[cfg(not(target_os = "linux"))]
+async fn run_platform_daemon(config: AgentConfig) -> Result<()> {
+    let service = DesktopService::new(config.clone());
+    let listener = TcpListener::bind(&config.tcp_addr).await?;
+    info!("listening on {}", config.tcp_addr);
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let service = service.clone();
+        tokio::spawn(async move {
+            if let Err(error) = handle_desktop_client(service, stream).await {
+                error!("{error:#}");
+            }
+        });
+    }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 async fn bind_control_socket(path: &Path) -> Result<UnixListener> {
     prepare_socket_path(path).await?;
     let listener = UnixListener::bind(path)?;
@@ -69,7 +84,7 @@ async fn bind_control_socket(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
@@ -90,14 +105,33 @@ async fn handle_client(service: AgentService, stream: UnixStream) -> Result<()> 
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(not(target_os = "linux"))]
+async fn handle_desktop_client(service: DesktopService, stream: TcpStream) -> Result<()> {
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    while let Some(line) = lines.next_line().await? {
+        let request = match parse_request_line(&line) {
+            Ok(request) => request,
+            Err(response) => {
+                write_response(&mut write, &response).await?;
+                break;
+            }
+        };
+        let response = service.handle(request).await;
+        write_response(&mut write, &response).await?;
+        if matches!(response, Response::Error { .. }) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 fn parse_request_line(line: &str) -> std::result::Result<Request, Response> {
     parse_request_json(line).map_err(|error| Response::Error {
         message: format!("invalid request json: {error}"),
     })
 }
 
-#[cfg(unix)]
 async fn write_response<W>(write: &mut W, response: &Response) -> Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -108,7 +142,7 @@ where
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 async fn prepare_socket_path(path: &Path) -> Result<()> {
     let parent = path
         .parent()
@@ -127,7 +161,7 @@ async fn prepare_socket_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{bind_control_socket, parse_request_line, prepare_socket_path};
     use agent_core::protocol::Response;

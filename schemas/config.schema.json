@@ -6,6 +6,7 @@
   "properties": {
     "agentfs": { "type": "string" },
     "socket_path": { "type": "string" },
+    "tcp_addr": { "type": "string", "pattern": "^[^:]+:[0-9]+$" },
     "default_profile": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$" },
     "profiles": {
       "type": "array",

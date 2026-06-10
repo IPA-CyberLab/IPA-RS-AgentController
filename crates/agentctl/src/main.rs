@@ -1,16 +1,17 @@
 use agent_core::config::AgentConfig;
 use agent_core::model::{EnvState, LimitOverrides, SessionState};
-#[cfg(unix)]
 use agent_core::protocol::parse_response_json;
 use agent_core::protocol::{Request, Response};
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-#[cfg(unix)]
-use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command as StdCommand;
 #[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(not(unix))]
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(not(unix))]
+use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
@@ -200,7 +201,7 @@ async fn main() -> Result<()> {
     let config =
         AgentConfig::load_or_default(cli.config.as_deref(), effective_agentfs(&cli)).await?;
     let request = to_request(&cli, &config)?;
-    let response = call(&config.socket_path, request).await?;
+    let response = call(&config, request).await?;
     print_response(response)
 }
 
@@ -520,15 +521,20 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
     }
 }
 
-async fn call(socket_path: &PathBuf, request: Request) -> Result<Response> {
-    call_unix_socket(socket_path, request).await
+async fn call(config: &AgentConfig, request: Request) -> Result<Response> {
+    call_control(config, request).await
 }
 
 #[cfg(unix)]
-async fn call_unix_socket(socket_path: &PathBuf, request: Request) -> Result<Response> {
-    let mut stream = UnixStream::connect(socket_path)
+async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
+    let mut stream = UnixStream::connect(&config.socket_path)
         .await
-        .map_err(|error| anyhow!("failed to connect {}: {error}", socket_path.display()))?;
+        .map_err(|error| {
+            anyhow!(
+                "failed to connect {}: {error}",
+                config.socket_path.display()
+            )
+        })?;
     let bytes = serde_json::to_vec(&request)?;
     stream.write_all(&bytes).await?;
     stream.write_all(b"\n").await?;
@@ -537,23 +543,31 @@ async fn call_unix_socket(socket_path: &PathBuf, request: Request) -> Result<Res
     if line.is_empty() {
         return Err(anyhow!("agent-forkd closed the socket without a response"));
     }
-    parse_response_line(socket_path, &line)
+    parse_response_line(&config.socket_path.display().to_string(), &line)
 }
 
 #[cfg(not(unix))]
-async fn call_unix_socket(socket_path: &PathBuf, _request: Request) -> Result<Response> {
-    Err(anyhow!(
-        "agentctl requires a Unix socket at {}; this platform is not supported",
-        socket_path.display()
-    ))
+async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
+    let mut stream = TcpStream::connect(&config.tcp_addr)
+        .await
+        .map_err(|error| anyhow!("failed to connect {}: {error}", config.tcp_addr))?;
+    let bytes = serde_json::to_vec(&request)?;
+    stream.write_all(&bytes).await?;
+    stream.write_all(b"\n").await?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).await?;
+    if line.is_empty() {
+        return Err(anyhow!(
+            "agent-forkd closed the TCP stream without a response"
+        ));
+    }
+    parse_response_line(&config.tcp_addr, &line)
 }
 
-#[cfg(unix)]
-fn parse_response_line(socket_path: &Path, line: &str) -> Result<Response> {
+fn parse_response_line(source: &str, line: &str) -> Result<Response> {
     parse_response_json(line).map_err(|error| {
         anyhow!(
-            "invalid response json from {}: {error}: {}",
-            socket_path.display(),
+            "invalid response json from {source}: {error}: {}",
             line.trim_end()
         )
     })
@@ -622,7 +636,23 @@ fn print_response(response: Response) -> Result<()> {
                 .status()?;
             std::process::exit(status.code().unwrap_or(128));
         }
+        Response::DesktopShell { rootfs_path } => {
+            let mut shell = desktop_shell_command();
+            let status = shell.current_dir(rootfs_path).status()?;
+            std::process::exit(status.code().unwrap_or(128));
+        }
         Response::Error { message } => Err(anyhow!(message)),
+    }
+}
+
+fn desktop_shell_command() -> StdCommand {
+    #[cfg(windows)]
+    {
+        StdCommand::new(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()))
+    }
+    #[cfg(not(windows))]
+    {
+        StdCommand::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()))
     }
 }
 
@@ -986,7 +1016,7 @@ mod tests {
 
     #[test]
     fn response_parse_errors_include_socket_and_payload() {
-        let error = parse_response_line(&PathBuf::from("/agentfs/runtime/sockets/a.sock"), "{bad")
+        let error = parse_response_line("/agentfs/runtime/sockets/a.sock", "{bad")
             .unwrap_err()
             .to_string();
 
@@ -997,7 +1027,7 @@ mod tests {
     #[test]
     fn response_parse_rejects_unknown_fields() {
         let error = parse_response_line(
-            &PathBuf::from("/agentfs/runtime/sockets/a.sock"),
+            "/agentfs/runtime/sockets/a.sock",
             r#"{"type":"ok","unexpected":"field"}"#,
         )
         .unwrap_err()
