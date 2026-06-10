@@ -114,6 +114,13 @@ jobs:
           grep -q "desktop-smoke" "$runner_temp/exec.out"
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
+            printf 'cd\r\nexit\r\n' | "$agentctl" --agentfs "$agentfs" shell smoke | tee "$runner_temp/shell.out"
+          else
+            printf 'pwd\nexit\n' | "$agentctl" --agentfs "$agentfs" shell smoke | tee "$runner_temp/shell.out"
+          fi
+          grep -q "rootfs" "$runner_temp/shell.out"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
             "$agentctl" --agentfs "$agentfs" session create smoke dev -- powershell.exe -NoProfile -Command "Write-Output desktop-session; Start-Sleep -Seconds 30"
           else
             "$agentctl" --agentfs "$agentfs" session create smoke dev -- /bin/sh -c "echo desktop-session; sleep 30"

@@ -1,4 +1,6 @@
 use crate::command::{CmdOutput, CommandRunner};
+#[cfg(target_os = "macos")]
+use crate::command::macos_sandbox_profile;
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
 use crate::model::{
@@ -105,6 +107,7 @@ impl DesktopService {
             Request::Shell { id } => {
                 let env = self.shell_target(&id).await?;
                 Ok(Response::DesktopShell {
+                    command: desktop_shell_command(&env.rootfs_path),
                     rootfs_path: env.rootfs_path,
                 })
             }
@@ -165,6 +168,7 @@ impl DesktopService {
         if command.is_empty() {
             let env = self.shell_target(target).await?;
             Ok(Response::DesktopShell {
+                command: desktop_shell_command(&env.rootfs_path),
                 rootfs_path: env.rootfs_path,
             })
         } else {
@@ -754,6 +758,25 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
+fn desktop_shell_command(rootfs_path: &Path) -> Vec<String> {
+    platform_desktop_shell_command(rootfs_path)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_desktop_shell_command(rootfs_path: &Path) -> Vec<String> {
+    vec![
+        "sandbox-exec".to_string(),
+        "-p".to_string(),
+        macos_sandbox_profile(rootfs_path),
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_desktop_shell_command(_rootfs_path: &Path) -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{human_bytes, DesktopService};
@@ -762,6 +785,7 @@ mod tests {
     use crate::model::{machine_name, Base, Env, EnvState, Limits, NetworkPolicy, RootfsBackend};
     use chrono::Utc;
     use std::fs;
+    use std::path::Path;
 
     #[test]
     fn human_bytes_formats_compact_sizes() {
@@ -871,6 +895,14 @@ mod tests {
         service.session_kill("codex-1", "dev").await.unwrap();
         let sessions = service.session_list("codex-1").await.unwrap();
         assert_eq!(sessions[0].state, crate::model::SessionState::Stopped);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_desktop_shell_uses_client_default_shell() {
+        let command = super::desktop_shell_command(Path::new("/agentfs/envs/codex-1/rootfs"));
+
+        assert!(command.is_empty());
     }
 
     async fn create_native_env_fixture(service: &DesktopService) {

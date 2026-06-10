@@ -108,6 +108,7 @@ pub enum Response {
     },
     DesktopShell {
         rootfs_path: PathBuf,
+        command: Vec<String>,
     },
     Error {
         message: String,
@@ -183,7 +184,7 @@ fn response_allowed_fields(message_type: &str) -> Option<&'static [&'static str]
         "env_status" => &["type", "status"],
         "sessions" => &["type", "sessions"],
         "attach" => &["type", "machine_name", "session_id"],
-        "desktop_shell" => &["type", "rootfs_path"],
+        "desktop_shell" => &["type", "rootfs_path", "command"],
         "error" => &["type", "message"],
         _ => return None,
     })
@@ -353,6 +354,7 @@ mod tests {
             },
             Response::DesktopShell {
                 rootfs_path: "/agentfs/envs/codex-1/rootfs".into(),
+                command: vec!["/bin/sh".to_string()],
             },
             Response::Error {
                 message: "error".to_string(),

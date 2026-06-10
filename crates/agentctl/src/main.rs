@@ -633,8 +633,11 @@ fn print_response(response: Response) -> Result<()> {
                 .status()?;
             std::process::exit(status.code().unwrap_or(128));
         }
-        Response::DesktopShell { rootfs_path } => {
-            let mut shell = desktop_shell_command();
+        Response::DesktopShell {
+            rootfs_path,
+            command,
+        } => {
+            let mut shell = desktop_shell_command(command)?;
             let status = shell.current_dir(rootfs_path).status()?;
             std::process::exit(status.code().unwrap_or(128));
         }
@@ -642,15 +645,27 @@ fn print_response(response: Response) -> Result<()> {
     }
 }
 
-fn desktop_shell_command() -> StdCommand {
-    #[cfg(windows)]
-    {
-        StdCommand::new(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()))
+fn desktop_shell_command(command: Vec<String>) -> Result<StdCommand> {
+    if !command.is_empty() {
+        let mut command = command.into_iter();
+        let program = command
+            .next()
+            .ok_or_else(|| anyhow!("desktop shell command is empty"))?;
+        let mut shell = StdCommand::new(program);
+        shell.args(command);
+        return Ok(shell);
     }
-    #[cfg(not(windows))]
-    {
-        StdCommand::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()))
-    }
+    Ok(default_desktop_shell_command())
+}
+
+#[cfg(windows)]
+fn default_desktop_shell_command() -> StdCommand {
+    StdCommand::new(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()))
+}
+
+#[cfg(not(windows))]
+fn default_desktop_shell_command() -> StdCommand {
+    StdCommand::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()))
 }
 
 fn machinectl_attach_args(machine_name: &str, session_id: &str) -> Vec<String> {
@@ -693,10 +708,10 @@ fn session_state_label(state: &SessionState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_agentfs, env_state_label, machinectl_attach_args, needs_remote_tty,
-        parse_response_line, remote_agentctl_args, remote_shell_command, session_state_label,
-        shell_quote, tmux_attach_command, to_request, Cli, Command, EnvCommand, ExportArgs,
-        ExportKind, InitArgs, NewArgs,
+        desktop_shell_command, effective_agentfs, env_state_label, machinectl_attach_args,
+        needs_remote_tty, parse_response_line, remote_agentctl_args, remote_shell_command,
+        session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command,
+        EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
@@ -966,6 +981,25 @@ mod tests {
             Request::Shell { id } => assert_eq!(id, "codex-1"),
             other => panic!("unexpected request {other:?}"),
         }
+    }
+
+    #[test]
+    fn desktop_shell_response_command_overrides_default_shell() {
+        let command = desktop_shell_command(vec![
+            "sandbox-exec".to_string(),
+            "-p".to_string(),
+            "(version 1)".to_string(),
+            "/bin/sh".to_string(),
+        ])
+        .unwrap();
+        let program = command.get_program().to_string_lossy();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(program, "sandbox-exec");
+        assert_eq!(args, vec!["-p", "(version 1)", "/bin/sh"]);
     }
 
     #[test]
