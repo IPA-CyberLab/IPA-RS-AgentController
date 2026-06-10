@@ -6,13 +6,10 @@ use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::process::Command as StdCommand;
-#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-#[cfg(not(unix))]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 use tokio::net::TcpStream;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use tokio::net::UnixStream;
 
 #[derive(Debug, Parser)]
@@ -525,7 +522,7 @@ async fn call(config: &AgentConfig, request: Request) -> Result<Response> {
     call_control(config, request).await
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
     let mut stream = UnixStream::connect(&config.socket_path)
         .await
@@ -546,7 +543,7 @@ async fn call_control(config: &AgentConfig, request: Request) -> Result<Response
     parse_response_line(&config.socket_path.display().to_string(), &line)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
     let mut stream = TcpStream::connect(&config.tcp_addr)
         .await
