@@ -232,7 +232,9 @@ also use that sandbox profile; Windows interactive shells run in a Job Object
 with the env rootfs as their working directory. Native desktop sessions are
 tracked as background host processes with transcript files under the env's
 session log directory; macOS session commands use the same sandbox profile as
-exec, while Windows session commands are PID-managed background processes.
+exec, while Windows session commands are kept in daemon-held Job Objects when
+started by the current daemon and fall back to PID-tree cleanup after daemon
+restart.
 
 ## Test Notes
 

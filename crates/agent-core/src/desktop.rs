@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 use crate::command::macos_sandbox_profile;
+#[cfg(windows)]
+use crate::command::{forget_desktop_session_job, terminate_desktop_session_job};
 use crate::command::{CmdOutput, CommandRunner};
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
@@ -645,11 +647,15 @@ async fn process_running(runner: &CommandRunner, pid: u32) -> Result<bool> {
             ],
         )
         .await?;
-    Ok(output.status == 0
+    let running = output.status == 0
         && output
             .stdout
             .split_whitespace()
-            .any(|field| field == pid.to_string()))
+            .any(|field| field == pid.to_string());
+    if !running {
+        forget_desktop_session_job(pid);
+    }
+    Ok(running)
 }
 
 #[cfg(unix)]
@@ -668,6 +674,9 @@ async fn kill_process_tree(runner: &CommandRunner, pid: u32) -> Result<()> {
 
 #[cfg(windows)]
 async fn kill_process_tree(runner: &CommandRunner, pid: u32) -> Result<()> {
+    if terminate_desktop_session_job(pid)? {
+        return Ok(());
+    }
     let output = runner
         .run(
             "taskkill",

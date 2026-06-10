@@ -2,6 +2,7 @@ use crate::model::Limits;
 use anyhow::{anyhow, Context, Result};
 use std::ffi::OsStr;
 use std::path::Path;
+#[cfg(not(windows))]
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -209,11 +210,25 @@ fn spawn_desktop_session(
     program: &str,
     args: &[String],
     log_path: &Path,
-    _limits: &Limits,
+    limits: &Limits,
 ) -> Result<u32> {
-    let mut command = Command::new(program);
-    command.current_dir(cwd).args(args);
-    spawn_logged(command, log_path)
+    windows_job::spawn_logged_in_job(
+        cwd.to_path_buf(),
+        program.to_string(),
+        args.to_vec(),
+        log_path,
+        limits.clone(),
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn terminate_desktop_session_job(pid: u32) -> Result<bool> {
+    windows_job::terminate_session_job(pid)
+}
+
+#[cfg(windows)]
+pub(crate) fn forget_desktop_session_job(pid: u32) {
+    windows_job::forget_session_job(pid);
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -239,6 +254,7 @@ fn spawn_desktop_session(
     spawn_logged(command, log_path)
 }
 
+#[cfg(not(windows))]
 fn spawn_logged(mut command: Command, log_path: &Path) -> Result<u32> {
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)
@@ -268,14 +284,16 @@ mod windows_job {
     use super::CmdOutput;
     use crate::model::Limits;
     use anyhow::{anyhow, Context, Result};
+    use std::collections::HashMap;
     use std::mem::{size_of, zeroed};
     use std::os::windows::io::AsRawHandle;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::{Command as StdCommand, Stdio};
+    use std::sync::{Mutex, OnceLock};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
@@ -319,7 +337,81 @@ mod windows_job {
         })
     }
 
+    pub fn spawn_logged_in_job(
+        cwd: PathBuf,
+        program: String,
+        args: Vec<String>,
+        log_path: &Path,
+        limits: Limits,
+    ) -> Result<u32> {
+        let job = Job::create()?;
+        job.apply_limits(limits.pids_max)?;
+
+        let stdout = open_session_log(log_path)?;
+        let stderr = stdout
+            .try_clone()
+            .with_context(|| format!("failed to clone session log {}", log_path.display()))?;
+        let child = StdCommand::new(&program)
+            .current_dir(&cwd)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "failed to spawn native desktop session in {}",
+                    cwd.display()
+                )
+            })?;
+        let pid = child.id();
+        job.assign(child.as_raw_handle() as HANDLE)?;
+        session_jobs()
+            .lock()
+            .map_err(|_| anyhow!("Windows session job registry is poisoned"))?
+            .insert(pid, job);
+        Ok(pid)
+    }
+
+    pub fn terminate_session_job(pid: u32) -> Result<bool> {
+        let Some(job) = session_jobs()
+            .lock()
+            .map_err(|_| anyhow!("Windows session job registry is poisoned"))?
+            .remove(&pid)
+        else {
+            return Ok(false);
+        };
+        job.terminate(1)?;
+        Ok(true)
+    }
+
+    pub fn forget_session_job(pid: u32) {
+        if let Ok(mut jobs) = session_jobs().lock() {
+            jobs.remove(&pid);
+        }
+    }
+
+    fn open_session_log(log_path: &Path) -> Result<std::fs::File> {
+        if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create session log dir {}", parent.display())
+            })?;
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .with_context(|| format!("failed to open session log {}", log_path.display()))
+    }
+
+    fn session_jobs() -> &'static Mutex<HashMap<u32, Job>> {
+        static SESSION_JOBS: OnceLock<Mutex<HashMap<u32, Job>>> = OnceLock::new();
+        SESSION_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
     struct Job(HANDLE);
+
+    unsafe impl Send for Job {}
 
     impl Job {
         fn create() -> Result<Self> {
@@ -355,6 +447,14 @@ mod windows_job {
             let ok = unsafe { AssignProcessToJobObject(self.0, process) };
             if ok == 0 {
                 return Err(anyhow!("failed to assign process to Windows Job Object"));
+            }
+            Ok(())
+        }
+
+        fn terminate(&self, exit_code: u32) -> Result<()> {
+            let ok = unsafe { TerminateJobObject(self.0, exit_code) };
+            if ok == 0 {
+                return Err(anyhow!("failed to terminate Windows Job Object"));
             }
             Ok(())
         }
