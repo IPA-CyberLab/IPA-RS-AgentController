@@ -200,7 +200,7 @@ impl Layout {
             return Err(anyhow!("base {} metadata is not readonly", base.id));
         }
         match base.backend {
-            RootfsBackend::Btrfs => {
+            RootfsBackend::Btrfs | RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
                 let expected_rootfs = self.base_rootfs(&base.id);
                 if base.rootfs_path != expected_rootfs {
                     return Err(anyhow!(

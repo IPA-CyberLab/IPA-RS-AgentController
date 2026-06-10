@@ -75,7 +75,11 @@ AGENT_VERSION=v0.1.0 AGENT_INSTALL_DIR=/usr/local/bin \
 GitHub Actions builds release archives for Linux, macOS, and Windows on x86_64
 and arm64 targets. `agent-forkd` is operational on Linux where the runtime
 requirements below are available. Windows and macOS should use `--remote` or
-`AGENT_REMOTE` to delegate commands to a Linux backend.
+`AGENT_REMOTE` for the current released workflow while the native desktop
+backend is being wired through the CLI/daemon. The native backend foundation
+uses APFS `clonefile(2)` on macOS and `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block
+cloning on Windows so base/env trees can be derived without full copies on
+filesystems that support those primitives.
 
 ## Requirements
 

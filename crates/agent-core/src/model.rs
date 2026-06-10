@@ -44,6 +44,29 @@ pub enum RootfsBackend {
     #[default]
     Btrfs,
     Overlay,
+    ApfsClone,
+    WindowsBlockClone,
+}
+
+impl RootfsBackend {
+    pub fn native_clone_for_current_os() -> Option<Self> {
+        native_clone_backend()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn native_clone_backend() -> Option<RootfsBackend> {
+    Some(RootfsBackend::ApfsClone)
+}
+
+#[cfg(target_os = "windows")]
+fn native_clone_backend() -> Option<RootfsBackend> {
+    Some(RootfsBackend::WindowsBlockClone)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn native_clone_backend() -> Option<RootfsBackend> {
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -445,12 +468,12 @@ mod tests {
         assert_schema_enum_values(
             include_str!("../../../schemas/base.schema.json"),
             &["properties", "backend", "enum"],
-            &["btrfs", "overlay"],
+            &["btrfs", "overlay", "apfs_clone", "windows_block_clone"],
         );
         assert_schema_enum_values(
             include_str!("../../../schemas/env.schema.json"),
             &["properties", "backend", "enum"],
-            &["btrfs", "overlay"],
+            &["btrfs", "overlay", "apfs_clone", "windows_block_clone"],
         );
         assert_schema_enum_values(
             include_str!("../../../schemas/session.schema.json"),
@@ -475,6 +498,22 @@ mod tests {
             serde_json::to_value(SessionType::Pty).unwrap(),
             Value::String("pty".to_string())
         );
+    }
+
+    #[test]
+    fn native_clone_backend_matches_current_os() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            RootfsBackend::native_clone_for_current_os(),
+            Some(RootfsBackend::ApfsClone)
+        );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            RootfsBackend::native_clone_for_current_os(),
+            Some(RootfsBackend::WindowsBlockClone)
+        );
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert_eq!(RootfsBackend::native_clone_for_current_os(), None);
     }
 
     #[test]

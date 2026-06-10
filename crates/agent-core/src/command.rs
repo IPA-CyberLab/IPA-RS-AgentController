@@ -48,6 +48,24 @@ impl CommandRunner {
         Ok(output)
     }
 
+    pub async fn run_in_dir<I, S>(&self, cwd: &Path, program: &str, args: I) -> Result<CmdOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = Command::new(program)
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .await
+            .with_context(|| format!("failed to execute {program} in {}", cwd.display()))?;
+        Ok(CmdOutput {
+            status: output.status.code().unwrap_or(128),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
+
     pub async fn append_to_file(path: &Path, content: &str) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 

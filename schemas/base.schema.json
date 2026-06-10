@@ -5,7 +5,7 @@
   "required": ["id", "backend", "rootfs_path", "readonly", "created_at", "source", "dpkg_manifest"],
   "properties": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$" },
-    "backend": { "enum": ["btrfs", "overlay"] },
+    "backend": { "enum": ["btrfs", "overlay", "apfs_clone", "windows_block_clone"] },
     "rootfs_path": { "type": "string" },
     "readonly": { "type": "boolean" },
     "created_at": { "type": "string", "format": "date-time" },

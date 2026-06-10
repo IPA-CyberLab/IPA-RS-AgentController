@@ -8,6 +8,7 @@ use crate::model::{
 };
 use crate::nspawn::Nspawn;
 use crate::protocol::{Request, Response};
+use crate::reflink;
 use crate::session::TmuxSessionBackend;
 use crate::storage::{validate_id, write_text_file, Layout};
 use anyhow::{anyhow, Context, Result};
@@ -203,6 +204,60 @@ impl AgentService {
         self.base_freeze_overlay(name, from).await
     }
 
+    pub async fn base_freeze_native_clone(
+        &self,
+        name: &str,
+        from: &Path,
+        backend: RootfsBackend,
+    ) -> Result<Base> {
+        validate_id(name)?;
+        if !matches!(
+            backend,
+            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone
+        ) {
+            return Err(anyhow!("backend {backend:?} is not a native clone backend"));
+        }
+        if !from.is_absolute() {
+            return Err(anyhow!("native clone base source must be an absolute path"));
+        }
+        let base_dir = self.layout.base_dir(name);
+        if base_dir.exists() {
+            return Err(anyhow!("base {name} already exists"));
+        }
+        tokio::fs::create_dir_all(&base_dir).await?;
+        let rootfs = self.layout.base_rootfs(name);
+        if let Err(error) = reflink::clone_tree(from, &rootfs) {
+            cleanup_failed_base_dir(&base_dir).await;
+            return Err(error);
+        }
+        let dpkg_manifest = base_dir.join("dpkg.list");
+        if let Err(error) = self.write_dpkg_manifest(&rootfs, &dpkg_manifest).await {
+            cleanup_failed_base_dir(&base_dir).await;
+            return Err(error);
+        }
+        let created_at = Utc::now();
+        if let Err(error) =
+            write_text_file(&base_dir.join("created_at"), created_at.to_rfc3339()).await
+        {
+            cleanup_failed_base_dir(&base_dir).await;
+            return Err(error);
+        }
+        let base = Base {
+            id: name.to_string(),
+            backend,
+            rootfs_path: rootfs,
+            readonly: true,
+            created_at,
+            source: base_source_label(from),
+            dpkg_manifest,
+        };
+        if let Err(error) = self.layout.write_base(&base).await {
+            cleanup_failed_base_dir(&base_dir).await;
+            return Err(error);
+        }
+        Ok(base)
+    }
+
     async fn base_freeze_btrfs(&self, name: &str, from: &Path) -> Result<Base> {
         let base_dir = self.layout.base_dir(name);
         if base_dir.exists() {
@@ -333,6 +388,12 @@ impl AgentService {
             }
             RootfsBackend::Overlay => {
                 if let Err(error) = self.ensure_overlay_dirs(id).await {
+                    cleanup_failed_env_dir(&env_dir).await;
+                    return Err(error);
+                }
+            }
+            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+                if let Err(error) = reflink::clone_tree(&base.rootfs_path, &rootfs) {
                     cleanup_failed_env_dir(&env_dir).await;
                     return Err(error);
                 }
@@ -527,6 +588,9 @@ impl AgentService {
             }
             RootfsBackend::Overlay => {
                 self.umount_overlay_rootfs(&env).await?;
+            }
+            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+                remove_dir_all_if_exists(&env.rootfs_path).await?;
             }
         }
         self.nspawn.remove_config(&env).await?;
@@ -786,6 +850,9 @@ impl AgentService {
                     Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
                 }
                 RootfsBackend::Overlay => self.overlay_changed_paths(&env).await,
+                RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+                    Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
+                }
             },
             ExportType::DpkgDelta => {
                 let env_manifest = self.layout.env_dir(env_id).join("dpkg.list");
@@ -924,7 +991,9 @@ impl AgentService {
 
     async fn env_disk_used(&self, env: &Env) -> Result<String> {
         let path = match env.backend {
-            RootfsBackend::Btrfs => env.rootfs_path.clone(),
+            RootfsBackend::Btrfs | RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+                env.rootfs_path.clone()
+            }
             RootfsBackend::Overlay => self.overlay_upper_dir(&env.id),
         };
         self.disk_used(&path).await
@@ -1004,15 +1073,21 @@ impl AgentService {
         rootfs: &Path,
         env_dir: &Path,
     ) {
-        if backend == RootfsBackend::Btrfs {
-            let qgroup_id = self.btrfs.qgroup_id(rootfs).await.ok().flatten();
-            let _ = self.btrfs.delete_subvolume(rootfs).await;
-            if let Some(qgroup_id) = qgroup_id {
-                let _ = self
-                    .btrfs
-                    .destroy_qgroup(&qgroup_id, &self.config.agentfs)
-                    .await;
+        match backend {
+            RootfsBackend::Btrfs => {
+                let qgroup_id = self.btrfs.qgroup_id(rootfs).await.ok().flatten();
+                let _ = self.btrfs.delete_subvolume(rootfs).await;
+                if let Some(qgroup_id) = qgroup_id {
+                    let _ = self
+                        .btrfs
+                        .destroy_qgroup(&qgroup_id, &self.config.agentfs)
+                        .await;
+                }
             }
+            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+                let _ = remove_dir_all_if_exists(rootfs).await;
+            }
+            RootfsBackend::Overlay => {}
         }
         cleanup_failed_env_dir(env_dir).await;
     }

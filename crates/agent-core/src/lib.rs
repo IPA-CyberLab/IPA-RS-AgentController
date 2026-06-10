@@ -1,12 +1,14 @@
 pub mod btrfs;
 pub mod command;
 pub mod config;
+pub mod desktop;
 #[cfg(unix)]
 pub mod export;
 pub mod model;
 #[cfg(unix)]
 pub mod nspawn;
 pub mod protocol;
+pub mod reflink;
 #[cfg(unix)]
 pub mod service;
 #[cfg(unix)]
