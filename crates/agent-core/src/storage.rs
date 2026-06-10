@@ -371,10 +371,21 @@ async fn write_tmp_and_rename(
     tokio::fs::rename(tmp, path)
         .await
         .with_context(|| format!("failed to replace {}", path.display()))?;
+    sync_parent_dir(parent)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_parent_dir(parent: &Path) -> Result<()> {
     std::fs::File::open(parent)
         .with_context(|| format!("failed to open metadata dir {}", parent.display()))?
         .sync_all()
         .with_context(|| format!("failed to sync metadata dir {}", parent.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sync_parent_dir(_parent: &Path) -> Result<()> {
     Ok(())
 }
 
