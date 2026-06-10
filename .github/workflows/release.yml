@@ -67,6 +67,70 @@ jobs:
           cp README.md LICENSE install.sh install.ps1 "$staging/"
           tar -czf "dist/${{ matrix.archive }}" -C dist "ipa-rs-isolated-agent-${{ matrix.target }}"
 
+      - name: Smoke test native desktop daemon
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir="$PWD/target/${{ matrix.target }}/release"
+          agentctl="$bin_dir/agentctl"
+          daemon="$bin_dir/agent-forkd"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            agentctl="$agentctl.exe"
+            daemon="$daemon.exe"
+          fi
+
+          runner_temp="${RUNNER_TEMP//\\//}"
+          agentfs="$runner_temp/agentfs-${{ matrix.target }}"
+          source_dir="$runner_temp/source-${{ matrix.target }}"
+          daemon_log="$runner_temp/agent-forkd-${{ matrix.target }}.log"
+          rm -rf "$agentfs" "$source_dir"
+          mkdir -p "$source_dir/nested"
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            printf 'desktop source\n' > "$source_dir/nested/source.txt"
+          fi
+
+          "$daemon" --agentfs "$agentfs" > "$daemon_log" 2>&1 &
+          daemon_pid=$!
+          cleanup() {
+            kill "$daemon_pid" >/dev/null 2>&1 || true
+            wait "$daemon_pid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for _ in {1..40}; do
+            if "$agentctl" --agentfs "$agentfs" init >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          "$agentctl" --agentfs "$agentfs" env list
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- cmd.exe /C "echo desktop-smoke>created.txt && type created.txt" | tee "$runner_temp/exec.out"
+          else
+            "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- /bin/sh -c "cat nested/source.txt && echo desktop-smoke > created.txt && cat created.txt" | tee "$runner_temp/exec.out"
+          fi
+          grep -q "desktop-smoke" "$runner_temp/exec.out"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            "$agentctl" --agentfs "$agentfs" session create smoke dev -- cmd.exe /C "echo desktop-session && ping -n 30 127.0.0.1 >NUL"
+          else
+            "$agentctl" --agentfs "$agentfs" session create smoke dev -- /bin/sh -c "echo desktop-session; sleep 30"
+          fi
+          "$agentctl" --agentfs "$agentfs" session list smoke | tee "$runner_temp/sessions.out"
+          grep -q "dev" "$runner_temp/sessions.out"
+
+          for _ in {1..40}; do
+            "$agentctl" --agentfs "$agentfs" session logs smoke dev > "$runner_temp/session.log" || true
+            if grep -q "desktop-session" "$runner_temp/session.log"; then
+              break
+            fi
+            sleep 0.5
+          done
+          grep -q "desktop-session" "$runner_temp/session.log"
+          "$agentctl" --agentfs "$agentfs" session kill smoke dev
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
