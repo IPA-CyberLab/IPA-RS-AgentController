@@ -2,6 +2,7 @@ use crate::model::Limits;
 use anyhow::{anyhow, Context, Result};
 use std::ffi::OsStr;
 use std::path::Path;
+use std::process::Stdio;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +78,17 @@ impl CommandRunner {
         run_desktop_isolated(cwd, program, args, limits).await
     }
 
+    pub fn spawn_desktop_session(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[String],
+        log_path: &Path,
+        limits: &Limits,
+    ) -> Result<u32> {
+        spawn_desktop_session(cwd, program, args, log_path, limits)
+    }
+
     pub async fn append_to_file(path: &Path, content: &str) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 
@@ -127,7 +139,7 @@ async fn run_desktop_isolated(
 }
 
 #[cfg(target_os = "macos")]
-fn macos_sandbox_profile(rootfs: &Path) -> String {
+pub(crate) fn macos_sandbox_profile(rootfs: &Path) -> String {
     let rootfs = scheme_string(rootfs.display().to_string().as_str());
     format!(
         r#"(version 1)
@@ -139,6 +151,24 @@ fn macos_sandbox_profile(rootfs: &Path) -> String {
 (deny network*)
 "#
     )
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_desktop_session(
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    log_path: &Path,
+    _limits: &Limits,
+) -> Result<u32> {
+    let mut command = Command::new("sandbox-exec");
+    command
+        .current_dir(cwd)
+        .arg("-p")
+        .arg(macos_sandbox_profile(cwd))
+        .arg(program)
+        .args(args);
+    spawn_logged(command, log_path)
 }
 
 #[cfg(target_os = "macos")]
@@ -162,6 +192,19 @@ async fn run_desktop_isolated(
     .await
 }
 
+#[cfg(windows)]
+fn spawn_desktop_session(
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    log_path: &Path,
+    _limits: &Limits,
+) -> Result<u32> {
+    let mut command = Command::new(program);
+    command.current_dir(cwd).args(args);
+    spawn_logged(command, log_path)
+}
+
 #[cfg(not(any(target_os = "macos", windows)))]
 async fn run_desktop_isolated(
     cwd: &Path,
@@ -170,6 +213,43 @@ async fn run_desktop_isolated(
     _limits: &Limits,
 ) -> Result<CmdOutput> {
     CommandRunner.run_in_dir(cwd, program, args).await
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn spawn_desktop_session(
+    cwd: &Path,
+    program: &str,
+    args: &[String],
+    log_path: &Path,
+    _limits: &Limits,
+) -> Result<u32> {
+    let mut command = Command::new(program);
+    command.current_dir(cwd).args(args);
+    spawn_logged(command, log_path)
+}
+
+fn spawn_logged(mut command: Command, log_path: &Path) -> Result<u32> {
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create session log dir {}", parent.display()))?;
+    }
+    let stdout = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| format!("failed to open session log {}", log_path.display()))?;
+    let stderr = stdout
+        .try_clone()
+        .with_context(|| format!("failed to clone session log {}", log_path.display()))?;
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .context("failed to spawn native desktop session")?;
+    child
+        .id()
+        .ok_or_else(|| anyhow!("spawned native desktop session without a process id"))
 }
 
 #[cfg(windows)]
