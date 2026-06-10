@@ -112,9 +112,9 @@ network access denied and writes limited to the env rootfs. Windows exec runs
 inside a Job Object so child processes are grouped, capped by `pids_max`, and
 terminated when the job closes. This is still weaker than the Linux
 `systemd-nspawn` backend: macOS native shells run through the same sandbox
-profile as exec, Windows native shells are still cwd-scoped host shells, and
-native desktop sessions support background create/list/logs/kill but not
-interactive attach yet.
+profile as exec, Windows native shells run inside a Job Object rooted at the
+env directory, and native desktop sessions support background
+create/list/logs/kill but not interactive attach yet.
 
 ## Requirements
 
@@ -228,11 +228,11 @@ networking and host writes outside the env rootfs while still allowing host
 reads needed to run installed tools. Windows exec uses a Job Object for process
 lifetime and process-count containment, but it does not yet provide filesystem
 or network isolation equivalent to Linux namespaces. macOS interactive shells
-also use that sandbox profile; Windows interactive shells currently only change
-the working directory into the env rootfs. Native desktop sessions are tracked
-as background host processes with transcript files under the env's session log
-directory; macOS session commands use the same sandbox profile as exec, while
-Windows session commands are PID-managed background processes.
+also use that sandbox profile; Windows interactive shells run in a Job Object
+with the env rootfs as their working directory. Native desktop sessions are
+tracked as background host processes with transcript files under the env's
+session log directory; macOS session commands use the same sandbox profile as
+exec, while Windows session commands are PID-managed background processes.
 
 ## Test Notes
 

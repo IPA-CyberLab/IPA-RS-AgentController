@@ -637,12 +637,26 @@ fn print_response(response: Response) -> Result<()> {
             rootfs_path,
             command,
         } => {
-            let mut shell = desktop_shell_command(command)?;
-            let status = shell.current_dir(rootfs_path).status()?;
-            std::process::exit(status.code().unwrap_or(128));
+            std::process::exit(run_desktop_shell(rootfs_path, command)?);
         }
         Response::Error { message } => Err(anyhow!(message)),
     }
+}
+
+fn run_desktop_shell(rootfs_path: PathBuf, command: Vec<String>) -> Result<i32> {
+    let mut shell = desktop_shell_command(command)?;
+    run_desktop_shell_command(&mut shell, rootfs_path)
+}
+
+#[cfg(not(windows))]
+fn run_desktop_shell_command(shell: &mut StdCommand, rootfs_path: PathBuf) -> Result<i32> {
+    let status = shell.current_dir(rootfs_path).status()?;
+    Ok(status.code().unwrap_or(128))
+}
+
+#[cfg(windows)]
+fn run_desktop_shell_command(shell: &mut StdCommand, rootfs_path: PathBuf) -> Result<i32> {
+    windows_desktop_shell::run_in_job(shell, rootfs_path)
 }
 
 fn desktop_shell_command(command: Vec<String>) -> Result<StdCommand> {
@@ -666,6 +680,85 @@ fn default_desktop_shell_command() -> StdCommand {
 #[cfg(not(windows))]
 fn default_desktop_shell_command() -> StdCommand {
     StdCommand::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()))
+}
+
+#[cfg(windows)]
+mod windows_desktop_shell {
+    use anyhow::{anyhow, Context, Result};
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::io::AsRawHandle;
+    use std::path::PathBuf;
+    use std::process::Command as StdCommand;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub fn run_in_job(shell: &mut StdCommand, rootfs_path: PathBuf) -> Result<i32> {
+        let job = Job::create()?;
+        job.apply_limits()?;
+
+        let mut child = shell.current_dir(&rootfs_path).spawn().with_context(|| {
+            format!("failed to spawn desktop shell in {}", rootfs_path.display())
+        })?;
+        job.assign(child.as_raw_handle() as HANDLE)?;
+
+        let status = child.wait().context("failed to wait for desktop shell")?;
+        Ok(status.code().unwrap_or(128))
+    }
+
+    struct Job(HANDLE);
+
+    impl Job {
+        fn create() -> Result<Self> {
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle == std::ptr::null_mut() {
+                return Err(anyhow!(
+                    "failed to create Windows Job Object for desktop shell"
+                ));
+            }
+            Ok(Self(handle))
+        }
+
+        fn apply_limits(&self) -> Result<()> {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = unsafe {
+                SetInformationJobObject(
+                    self.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(anyhow!(
+                    "failed to configure Windows desktop shell Job Object"
+                ));
+            }
+            Ok(())
+        }
+
+        fn assign(&self, process: HANDLE) -> Result<()> {
+            let ok = unsafe { AssignProcessToJobObject(self.0, process) };
+            if ok == 0 {
+                return Err(anyhow!(
+                    "failed to assign desktop shell to Windows Job Object"
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
 }
 
 fn machinectl_attach_args(machine_name: &str, session_id: &str) -> Vec<String> {

@@ -1,6 +1,6 @@
-use crate::command::{CmdOutput, CommandRunner};
 #[cfg(target_os = "macos")]
 use crate::command::macos_sandbox_profile;
+use crate::command::{CmdOutput, CommandRunner};
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
 use crate::model::{
