@@ -110,6 +110,46 @@ ensure_windows_path() {
   echo "Added $win_install_dir to the Windows user PATH"
 }
 
+install_macos_service() {
+  need launchctl
+  agentfs="${AGENTFS:-$HOME/.agentfs}"
+  label="com.ipa-cyberlab.agent-forkd"
+  plist_dir="$HOME/Library/LaunchAgents"
+  plist="$plist_dir/$label.plist"
+  mkdir -p "$plist_dir" "$agentfs"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$INSTALL_DIR/agent-forkd</string>
+    <string>--agentfs</string>
+    <string>$agentfs</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$agentfs/agent-forkd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>$agentfs/agent-forkd.err.log</string>
+</dict>
+</plist>
+EOF
+  uid="$(id -u)"
+  launchctl bootout "gui/$uid" "$plist" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$uid" "$plist"
+  launchctl enable "gui/$uid/$label"
+  launchctl kickstart -k "gui/$uid/$label"
+  echo "Installed and started launch agent: $label"
+}
+
 target="$(detect_target)"
 asset="ipa-rs-isolated-agent-$target.tar.gz"
 if [ "$VERSION" = "latest" ]; then
@@ -119,17 +159,20 @@ else
 fi
 
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  if [ "$target" != "${target%unknown-linux-gnu}" ]; then
-    :
-  else
-    echo "error: AGENT_INSTALL_SERVICE=1 is supported only on Linux" >&2
-    exit 1
-  fi
-  INSTALL_DIR="${AGENT_INSTALL_DIR:-/usr/local/bin}"
-  if [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
-    echo "error: AGENT_INSTALL_SERVICE=1 requires AGENT_INSTALL_DIR=/usr/local/bin" >&2
-    exit 1
-  fi
+  case "$target" in
+    *unknown-linux-gnu)
+      INSTALL_DIR="${AGENT_INSTALL_DIR:-/usr/local/bin}"
+      if [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
+        echo "error: AGENT_INSTALL_SERVICE=1 requires AGENT_INSTALL_DIR=/usr/local/bin on Linux" >&2
+        exit 1
+      fi
+      ;;
+    *apple-darwin) ;;
+    *)
+      echo "error: AGENT_INSTALL_SERVICE=1 is supported by install.sh only on Linux and macOS" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 echo "Target: $target"
@@ -171,15 +214,22 @@ else
 fi
 
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  SUDO="$(sudo_cmd)"
-  $SUDO install -d -m 0755 /etc/agent-forkd
-  $SUDO install -m 0644 "$payload_dir/packaging/agent-forkd/config.json" /etc/agent-forkd/config.json
-  $SUDO install -m 0644 "$payload_dir/packaging/systemd/agent-forkd.service" /etc/systemd/system/agent-forkd.service
-  $SUDO mkdir -p /agentfs
-  $SUDO systemctl daemon-reload
-  $SUDO systemctl enable agent-forkd >/dev/null
-  $SUDO systemctl restart agent-forkd
-  echo "Installed and restarted agent-forkd.service"
+  case "$target" in
+    *unknown-linux-gnu)
+      SUDO="$(sudo_cmd)"
+      $SUDO install -d -m 0755 /etc/agent-forkd
+      $SUDO install -m 0644 "$payload_dir/packaging/agent-forkd/config.json" /etc/agent-forkd/config.json
+      $SUDO install -m 0644 "$payload_dir/packaging/systemd/agent-forkd.service" /etc/systemd/system/agent-forkd.service
+      $SUDO mkdir -p /agentfs
+      $SUDO systemctl daemon-reload
+      $SUDO systemctl enable agent-forkd >/dev/null
+      $SUDO systemctl restart agent-forkd
+      echo "Installed and restarted agent-forkd.service"
+      ;;
+    *apple-darwin)
+      install_macos_service
+      ;;
+  esac
 fi
 
 ensure_shell_path

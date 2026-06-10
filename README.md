@@ -47,6 +47,20 @@ On Windows, install the release binaries with PowerShell:
 iwr https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.ps1 -UseB | iex
 ```
 
+To also register the native desktop daemon for the current user, set
+`AGENT_INSTALL_SERVICE=1`. On macOS this creates a `launchd` LaunchAgent. On
+Windows this creates a user Scheduled Task:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.sh |
+  AGENT_INSTALL_SERVICE=1 sh
+```
+
+```powershell
+$env:AGENT_INSTALL_SERVICE = "1"
+iwr https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.ps1 -UseB | iex
+```
+
 For the stable workflow on Windows and macOS, point the client at a Linux host,
 WSL VM, or Linux VM where `agent-forkd` is installed:
 
@@ -87,12 +101,14 @@ AGENT_VERSION=v0.1.0 AGENT_INSTALL_DIR=/usr/local/bin \
 
 GitHub Actions builds release archives for Linux, macOS, and Windows on x86_64
 and arm64 targets. `agent-forkd` is operational on Linux where the runtime
-requirements below are available. Windows and macOS should use `--remote` or
-`AGENT_REMOTE` for the current released workflow while the native desktop
-backend is being wired through the CLI/daemon. The native backend foundation
-uses APFS `clonefile(2)` on macOS and `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block
-cloning on Windows so base/env trees can be derived without full copies on
-filesystems that support those primitives.
+requirements below are available. Windows and macOS can either use `--remote`
+or `AGENT_REMOTE` for the Linux-backed workflow, or run the native desktop
+daemon locally. The native backend uses APFS `clonefile(2)` on macOS and
+`FSCTL_DUPLICATE_EXTENTS_TO_FILE` block cloning on Windows so base/env trees can
+be derived without full copies on filesystems that support those primitives. It
+currently supports local exec/shell plus `workspace-patch` and
+`rootfs-changed-paths` export; process, network, and persistent-session
+isolation are still weaker than the Linux `systemd-nspawn` backend.
 
 ## Requirements
 
