@@ -169,14 +169,29 @@ mod platform {
                     let attr = file_attr(ino, &found.storage_path).map_err(|_| Errno::EIO)?;
                     Ok((ino, attr))
                 }
-                OverlayLookup::Whiteout(_) | OverlayLookup::Missing => Err(Errno::ENOENT),
+                OverlayLookup::Whiteout(_) => Err(Errno::ENOENT),
+                OverlayLookup::Missing => {
+                    if !visible.exists() {
+                        return Err(Errno::ENOENT);
+                    }
+                    let ino = self.ino_for_path(visible)?;
+                    let attr = file_attr(ino, visible).map_err(|_| Errno::EIO)?;
+                    Ok((ino, attr))
+                }
             }
         }
 
         fn storage_path_for_read(&self, visible: &Path) -> Result<PathBuf, Errno> {
             match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
                 OverlayLookup::Found(found) => Ok(found.storage_path),
-                OverlayLookup::Whiteout(_) | OverlayLookup::Missing => Err(Errno::ENOENT),
+                OverlayLookup::Whiteout(_) => Err(Errno::ENOENT),
+                OverlayLookup::Missing => {
+                    if visible.exists() {
+                        Ok(visible.to_path_buf())
+                    } else {
+                        Err(Errno::ENOENT)
+                    }
+                }
             }
         }
 
@@ -192,6 +207,9 @@ mod platform {
                 OverlayLookup::Found(found) => {
                     copy_up(&found.storage_path, &upper).map_err(|_| Errno::EIO)?
                 }
+                OverlayLookup::Missing if visible.exists() => {
+                    copy_up(visible, &upper).map_err(|_| Errno::EIO)?
+                }
                 OverlayLookup::Whiteout(_) | OverlayLookup::Missing => {
                     File::create(&upper).map_err(|_| Errno::EIO)?;
                 }
@@ -202,6 +220,7 @@ mod platform {
         fn merged_dir_entries(&self, visible: &Path) -> Result<Vec<(OsString, FileType)>, Errno> {
             let mut entries = BTreeMap::new();
             for root in [
+                visible.to_path_buf(),
                 self.overlay.lower_path(visible).map_err(|_| Errno::EIO)?,
                 self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?,
             ] {

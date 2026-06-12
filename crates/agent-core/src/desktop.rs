@@ -9,6 +9,7 @@ use crate::model::{
     machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, Limits, RootfsBackend, Session,
     SessionState, SessionType,
 };
+use crate::path_overlay::absolute_path_as_overlay_relative;
 use crate::protocol::{Request, Response};
 use crate::reflink;
 use crate::storage::{validate_id, write_text_file, Layout};
@@ -230,7 +231,8 @@ impl DesktopService {
             RootfsBackend::PathPreservingOverlay => self.layout.base_lower(name),
             _ => self.layout.base_rootfs(name),
         };
-        if let Err(error) = reflink::clone_tree(from, &rootfs) {
+        let clone_target = desktop_base_clone_target(&backend, &rootfs, from)?;
+        if let Err(error) = reflink::clone_tree(from, &clone_target) {
             let _ = remove_dir_all_if_exists(&base_dir).await;
             return Err(error);
         }
@@ -1044,6 +1046,18 @@ fn bash_agent_prompt(env_id: &str) -> String {
     format!("\\[\\033[32m\\]{env_id}\\[\\033[0m\\]@\\h \\w \\\\$ ")
 }
 
+fn desktop_base_clone_target(
+    backend: &RootfsBackend,
+    rootfs: &Path,
+    from: &Path,
+) -> Result<PathBuf> {
+    if *backend == RootfsBackend::PathPreservingOverlay {
+        Ok(rootfs.join(absolute_path_as_overlay_relative(from)?))
+    } else {
+        Ok(rootfs.to_path_buf())
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn platform_desktop_shell_command(
     _rootfs_path: &Path,
@@ -1097,6 +1111,24 @@ mod tests {
             .to_string();
 
         assert!(error.contains("supported only on macOS and Windows"));
+    }
+
+    #[test]
+    fn path_preserving_base_clone_target_uses_absolute_overlay_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("workspace");
+        let rootfs = dir.path().join("agentfs/bases/base-001/lower");
+        let rel = crate::path_overlay::absolute_path_as_overlay_relative(&source).unwrap();
+
+        assert_eq!(
+            super::desktop_base_clone_target(
+                &RootfsBackend::PathPreservingOverlay,
+                &rootfs,
+                &source
+            )
+            .unwrap(),
+            rootfs.join(rel)
+        );
     }
 
     #[tokio::test]
