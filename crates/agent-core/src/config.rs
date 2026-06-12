@@ -105,7 +105,7 @@ mod tests {
         "memory_max": "32G",
         "pids_max": 8192,
         "disk_max": "200G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       },
@@ -201,7 +201,7 @@ mod tests {
         "memory_max": "32G",
         "pids_max": 8192,
         "disk_max": "200G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       }
@@ -237,7 +237,7 @@ mod tests {
         "memory_max": "32G",
         "pids_max": 8192,
         "disk_max": "200G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       },
@@ -278,7 +278,7 @@ mod tests {
         "memory_max": "32G",
         "pids_max": 8192,
         "disk_max": "200G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       },
@@ -318,7 +318,7 @@ mod tests {
         "memory_max": "32G",
         "pids_max": 8192,
         "disk_max": "200G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       },
@@ -357,7 +357,7 @@ mod tests {
         "memory_max": "32G",
         "pids_max": 8192,
         "disk_max": "200G",
-        "network": "bridge",
+        "network": "vpn",
         "idle_timeout": "0",
         "max_runtime": "0"
       }
@@ -393,7 +393,7 @@ mod tests {
         "memory_max": "16G",
         "pids_max": 4096,
         "disk_max": "100G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       }
@@ -429,7 +429,7 @@ mod tests {
         "memory_max": "16G",
         "pids_max": 4096,
         "disk_max": "100G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       }
@@ -441,7 +441,7 @@ mod tests {
         "memory_max": "32G",
         "pids_max": 8192,
         "disk_max": "200G",
-        "network": "private",
+        "network": "none",
         "idle_timeout": "0",
         "max_runtime": "0"
       }
@@ -477,7 +477,7 @@ mod tests {
         "memory_max": "16G",
         "pids_max": 4096,
         "disk_max": "100G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0",
         "typo": "ignored"

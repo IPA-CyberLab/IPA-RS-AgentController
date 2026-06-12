@@ -2,9 +2,9 @@ use agent_core::config::AgentConfig;
 use agent_core::model::{EnvState, LimitOverrides, SessionState};
 use agent_core::protocol::parse_response_json;
 use agent_core::protocol::{Request, Response};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(not(target_os = "linux"))]
@@ -35,6 +35,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Init(InitArgs),
+    Ls,
     New(NewArgs),
     Base {
         #[command(subcommand)]
@@ -263,6 +264,10 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
                 args.push(agentfs.display().to_string());
             }
         }
+        Command::Ls => {
+            args.push("env".to_string());
+            args.push("list".to_string());
+        }
         Command::New(new) => {
             args.push("new".to_string());
             args.push("-t".to_string());
@@ -418,6 +423,7 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             }
             Ok(Request::Init { agentfs })
         }
+        Command::Ls => Ok(Request::EnvList),
         Command::New(args) => Ok(Request::New {
             target: args.target.clone(),
             base: args.base.clone(),
@@ -650,6 +656,7 @@ fn run_desktop_shell(rootfs_path: PathBuf, command: Vec<String>) -> Result<i32> 
 
 #[cfg(not(windows))]
 fn run_desktop_shell_command(shell: &mut StdCommand, rootfs_path: PathBuf) -> Result<i32> {
+    apply_desktop_shell_env(shell, &rootfs_path)?;
     let status = shell.current_dir(rootfs_path).status()?;
     Ok(status.code().unwrap_or(128))
 }
@@ -680,6 +687,17 @@ fn default_desktop_shell_command() -> StdCommand {
 #[cfg(not(windows))]
 fn default_desktop_shell_command() -> StdCommand {
     StdCommand::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()))
+}
+
+#[cfg(not(windows))]
+fn apply_desktop_shell_env(shell: &mut StdCommand, rootfs_path: &Path) -> Result<()> {
+    let tmpdir = rootfs_path.join(".tmp");
+    std::fs::create_dir_all(&tmpdir)
+        .with_context(|| format!("failed to create desktop tmpdir {}", tmpdir.display()))?;
+    shell.env("HOME", rootfs_path);
+    shell.env("ZDOTDIR", rootfs_path);
+    shell.env("TMPDIR", tmpdir);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -800,15 +818,19 @@ fn session_state_label(state: &SessionState) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    use super::apply_desktop_shell_env;
     use super::{
         desktop_shell_command, effective_agentfs, env_state_label, machinectl_attach_args,
         needs_remote_tty, parse_response_line, remote_agentctl_args, remote_shell_command,
         session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command,
-        EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs,
+        EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs, StdCommand,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
     use agent_core::protocol::Request;
+    use clap::Parser;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     #[test]
@@ -915,7 +937,7 @@ mod tests {
                 memory_max: Some("32G".to_string()),
                 pids_max: Some(8192),
                 disk_max: Some("200G".to_string()),
-                network: Some("private-nat".to_string()),
+                network: Some("bridge".to_string()),
                 idle_timeout: Some("30m".to_string()),
                 max_runtime: Some("6h".to_string()),
                 command: vec!["echo".to_string(), "ready".to_string()],
@@ -938,7 +960,7 @@ mod tests {
                 assert_eq!(limits.memory_max.as_deref(), Some("32G"));
                 assert_eq!(limits.pids_max, Some(8192));
                 assert_eq!(limits.disk_max.as_deref(), Some("200G"));
-                assert_eq!(limits.network.as_deref(), Some("private-nat"));
+                assert_eq!(limits.network.as_deref(), Some("bridge"));
                 assert_eq!(limits.idle_timeout.as_deref(), Some("30m"));
                 assert_eq!(limits.max_runtime.as_deref(), Some("6h"));
                 assert_eq!(command, vec!["echo".to_string(), "ready".to_string()]);
@@ -1029,7 +1051,7 @@ mod tests {
                     memory_max: Some("32G".to_string()),
                     pids_max: Some(8192),
                     disk_max: Some("200G".to_string()),
-                    network: Some("private".to_string()),
+                    network: Some("none".to_string()),
                     idle_timeout: Some("30m".to_string()),
                     max_runtime: Some("6h".to_string()),
                 },
@@ -1050,10 +1072,21 @@ mod tests {
                 assert_eq!(limits.memory_max.as_deref(), Some("32G"));
                 assert_eq!(limits.pids_max, Some(8192));
                 assert_eq!(limits.disk_max.as_deref(), Some("200G"));
-                assert_eq!(limits.network.as_deref(), Some("private"));
+                assert_eq!(limits.network.as_deref(), Some("none"));
                 assert_eq!(limits.idle_timeout.as_deref(), Some("30m"));
                 assert_eq!(limits.max_runtime.as_deref(), Some("6h"));
             }
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn top_level_ls_maps_to_env_list_request() {
+        let cli = Cli::try_parse_from(["agentctl", "--agentfs", "/agentfs", "ls"]).unwrap();
+
+        assert!(matches!(cli.command, Command::Ls));
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::EnvList => {}
             other => panic!("unexpected request {other:?}"),
         }
     }
@@ -1093,6 +1126,28 @@ mod tests {
 
         assert_eq!(program, "sandbox-exec");
         assert_eq!(args, vec!["-p", "(version 1)", "/bin/sh"]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_shell_env_points_writes_inside_rootfs() {
+        let rootfs =
+            std::env::temp_dir().join(format!("agentctl-desktop-env-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&rootfs);
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut command = StdCommand::new("/bin/sh");
+
+        apply_desktop_shell_env(&mut command, &rootfs).unwrap();
+
+        assert_eq!(command_env_path(&command, "HOME"), Some(rootfs.clone()));
+        assert_eq!(command_env_path(&command, "ZDOTDIR"), Some(rootfs.clone()));
+        assert_eq!(
+            command_env_path(&command, "TMPDIR"),
+            Some(rootfs.join(".tmp"))
+        );
+        assert!(rootfs.join(".tmp").is_dir());
+
+        std::fs::remove_dir_all(&rootfs).unwrap();
     }
 
     #[test]
@@ -1231,6 +1286,23 @@ mod tests {
     }
 
     #[test]
+    fn remote_ls_rebuilds_as_env_list() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            remote: Some("devbox".to_string()),
+            remote_agentctl: "/usr/local/bin/agentctl".to_string(),
+            command: Command::Ls,
+        };
+
+        assert_eq!(
+            remote_agentctl_args(&cli),
+            vec!["--agentfs", "/agentfs", "env", "list"]
+        );
+        assert!(!needs_remote_tty(&cli.command));
+    }
+
+    #[test]
     fn remote_shell_command_quotes_arguments_for_ssh_shell() {
         let command = remote_shell_command(
             "/usr/local/bin/agentctl",
@@ -1277,5 +1349,13 @@ mod tests {
         assert_eq!(env_state_label(&EnvState::QuotaExceeded), "quota_exceeded");
         assert_eq!(session_state_label(&SessionState::Running), "running");
         assert_eq!(session_state_label(&SessionState::Stopped), "stopped");
+    }
+
+    #[cfg(not(windows))]
+    fn command_env_path(command: &StdCommand, name: &str) -> Option<PathBuf> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(name))
+            .and_then(|(_, value)| value.map(PathBuf::from))
     }
 }

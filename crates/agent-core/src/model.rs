@@ -98,7 +98,7 @@ impl Default for Limits {
             memory_max: "16G".to_string(),
             pids_max: 4096,
             disk_max: "100G".to_string(),
-            network: "private-nat".to_string(),
+            network: "host".to_string(),
             idle_timeout: "0".to_string(),
             max_runtime: "0".to_string(),
         }
@@ -147,9 +147,9 @@ impl NetworkPolicy {
 
 impl Limits {
     pub fn validate(&self) -> Result<()> {
-        if !matches!(self.network.as_str(), "private-nat" | "private") {
+        if !matches!(self.network.as_str(), "host" | "bridge" | "none") {
             bail!(
-                "unsupported network mode {}; use private-nat or private",
+                "unsupported network mode {}; use host, bridge, or none",
                 self.network
             );
         }
@@ -184,6 +184,18 @@ impl Limits {
             self.max_runtime = value;
         }
         self
+    }
+
+    pub fn network_allows_host_access(&self) -> bool {
+        matches!(self.network.as_str(), "host" | "bridge")
+    }
+
+    pub fn network_uses_bridge(&self) -> bool {
+        self.network == "bridge"
+    }
+
+    pub fn network_is_disabled(&self) -> bool {
+        self.network == "none"
     }
 
     pub fn idle_timeout_duration(&self) -> Result<Option<Duration>> {
@@ -292,25 +304,20 @@ mod tests {
 
     #[test]
     fn limits_accept_supported_network_modes() {
-        Limits {
-            network: "private-nat".to_string(),
-            ..Limits::default()
+        for network in ["host", "bridge", "none"] {
+            Limits {
+                network: network.to_string(),
+                ..Limits::default()
+            }
+            .validate()
+            .unwrap();
         }
-        .validate()
-        .unwrap();
-
-        Limits {
-            network: "private".to_string(),
-            ..Limits::default()
-        }
-        .validate()
-        .unwrap();
     }
 
     #[test]
     fn limits_reject_unknown_network_modes() {
         let limits = Limits {
-            network: "bridge".to_string(),
+            network: "private-nat".to_string(),
             ..Limits::default()
         };
 
@@ -367,7 +374,7 @@ mod tests {
             memory_max: Some("32G".to_string()),
             pids_max: Some(8192),
             disk_max: Some("200G".to_string()),
-            network: Some("private".to_string()),
+            network: Some("none".to_string()),
             idle_timeout: Some("30m".to_string()),
             max_runtime: Some("6h".to_string()),
         });
@@ -376,7 +383,7 @@ mod tests {
         assert_eq!(limits.memory_max, "32G");
         assert_eq!(limits.pids_max, 8192);
         assert_eq!(limits.disk_max, "200G");
-        assert_eq!(limits.network, "private");
+        assert_eq!(limits.network, "none");
         assert_eq!(limits.idle_timeout, "30m");
         assert_eq!(limits.max_runtime, "6h");
     }

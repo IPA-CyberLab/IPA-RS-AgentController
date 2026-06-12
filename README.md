@@ -6,7 +6,7 @@ The implementation uses:
 
 - Btrfs read-only base snapshots and writable child snapshots
 - Btrfs qgroup quotas per child rootfs
-- systemd-nspawn machines with `PrivateUsers=yes` and private networking or private NAT
+- systemd-nspawn machines with `PrivateUsers=yes` and `host`, `bridge`, or `none` networking
 - tmux-backed persistent PTY sessions running inside each child machine
 - JSON metadata under `/agentfs`
 - a Unix socket API at `/agentfs/runtime/sockets/agent-forkd.sock`
@@ -108,7 +108,8 @@ daemon locally. The native backend uses APFS `clonefile(2)` on macOS and
 be derived without full copies on filesystems that support those primitives. It
 currently supports local exec/shell plus `workspace-patch` and
 `rootfs-changed-paths` export. macOS exec runs through `sandbox-exec` with
-network access denied and writes limited to the env rootfs. Windows exec runs
+writes limited to the env rootfs; `network=host` and `network=bridge` permit
+normal network access, while `network=none` denies network access. Windows exec runs
 inside a Job Object so child processes are grouped, capped by `pids_max`, and
 terminated when the job closes. This is still weaker than the Linux
 `systemd-nspawn` backend: macOS native shells run through the same sandbox
@@ -184,7 +185,7 @@ agentctl env create codex-1 --from base-001 \
 
 For `cpu_max`, `memory_max`, `pids_max`, `disk_max`, `idle_timeout`, and `max_runtime`, `0` means unlimited. Unlimited systemd properties are omitted, and unlimited disk does not apply a Btrfs qgroup limit. Nonzero `idle_timeout` values are checked during status/list refresh and stop a running env after the recorded `last_active_at` age exceeds the limit.
 
-The default `network=private-nat` profile launches nspawn with a veth in the `agent-forkd` network zone and writes `/etc/systemd/network/80-agent-forkd-private-nat.network` for the `vz-agent-forkd` bridge. Child DNS uses `ResolvConf=copy-host` / `--resolv-conf=copy-host` so apt, GitHub, and API egress can resolve names through the Project VM resolver. Use `--network private` to request an isolated namespace without egress.
+The default `network=host` profile uses host networking. Use `--network bridge` on Linux for the nspawn veth/NAT bridge, which writes `/etc/systemd/network/80-agent-forkd-bridge.network` for the `vz-agent-forkd` bridge. Child DNS uses `ResolvConf=copy-host` / `--resolv-conf=copy-host` so apt, GitHub, and API egress can resolve names through the Project VM resolver. Use `--network none` to request an isolated namespace without egress.
 Profiles also accept an optional `network_policy` block with `egress_proxy` and `allowlist` fields so proxy or allowlist enforcement can be added without changing the profile schema.
 
 ## Metadata Layout
@@ -219,13 +220,14 @@ Session operations invoke `tmux` through `machinectl shell` inside the child nsp
 
 ## Security Model
 
-Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users and private networking/private NAT, marks `/agentfs` and common Docker socket paths inaccessible, and keeps base and sibling rootfs trees outside the child view.
+Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users, applies the selected network mode, marks `/agentfs` and common Docker socket paths inaccessible, and keeps base and sibling rootfs trees outside the child view.
 
 On macOS and Windows, the native desktop backend is copy-on-write workspace
 isolation, not a VM boundary. The env tree is cloned without a full copy where
-the filesystem supports it. macOS exec applies a sandbox profile that denies
-networking and host writes outside the env rootfs while still allowing host
-reads needed to run installed tools. Windows exec uses a Job Object for process
+the filesystem supports it. macOS exec applies a sandbox profile that limits
+writes to the env rootfs, allows host reads needed to run installed tools, and
+uses the profile's `network` mode to allow (`host`/`bridge`) or deny (`none`)
+network access. Windows exec uses a Job Object for process
 lifetime and process-count containment, but it does not yet provide filesystem
 or network isolation equivalent to Linux namespaces. macOS interactive shells
 also use that sandbox profile; Windows interactive shells run in a Job Object

@@ -129,10 +129,11 @@ async fn run_desktop_isolated(
     cwd: &Path,
     program: &str,
     args: &[String],
-    _limits: &Limits,
+    limits: &Limits,
 ) -> Result<CmdOutput> {
-    let profile = macos_sandbox_profile(cwd);
+    let profile = macos_sandbox_profile(cwd, &limits.network);
     let mut command = Command::new("sandbox-exec");
+    apply_macos_desktop_env(cwd, &mut command, &limits.network)?;
     command
         .current_dir(cwd)
         .arg("-p")
@@ -151,18 +152,29 @@ async fn run_desktop_isolated(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn macos_sandbox_profile(rootfs: &Path) -> String {
+pub(crate) fn macos_sandbox_profile(rootfs: &Path, network: &str) -> String {
     let rootfs = scheme_string(rootfs.display().to_string().as_str());
+    let network_rule = macos_network_sandbox_rule(network);
     format!(
         r#"(version 1)
 (deny default)
 (allow process*)
 (allow sysctl-read)
 (allow file-read*)
+(allow file-ioctl)
 (allow file-write* (subpath "{rootfs}"))
-(deny network*)
+{network_rule}
 "#
     )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_network_sandbox_rule(network: &str) -> &'static str {
+    match network {
+        "host" | "bridge" => "(allow network*)",
+        "none" => "(deny network*)",
+        _ => "(deny network*)",
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -171,13 +183,14 @@ fn spawn_desktop_session(
     program: &str,
     args: &[String],
     log_path: &Path,
-    _limits: &Limits,
+    limits: &Limits,
 ) -> Result<u32> {
     let mut command = Command::new("sandbox-exec");
+    apply_macos_desktop_env(cwd, &mut command, &limits.network)?;
     command
         .current_dir(cwd)
         .arg("-p")
-        .arg(macos_sandbox_profile(cwd))
+        .arg(macos_sandbox_profile(cwd, &limits.network))
         .arg(program)
         .args(args);
     spawn_logged(command, log_path)
@@ -186,6 +199,21 @@ fn spawn_desktop_session(
 #[cfg(target_os = "macos")]
 fn scheme_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "macos")]
+fn apply_macos_desktop_env(cwd: &Path, command: &mut Command, network: &str) -> Result<()> {
+    let tmpdir = cwd.join(".tmp");
+    std::fs::create_dir_all(&tmpdir)
+        .with_context(|| format!("failed to create desktop tmpdir {}", tmpdir.display()))?;
+    command.env("HOME", cwd);
+    command.env("ZDOTDIR", cwd);
+    command.env("TMPDIR", tmpdir);
+    command.env("AGENT_NETWORK", network);
+    if let Ok(host_home) = std::env::var("HOME") {
+        command.env("HOST_HOME", host_home);
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

@@ -57,8 +57,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_env_metadata("claude-1", "base-001", "created");
     run(&["agentctl", "env", "start", "codex-1"]);
     run(&["agentctl", "env", "start", "claude-1"]);
-    assert_nspawn_config_for("codex-1");
-    assert_private_nat_network_config();
+    assert_nspawn_host_config_for("codex-1");
     assert!(Path::new("/agentfs/envs/codex-1/logs/nspawn.log").exists());
     assert_file_contains("/agentfs/envs/codex-1/logs/agent-forkd.log", "env created");
     assert_file_contains("/agentfs/envs/codex-1/logs/agent-forkd.log", "env started");
@@ -93,7 +92,7 @@ fn goal_sequence_runs_in_privileged_project_vm() {
         text(&["agentctl", "exec", "claude-1", "--", "hostname"]).trim(),
         "af-claude-1"
     );
-    assert_runtime_namespaces_are_isolated("codex-1", "claude-1");
+    assert_runtime_user_namespace_is_isolated("codex-1");
     assert_systemd_cgroup_limits("codex-1");
     let codex_qgroup = btrfs_qgroup_id("/agentfs/envs/codex-1/rootfs");
     assert_btrfs_qgroup_has_referenced_limit(&codex_qgroup, "/agentfs/envs/codex-1/rootfs");
@@ -101,7 +100,8 @@ fn goal_sequence_runs_in_privileged_project_vm() {
     assert_last_active_advances_after_exec("codex-1");
     assert_idle_timeout_stops_env();
     assert_max_runtime_limit_applies();
-    assert_private_network_override_applies();
+    assert_bridge_network_override_applies();
+    assert_none_network_override_applies();
 
     assert_eq!(
         text(&["agentctl", "exec", "codex-1", "--", "sudo", "whoami"]).trim(),
@@ -498,32 +498,62 @@ fn assert_max_runtime_limit_applies() {
     assert_btrfs_qgroup_removed(&runtime_qgroup, "/agentfs");
 }
 
-fn assert_private_network_override_applies() {
+fn assert_bridge_network_override_applies() {
     run(&[
         "agentctl",
         "env",
         "create",
-        "private-1",
+        "bridge-1",
         "--from",
         "base-001",
         "--profile",
         "privileged-dev",
         "--network",
-        "private",
+        "bridge",
     ]);
     assert_eq!(
-        json_file("/agentfs/envs/private-1/meta.json")["limits"]["network"],
-        "private"
+        json_file("/agentfs/envs/bridge-1/meta.json")["limits"]["network"],
+        "bridge"
     );
-    run(&["agentctl", "env", "start", "private-1"]);
-    let private_status = json(&["agentctl", "env", "status", "private-1"]);
-    assert_env_status(&private_status, "private-1", "base-001", "running");
-    assert_nspawn_private_network_config_for("private-1");
-    let private_qgroup = btrfs_qgroup_id("/agentfs/envs/private-1/rootfs");
-    run(&["agentctl", "env", "destroy", "private-1"]);
-    assert!(!Path::new("/agentfs/envs/private-1").exists());
-    assert!(!Path::new("/etc/systemd/nspawn/af-private-1.nspawn").exists());
-    assert_btrfs_qgroup_removed(&private_qgroup, "/agentfs");
+    run(&["agentctl", "env", "start", "bridge-1"]);
+    let bridge_status = json(&["agentctl", "env", "status", "bridge-1"]);
+    assert_env_status(&bridge_status, "bridge-1", "base-001", "running");
+    assert_nspawn_bridge_config_for("bridge-1");
+    assert_bridge_network_config();
+    assert_bridge_network_namespace_is_isolated("bridge-1");
+    let bridge_qgroup = btrfs_qgroup_id("/agentfs/envs/bridge-1/rootfs");
+    run(&["agentctl", "env", "destroy", "bridge-1"]);
+    assert!(!Path::new("/agentfs/envs/bridge-1").exists());
+    assert!(!Path::new("/etc/systemd/nspawn/af-bridge-1.nspawn").exists());
+    assert_btrfs_qgroup_removed(&bridge_qgroup, "/agentfs");
+}
+
+fn assert_none_network_override_applies() {
+    run(&[
+        "agentctl",
+        "env",
+        "create",
+        "none-1",
+        "--from",
+        "base-001",
+        "--profile",
+        "privileged-dev",
+        "--network",
+        "none",
+    ]);
+    assert_eq!(
+        json_file("/agentfs/envs/none-1/meta.json")["limits"]["network"],
+        "none"
+    );
+    run(&["agentctl", "env", "start", "none-1"]);
+    let none_status = json(&["agentctl", "env", "status", "none-1"]);
+    assert_env_status(&none_status, "none-1", "base-001", "running");
+    assert_nspawn_none_network_config_for("none-1");
+    let none_qgroup = btrfs_qgroup_id("/agentfs/envs/none-1/rootfs");
+    run(&["agentctl", "env", "destroy", "none-1"]);
+    assert!(!Path::new("/agentfs/envs/none-1").exists());
+    assert!(!Path::new("/etc/systemd/nspawn/af-none-1.nspawn").exists());
+    assert_btrfs_qgroup_removed(&none_qgroup, "/agentfs");
 }
 
 fn assert_base_metadata(base_id: &str) {
@@ -617,7 +647,7 @@ fn assert_env_metadata(env_id: &str, base_id: &str, state: &str) {
     assert_eq!(metadata["limits"]["memory_max"], "16G");
     assert_eq!(metadata["limits"]["pids_max"], 4096);
     assert_eq!(metadata["limits"]["disk_max"], "100G");
-    assert_eq!(metadata["limits"]["network"], "private-nat");
+    assert_eq!(metadata["limits"]["network"], "host");
     assert_eq!(metadata["limits"]["idle_timeout"], "0");
     assert_eq!(metadata["limits"]["max_runtime"], "0");
     assert_eq!(metadata["network_policy"]["egress_proxy"], Value::Null);
@@ -811,7 +841,24 @@ fn assert_session_stopped(env_id: &str, session_id: &str) {
     );
 }
 
-fn assert_nspawn_config_for(env_id: &str) {
+fn assert_nspawn_host_config_for(env_id: &str) {
+    let path = format!("/etc/systemd/nspawn/af-{env_id}.nspawn");
+    assert_file_contains(&path, "Boot=yes");
+    assert_file_contains(&path, "PrivateUsers=pick");
+    assert_file_contains(&path, "PrivateUsersOwnership=map");
+    assert_file_contains(&path, &format!("Hostname=af-{env_id}"));
+    assert_file_contains(&path, "ReadOnly=no");
+    assert_file_contains(&path, "ResolvConf=copy-host");
+    assert_file_contains(&path, "Inaccessible=/agentfs");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/run/agent-forkd.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/run/docker.sock");
+    assert_file_contains(&path, "BindReadOnly=/dev/null:/var/run/docker.sock");
+    assert_file_not_contains(&path, "VirtualEthernet=yes");
+    assert_file_not_contains(&path, "Zone=agent-forkd");
+    assert_file_not_contains(&path, "Private=yes");
+}
+
+fn assert_nspawn_bridge_config_for(env_id: &str) {
     let path = format!("/etc/systemd/nspawn/af-{env_id}.nspawn");
     assert_file_contains(&path, "Boot=yes");
     assert_file_contains(&path, "PrivateUsers=pick");
@@ -827,7 +874,7 @@ fn assert_nspawn_config_for(env_id: &str) {
     assert_file_contains(&path, "Zone=agent-forkd");
 }
 
-fn assert_nspawn_private_network_config_for(env_id: &str) {
+fn assert_nspawn_none_network_config_for(env_id: &str) {
     let path = format!("/etc/systemd/nspawn/af-{env_id}.nspawn");
     assert_file_contains(&path, "Boot=yes");
     assert_file_contains(&path, "PrivateUsers=pick");
@@ -844,8 +891,8 @@ fn assert_nspawn_private_network_config_for(env_id: &str) {
     assert_file_not_contains(&path, "Zone=agent-forkd");
 }
 
-fn assert_private_nat_network_config() {
-    let path = "/etc/systemd/network/80-agent-forkd-private-nat.network";
+fn assert_bridge_network_config() {
+    let path = "/etc/systemd/network/80-agent-forkd-bridge.network";
     assert_file_contains(path, "Name=vz-agent-forkd");
     assert_file_contains(path, "Address=10.77.0.1/24");
     assert_file_contains(path, "DHCPServer=yes");
@@ -910,40 +957,29 @@ fn assert_btrfs_qgroup_has_referenced_limit(qgroup_id: &str, path: &str) {
     panic!("qgroup {qgroup_id} was not present in qgroup output:\n{qgroups}");
 }
 
-fn assert_runtime_namespaces_are_isolated(left_env_id: &str, right_env_id: &str) {
+fn assert_bridge_network_namespace_is_isolated(env_id: &str) {
     let host_network = text(&["readlink", "/proc/self/ns/net"]);
-    let left_network = text(&[
+    let env_network = text(&[
         "agentctl",
         "exec",
-        left_env_id,
-        "--",
-        "readlink",
-        "/proc/self/ns/net",
-    ]);
-    let right_network = text(&[
-        "agentctl",
-        "exec",
-        right_env_id,
+        env_id,
         "--",
         "readlink",
         "/proc/self/ns/net",
     ]);
     assert_ne!(
         host_network.trim(),
-        left_network.trim(),
-        "{left_env_id} reused the host network namespace"
+        env_network.trim(),
+        "{env_id} reused the host network namespace"
     );
-    assert_ne!(
-        left_network.trim(),
-        right_network.trim(),
-        "{left_env_id} and {right_env_id} shared a network namespace"
-    );
+}
 
+fn assert_runtime_user_namespace_is_isolated(env_id: &str) {
     let host_user = text(&["readlink", "/proc/self/ns/user"]);
     let left_user = text(&[
         "agentctl",
         "exec",
-        left_env_id,
+        env_id,
         "--",
         "readlink",
         "/proc/self/ns/user",
@@ -951,13 +987,13 @@ fn assert_runtime_namespaces_are_isolated(left_env_id: &str, right_env_id: &str)
     assert_ne!(
         host_user.trim(),
         left_user.trim(),
-        "{left_env_id} reused the host user namespace"
+        "{env_id} reused the host user namespace"
     );
 
     let uid_map = text(&[
         "agentctl",
         "exec",
-        left_env_id,
+        env_id,
         "--",
         "bash",
         "-lc",
@@ -967,19 +1003,19 @@ fn assert_runtime_namespaces_are_isolated(left_env_id: &str, right_env_id: &str)
     assert_eq!(
         fields.first().copied(),
         Some("0"),
-        "{left_env_id} uid_map did not start at child root uid 0:\n{uid_map}"
+        "{env_id} uid_map did not start at child root uid 0:\n{uid_map}"
     );
     assert_ne!(
         fields.get(1).copied(),
         Some("0"),
-        "{left_env_id} mapped child root directly to Project VM root:\n{uid_map}"
+        "{env_id} mapped child root directly to Project VM root:\n{uid_map}"
     );
     assert!(
         fields
             .get(2)
             .and_then(|extent| extent.parse::<u64>().ok())
             .is_some_and(|extent| extent > 0),
-        "{left_env_id} uid_map had no positive extent:\n{uid_map}"
+        "{env_id} uid_map had no positive extent:\n{uid_map}"
     );
 }
 

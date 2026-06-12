@@ -6,7 +6,7 @@ use crate::command::{CmdOutput, CommandRunner};
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
 use crate::model::{
-    machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, RootfsBackend, Session,
+    machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, Limits, RootfsBackend, Session,
     SessionState, SessionType,
 };
 use crate::protocol::{Request, Response};
@@ -108,8 +108,13 @@ impl DesktopService {
             }
             Request::Shell { id } => {
                 let env = self.shell_target(&id).await?;
+                let base = self.layout.read_base(&env.base_id).await?;
                 Ok(Response::DesktopShell {
-                    command: desktop_shell_command(&env.rootfs_path),
+                    command: desktop_shell_command(
+                        &env.rootfs_path,
+                        Some(&base.source),
+                        &env.limits,
+                    ),
                     rootfs_path: env.rootfs_path,
                 })
             }
@@ -169,8 +174,9 @@ impl DesktopService {
         self.ensure_env_started(target).await?;
         if command.is_empty() {
             let env = self.shell_target(target).await?;
+            let base = self.layout.read_base(&env.base_id).await?;
             Ok(Response::DesktopShell {
-                command: desktop_shell_command(&env.rootfs_path),
+                command: desktop_shell_command(&env.rootfs_path, Some(&base.source), &env.limits),
                 rootfs_path: env.rootfs_path,
             })
         } else {
@@ -782,22 +788,47 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
-fn desktop_shell_command(rootfs_path: &Path) -> Vec<String> {
-    platform_desktop_shell_command(rootfs_path)
+fn desktop_shell_command(
+    rootfs_path: &Path,
+    host_workspace: Option<&str>,
+    limits: &Limits,
+) -> Vec<String> {
+    platform_desktop_shell_command(rootfs_path, host_workspace, limits)
 }
 
 #[cfg(target_os = "macos")]
-fn platform_desktop_shell_command(rootfs_path: &Path) -> Vec<String> {
-    vec![
+fn platform_desktop_shell_command(
+    rootfs_path: &Path,
+    host_workspace: Option<&str>,
+    limits: &Limits,
+) -> Vec<String> {
+    let tmpdir = rootfs_path.join(".tmp");
+    let mut command = vec![
         "sandbox-exec".to_string(),
         "-p".to_string(),
-        macos_sandbox_profile(rootfs_path),
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
-    ]
+        macos_sandbox_profile(rootfs_path, &limits.network),
+        "/usr/bin/env".to_string(),
+        format!("HOME={}", rootfs_path.display()),
+        format!("ZDOTDIR={}", rootfs_path.display()),
+        format!("TMPDIR={}", tmpdir.display()),
+        format!("AGENT_NETWORK={}", limits.network),
+    ];
+    if let Ok(host_home) = std::env::var("HOME") {
+        command.push(format!("HOST_HOME={host_home}"));
+    }
+    if let Some(host_workspace) = host_workspace {
+        command.push(format!("HOST_WORKSPACE={host_workspace}"));
+    }
+    command.push(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()));
+    command
 }
 
 #[cfg(not(target_os = "macos"))]
-fn platform_desktop_shell_command(_rootfs_path: &Path) -> Vec<String> {
+fn platform_desktop_shell_command(
+    _rootfs_path: &Path,
+    _host_workspace: Option<&str>,
+    _limits: &Limits,
+) -> Vec<String> {
     Vec::new()
 }
 
@@ -924,9 +955,44 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn non_macos_desktop_shell_uses_client_default_shell() {
-        let command = super::desktop_shell_command(Path::new("/agentfs/envs/codex-1/rootfs"));
+        let command = super::desktop_shell_command(
+            Path::new("/agentfs/envs/codex-1/rootfs"),
+            None,
+            &Limits::default(),
+        );
 
         assert!(command.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_desktop_shell_sets_env_inside_sandbox_command() {
+        let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
+        let command = super::desktop_shell_command(
+            rootfs,
+            Some("/Users/mizuame/Desktop/project"),
+            &Limits::default(),
+        );
+
+        assert_eq!(command[0], "sandbox-exec");
+        assert_eq!(command[3], "/usr/bin/env");
+        assert!(command[2].contains("(allow network*)"));
+        assert!(command.contains(&"HOME=/agentfs/envs/codex-1/rootfs".to_string()));
+        assert!(command.contains(&"ZDOTDIR=/agentfs/envs/codex-1/rootfs".to_string()));
+        assert!(command.contains(&"TMPDIR=/agentfs/envs/codex-1/rootfs/.tmp".to_string()));
+        assert!(command.contains(&"AGENT_NETWORK=host".to_string()));
+        assert!(command.contains(&"HOST_WORKSPACE=/Users/mizuame/Desktop/project".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_desktop_shell_can_disable_network() {
+        let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
+        let mut limits = Limits::default();
+        limits.network = "none".to_string();
+        let command = super::desktop_shell_command(rootfs, None, &limits);
+
+        assert!(command[2].contains("(deny network*)"));
     }
 
     async fn create_native_env_fixture(service: &DesktopService) {

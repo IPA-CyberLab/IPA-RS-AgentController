@@ -23,8 +23,8 @@ impl Default for Nspawn {
 }
 
 impl Nspawn {
-    const PRIVATE_NAT_ZONE: &str = "agent-forkd";
-    const PRIVATE_NAT_BRIDGE: &str = "vz-agent-forkd";
+    const BRIDGE_ZONE: &str = "agent-forkd";
+    const BRIDGE_INTERFACE: &str = "vz-agent-forkd";
     const INACCESSIBLE_PATHS: &[&str] = &["/agentfs"];
     const MASKED_SOCKET_PATHS: &[&str] = &[
         "/run/agent-forkd.sock",
@@ -37,10 +37,12 @@ impl Nspawn {
     }
 
     pub fn config_text(env: &Env) -> String {
-        let network = if env.limits.network == "private-nat" {
-            format!("VirtualEthernet=yes\nZone={}\n", Self::PRIVATE_NAT_ZONE)
-        } else {
+        let network = if env.limits.network_uses_bridge() {
+            format!("VirtualEthernet=yes\nZone={}\n", Self::BRIDGE_ZONE)
+        } else if env.limits.network_is_disabled() {
             "Private=yes\n".to_string()
+        } else {
+            String::new()
         };
         let inaccessible_paths = Self::INACCESSIBLE_PATHS
             .iter()
@@ -65,10 +67,10 @@ impl Nspawn {
         )
     }
 
-    pub fn private_nat_network_text() -> String {
+    pub fn bridge_network_text() -> String {
         format!(
             "[Match]\nName={bridge}\n\n[Network]\nAddress=10.77.0.1/24\nDHCPServer=yes\nIPMasquerade=ipv4\nIPForward=ipv4\n\n[DHCPServer]\nPoolOffset=100\nPoolSize=100\nEmitDNS=yes\nDNS=1.1.1.1\n",
-            bridge = Self::PRIVATE_NAT_BRIDGE
+            bridge = Self::BRIDGE_INTERFACE
         )
     }
 
@@ -94,12 +96,12 @@ impl Nspawn {
         }
     }
 
-    pub async fn write_private_nat_network_config(&self) -> Result<PathBuf> {
-        let path = self.network_dir.join("80-agent-forkd-private-nat.network");
+    pub async fn write_bridge_network_config(&self) -> Result<PathBuf> {
+        let path = self.network_dir.join("80-agent-forkd-bridge.network");
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        write_text_file(&path, Self::private_nat_network_text()).await?;
+        write_text_file(&path, Self::bridge_network_text()).await?;
         Ok(path)
     }
 
@@ -148,10 +150,10 @@ impl Nspawn {
                 .iter()
                 .map(|path| format!("--bind-ro=/dev/null:{path}")),
         );
-        if env.limits.network == "private-nat" {
+        if env.limits.network_uses_bridge() {
             args.push("--network-veth".to_string());
-            args.push(format!("--network-zone={}", Self::PRIVATE_NAT_ZONE));
-        } else {
+            args.push(format!("--network-zone={}", Self::BRIDGE_ZONE));
+        } else if env.limits.network_is_disabled() {
             args.push("--private-network".to_string());
         }
         Ok(args)
@@ -161,8 +163,8 @@ impl Nspawn {
         let unit = unit_name(&env.id);
         self.stop_unit(&unit).await?;
         self.reset_failed_unit(&unit).await?;
-        if env.limits.network == "private-nat" {
-            self.write_private_nat_network_config().await?;
+        if env.limits.network_uses_bridge() {
+            self.write_bridge_network_config().await?;
             self.runner
                 .run_checked("systemctl", ["reload", "systemd-networkd"])
                 .await?;
@@ -415,7 +417,7 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn nspawn_config_keeps_private_users_and_network() {
+    fn nspawn_config_uses_host_network_by_default() {
         let env = Env {
             id: "codex-1".to_string(),
             base_id: "base-001".to_string(),
@@ -438,8 +440,8 @@ mod tests {
         assert!(text.contains("BindReadOnly=/dev/null:/run/agent-forkd.sock"));
         assert!(text.contains("BindReadOnly=/dev/null:/run/docker.sock"));
         assert!(text.contains("BindReadOnly=/dev/null:/var/run/docker.sock"));
-        assert!(text.contains("VirtualEthernet=yes"));
-        assert!(text.contains("Zone=agent-forkd"));
+        assert!(!text.contains("VirtualEthernet=yes"));
+        assert!(!text.contains("Private=yes"));
         assert!(text.contains("Hostname=af-codex-1"));
     }
 
@@ -469,14 +471,9 @@ mod tests {
         assert!(args.contains(&"--resolv-conf=copy-host".to_string()));
         assert!(args.contains(&"--tmpfs=/tmp".to_string()));
         assert!(args.contains(&"--hostname=af-codex-1".to_string()));
-        assert!(args.contains(&"--network-veth".to_string()));
-        assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
-        assert_eq!(
-            args.iter()
-                .filter(|arg| *arg == "--network-zone=agent-forkd")
-                .count(),
-            1
-        );
+        assert!(!args.contains(&"--network-veth".to_string()));
+        assert!(!args.contains(&"--private-network".to_string()));
+        assert!(!args.iter().any(|arg| arg.starts_with("--network-zone")));
         assert!(args.contains(&"--inaccessible=/agentfs".to_string()));
         assert!(args.contains(&"--bind-ro=/dev/null:/run/agent-forkd.sock".to_string()));
         assert!(args.contains(&"--bind-ro=/dev/null:/run/docker.sock".to_string()));
@@ -490,7 +487,29 @@ mod tests {
     }
 
     #[test]
-    fn private_network_profile_has_no_egress_veth() {
+    fn bridge_network_profile_uses_veth_zone() {
+        let mut env = Env {
+            id: "bridge-1".to_string(),
+            base_id: "base-001".to_string(),
+            backend: RootfsBackend::Btrfs,
+            rootfs_path: "/agentfs/envs/bridge-1/rootfs".into(),
+            machine_name: machine_name("bridge-1"),
+            state: EnvState::Created,
+            profile: "privileged-dev".to_string(),
+            created_at: Utc::now(),
+            last_active_at: Utc::now(),
+            network_policy: Default::default(),
+            limits: Limits::default(),
+            sessions: Vec::new(),
+        };
+        env.limits.network = "bridge".to_string();
+        let args = Nspawn::start_args(&env, None).unwrap();
+        assert!(args.contains(&"--network-veth".to_string()));
+        assert!(args.contains(&"--network-zone=agent-forkd".to_string()));
+    }
+
+    #[test]
+    fn none_network_profile_has_no_egress_veth() {
         let mut env = Env {
             id: "locked-1".to_string(),
             base_id: "base-001".to_string(),
@@ -505,7 +524,7 @@ mod tests {
             limits: Limits::default(),
             sessions: Vec::new(),
         };
-        env.limits.network = "private".to_string();
+        env.limits.network = "none".to_string();
         let args = Nspawn::start_args(&env, None).unwrap();
         assert!(args.contains(&"--private-network".to_string()));
         assert!(!args.iter().any(|arg| arg.starts_with("--network-zone")));
@@ -544,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn private_nat_networkd_config_enables_masquerade() {
-        let text = Nspawn::private_nat_network_text();
+    fn bridge_networkd_config_enables_masquerade() {
+        let text = Nspawn::bridge_network_text();
         assert!(text.contains("Name=vz-agent-forkd"));
         assert!(text.contains("DHCPServer=yes"));
         assert!(text.contains("IPMasquerade=ipv4"));
@@ -700,7 +719,7 @@ mod tests {
             limits: Limits::default(),
             sessions: Vec::new(),
         };
-        env.limits.network = "bridge".to_string();
+        env.limits.network = "private".to_string();
 
         assert!(Nspawn::start_args(&env, None)
             .unwrap_err()

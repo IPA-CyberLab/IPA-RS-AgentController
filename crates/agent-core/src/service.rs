@@ -1324,7 +1324,7 @@ async fn ensure_child_hostname(rootfs: &Path, hostname: &str) -> Result<()> {
 }
 
 async fn ensure_child_network_config(env: &Env) -> Result<()> {
-    if env.limits.network != "private-nat" {
+    if !env.limits.network_uses_bridge() {
         return Ok(());
     }
     let network_path = env
@@ -1466,10 +1466,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn private_nat_enables_child_networkd_for_static_host0_networking() {
+    async fn bridge_network_enables_child_networkd_for_static_host0_networking() {
         let dir = tempfile::tempdir().unwrap();
         let mut env = test_env(EnvState::Created);
         env.rootfs_path = dir.path().to_path_buf();
+        env.limits.network = "bridge".to_string();
 
         ensure_child_network_config(&env).await.unwrap();
 
@@ -1496,8 +1497,22 @@ mod tests {
         .is_ok());
     }
 
+    #[tokio::test]
+    async fn host_network_skips_child_networkd_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = test_env(EnvState::Created);
+        env.rootfs_path = dir.path().to_path_buf();
+
+        ensure_child_network_config(&env).await.unwrap();
+
+        assert!(!dir
+            .path()
+            .join("etc/systemd/network/80-agent-forkd-host0.network")
+            .exists());
+    }
+
     #[test]
-    fn child_ipv4_octet_stays_in_private_nat_host_range() {
+    fn child_ipv4_octet_stays_in_bridge_host_range() {
         for id in ["codex-1", "claude-1", "idle-1", "runtime-1"] {
             assert!((2..=254).contains(&child_ipv4_octet(id)));
         }

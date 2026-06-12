@@ -10,7 +10,7 @@
         "memory_max": "16G",
         "pids_max": 4096,
         "disk_max": "100G",
-        "network": "private-nat",
+        "network": "host",
         "idle_timeout": "0",
         "max_runtime": "0"
       },
