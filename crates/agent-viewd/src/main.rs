@@ -263,8 +263,7 @@ fn ensure_overlay_mounted(
     std::fs::create_dir_all(whiteouts)
         .with_context(|| format!("failed to create whiteouts {}", whiteouts.display()))?;
 
-    let ready = view_root.join(".agent-overlayfs-ready");
-    if ready.is_file() {
+    if overlay_is_ready(view_root) {
         return Ok(());
     }
 
@@ -293,7 +292,7 @@ fn ensure_overlay_mounted(
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if ready.is_file() {
+        if overlay_is_ready(view_root) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -302,6 +301,38 @@ fn ensure_overlay_mounted(
         "agent-overlayfs did not become ready at {} within 5s",
         view_root.display()
     )
+}
+
+#[cfg(target_os = "macos")]
+fn overlay_is_ready(view_root: &Path) -> bool {
+    view_root.join(".agent-overlayfs-ready").is_file() && overlay_mount_is_active(view_root)
+}
+
+#[cfg(target_os = "macos")]
+fn overlay_mount_is_active(view_root: &Path) -> bool {
+    let Ok(output) = Command::new("/sbin/mount").output() else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let mount_point = view_root.display().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .any(|line| overlay_mount_line_matches(line, &mount_point))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn overlay_mount_line_matches(line: &str, mount_point: &str) -> bool {
+    line.contains("agent-overlayfs")
+        && (line.contains(&format!(" on {mount_point} ("))
+            || line.contains(&format!(" on {} (", escape_mount_path(mount_point))))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn escape_mount_path(path: &str) -> String {
+    path.replace(' ', "\\040")
 }
 
 #[cfg(target_os = "macos")]
@@ -511,5 +542,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ok".to_string()]
         );
+    }
+
+    #[test]
+    fn overlay_mount_line_matches_agent_overlayfs_mount() {
+        assert!(super::overlay_mount_line_matches(
+            "agent-overlayfs on /Users/me/.agentfs/envs/codex/view-root (macfuse, local)",
+            "/Users/me/.agentfs/envs/codex/view-root"
+        ));
+        assert!(super::overlay_mount_line_matches(
+            "agent-overlayfs on /Users/me/My\\040Project/view-root (macfuse, local)",
+            "/Users/me/My Project/view-root"
+        ));
+        assert!(!super::overlay_mount_line_matches(
+            "/dev/disk3s1 on /Users/me/.agentfs/envs/codex/view-root (apfs, local)",
+            "/Users/me/.agentfs/envs/codex/view-root"
+        ));
     }
 }
