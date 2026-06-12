@@ -153,6 +153,18 @@ backend: Windows native shells run inside a Job Object rooted at the env
 directory, and native desktop sessions support background create/list/logs/kill
 but not interactive attach yet.
 
+After installing on a macOS host with macFUSE, run the native backend smoke
+test to verify the privileged helper and runtime path view end to end:
+
+```bash
+scripts/macos-native-smoke.sh
+```
+
+The smoke test requires the installed `agent-viewd` to resolve to a root-owned
+setuid helper, checks that `agent-overlayfs` is callable, starts `agent-forkd`,
+verifies `/bin/zsh`, `/usr/bin/env`, `/System`, preserved cwd, and confirms
+that `network=none` cannot reach a local TCP listener while `network=host` can.
+
 ## Requirements
 
 The Project VM must provide Linux, Btrfs, `btrfs-progs`, systemd, `systemd-nspawn`, `machinectl`, `systemd-networkd`, cgroup v2, user namespaces, `tmux`, and `tee`. The full privileged goal sequence also expects Debian/Ubuntu package tooling (`apt` or `apt-get`, `dpkg`, and `sudo`) and the `codex` CLI to be available in the host rootfs before freezing a base.

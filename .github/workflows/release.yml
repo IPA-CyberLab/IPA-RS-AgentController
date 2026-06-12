@@ -56,6 +56,13 @@ jobs:
           fi
           cargo build --release --target "${{ matrix.target }}" "${packages[@]}"
 
+      - name: Check helper scripts
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/macos-native-smoke.sh
+
       - name: Package
         shell: bash
         run: |
@@ -75,6 +82,7 @@ jobs:
           fi
           cp -R packaging/agent-forkd "$staging/packaging/"
           cp -R packaging/systemd "$staging/packaging/"
+          cp -R scripts "$staging/"
           cp README.md LICENSE install.sh install.ps1 "$staging/"
           tar -czf "dist/${{ matrix.archive }}" -C dist "ipa-rs-isolated-agent-${{ matrix.target }}"
 
