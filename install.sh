@@ -162,13 +162,58 @@ install_macos_privileged_helpers() {
   helper_dir="${AGENT_PRIVILEGED_HELPER_DIR:-/usr/local/libexec/ipa-rs-isolated-agent}"
   SUDO="$(sudo_cmd)"
   $SUDO mkdir -p "$helper_dir"
-  $SUDO install -o root -g wheel -m 4755 "$payload_dir/bin/agent-viewd" "$helper_dir/agent-viewd"
-  if [ -f "$payload_dir/bin/agent-overlayfs" ]; then
-    $SUDO install -o root -g wheel -m 0755 "$payload_dir/bin/agent-overlayfs" "$helper_dir/agent-overlayfs"
-    $ln_cmd "$helper_dir/agent-overlayfs" "$INSTALL_DIR/agent-overlayfs"
+  if [ ! -f "$payload_dir/bin/agent-viewd" ]; then
+    echo "error: release payload is missing macOS helper: agent-viewd" >&2
+    exit 1
   fi
+  if [ ! -f "$payload_dir/bin/agent-overlayfs" ]; then
+    echo "error: release payload is missing macOS helper: agent-overlayfs" >&2
+    exit 1
+  fi
+  $SUDO install -o root -g wheel -m 4755 "$payload_dir/bin/agent-viewd" "$helper_dir/agent-viewd"
+  $SUDO install -o root -g wheel -m 0755 "$payload_dir/bin/agent-overlayfs" "$helper_dir/agent-overlayfs"
+  $ln_cmd "$helper_dir/agent-overlayfs" "$INSTALL_DIR/agent-overlayfs"
   $ln_cmd "$helper_dir/agent-viewd" "$INSTALL_DIR/agent-viewd"
+  verify_macos_privileged_helpers "$helper_dir"
   echo "Installed macOS privileged helper: $helper_dir/agent-viewd"
+}
+
+verify_macos_privileged_helpers() {
+  helper_dir="$1"
+  viewd="$helper_dir/agent-viewd"
+  overlayfs="$helper_dir/agent-overlayfs"
+
+  for helper in "$viewd" "$overlayfs" "$INSTALL_DIR/agent-viewd" "$INSTALL_DIR/agent-overlayfs"; do
+    if [ ! -x "$helper" ]; then
+      echo "error: installed helper is not executable: $helper" >&2
+      exit 1
+    fi
+  done
+
+  if [ ! -L "$INSTALL_DIR/agent-viewd" ]; then
+    echo "error: expected agent-viewd symlink at $INSTALL_DIR/agent-viewd" >&2
+    exit 1
+  fi
+  if [ ! -L "$INSTALL_DIR/agent-overlayfs" ]; then
+    echo "error: expected agent-overlayfs symlink at $INSTALL_DIR/agent-overlayfs" >&2
+    exit 1
+  fi
+
+  viewd_owner="$(stat -f '%u' "$viewd")"
+  viewd_mode="$(stat -f '%Sp' "$viewd")"
+  if [ "$viewd_owner" != "0" ]; then
+    echo "error: agent-viewd must be owned by root; got uid $viewd_owner at $viewd" >&2
+    exit 1
+  fi
+  case "$viewd_mode" in
+    ???s*) ;;
+    *)
+      echo "error: agent-viewd must have setuid mode; got $viewd_mode at $viewd" >&2
+      exit 1
+      ;;
+  esac
+
+  "$overlayfs" check
 }
 
 target="$(detect_target)"

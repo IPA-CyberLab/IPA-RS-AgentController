@@ -118,7 +118,9 @@ On macOS, `agent-viewd` is installed as a root-owned setuid helper under
 chroot setup before dropping back to the invoking user. The installer leaves an
 `agent-viewd` symlink in the selected install directory, and also symlinks the
 same-directory `agent-overlayfs` helper for diagnostics and direct helper
-checks. When `AGENT_INSTALL_SERVICE=1` is used on macOS, the LaunchAgent sets
+checks. The installer fails if the privileged helper is not root-owned setuid,
+the helper symlinks are missing, or `agent-overlayfs check` cannot run. When
+`AGENT_INSTALL_SERVICE=1` is used on macOS, the LaunchAgent sets
 `AGENT_VIEWD` to the privileged helper path so `agent-forkd` does not depend on
 the user shell's PATH when starting path-preserving sessions.
 Override the release or destination with environment variables:

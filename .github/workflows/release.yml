@@ -61,6 +61,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sh -n install.sh
           bash -n scripts/macos-native-smoke.sh
 
       - name: Package
