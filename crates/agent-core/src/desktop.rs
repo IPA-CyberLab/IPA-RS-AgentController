@@ -112,6 +112,7 @@ impl DesktopService {
                 Ok(Response::DesktopShell {
                     command: desktop_shell_command(
                         &env.rootfs_path,
+                        &env.id,
                         Some(&base.source),
                         &env.limits,
                     ),
@@ -176,7 +177,12 @@ impl DesktopService {
             let env = self.shell_target(target).await?;
             let base = self.layout.read_base(&env.base_id).await?;
             Ok(Response::DesktopShell {
-                command: desktop_shell_command(&env.rootfs_path, Some(&base.source), &env.limits),
+                command: desktop_shell_command(
+                    &env.rootfs_path,
+                    &env.id,
+                    Some(&base.source),
+                    &env.limits,
+                ),
                 rootfs_path: env.rootfs_path,
             })
         } else {
@@ -790,19 +796,22 @@ fn human_bytes(bytes: u64) -> String {
 
 fn desktop_shell_command(
     rootfs_path: &Path,
+    env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
 ) -> Vec<String> {
-    platform_desktop_shell_command(rootfs_path, host_workspace, limits)
+    platform_desktop_shell_command(rootfs_path, env_id, host_workspace, limits)
 }
 
 #[cfg(target_os = "macos")]
 fn platform_desktop_shell_command(
     rootfs_path: &Path,
+    env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
 ) -> Vec<String> {
     let tmpdir = rootfs_path.join(".tmp");
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut command = vec![
         "sandbox-exec".to_string(),
         "-p".to_string(),
@@ -811,21 +820,60 @@ fn platform_desktop_shell_command(
         format!("HOME={}", rootfs_path.display()),
         format!("ZDOTDIR={}", rootfs_path.display()),
         format!("TMPDIR={}", tmpdir.display()),
+        format!("AGENT_ENV_ID={env_id}"),
         format!("AGENT_NETWORK={}", limits.network),
     ];
+    push_agent_prompt_env(&mut command, env_id, &shell);
     if let Ok(host_home) = std::env::var("HOME") {
         command.push(format!("HOST_HOME={host_home}"));
     }
     if let Some(host_workspace) = host_workspace {
         command.push(format!("HOST_WORKSPACE={host_workspace}"));
     }
-    command.push(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()));
+    push_agent_shell_command(&mut command, shell);
     command
+}
+
+#[cfg(target_os = "macos")]
+fn push_agent_prompt_env(command: &mut Vec<String>, env_id: &str, shell: &str) {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell);
+    if shell_name.contains("zsh") {
+        command.push(format!("PROMPT={}", zsh_agent_prompt(env_id)));
+    } else {
+        command.push(format!("PS1={}", bash_agent_prompt(env_id)));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn push_agent_shell_command(command: &mut Vec<String>, shell: String) {
+    let is_zsh = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&shell)
+        .contains("zsh");
+    command.push(shell);
+    if is_zsh {
+        command.push("-f".to_string());
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn zsh_agent_prompt(env_id: &str) -> String {
+    format!("%F{{green}}{env_id}%f@%m %1~ %# ")
+}
+
+#[cfg(target_os = "macos")]
+fn bash_agent_prompt(env_id: &str) -> String {
+    format!("\\[\\033[32m\\]{env_id}\\[\\033[0m\\]@\\h \\w \\\\$ ")
 }
 
 #[cfg(not(target_os = "macos"))]
 fn platform_desktop_shell_command(
     _rootfs_path: &Path,
+    _env_id: &str,
     _host_workspace: Option<&str>,
     _limits: &Limits,
 ) -> Vec<String> {
@@ -957,6 +1005,7 @@ mod tests {
     fn non_macos_desktop_shell_uses_client_default_shell() {
         let command = super::desktop_shell_command(
             Path::new("/agentfs/envs/codex-1/rootfs"),
+            "codex-1",
             None,
             &Limits::default(),
         );
@@ -970,6 +1019,7 @@ mod tests {
         let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
         let command = super::desktop_shell_command(
             rootfs,
+            "codex-1",
             Some("/Users/mizuame/Desktop/project"),
             &Limits::default(),
         );
@@ -980,7 +1030,15 @@ mod tests {
         assert!(command.contains(&"HOME=/agentfs/envs/codex-1/rootfs".to_string()));
         assert!(command.contains(&"ZDOTDIR=/agentfs/envs/codex-1/rootfs".to_string()));
         assert!(command.contains(&"TMPDIR=/agentfs/envs/codex-1/rootfs/.tmp".to_string()));
+        assert!(command.contains(&"AGENT_ENV_ID=codex-1".to_string()));
         assert!(command.contains(&"AGENT_NETWORK=host".to_string()));
+        let has_zsh_prompt = command
+            .iter()
+            .any(|arg| arg.starts_with("PROMPT=%F{green}codex-1%f@%m"));
+        let has_bash_prompt = command
+            .iter()
+            .any(|arg| arg.starts_with("PS1=\\[\\033[32m\\]codex-1"));
+        assert!(has_zsh_prompt || has_bash_prompt);
         assert!(command.contains(&"HOST_WORKSPACE=/Users/mizuame/Desktop/project".to_string()));
     }
 
@@ -990,9 +1048,20 @@ mod tests {
         let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
         let mut limits = Limits::default();
         limits.network = "none".to_string();
-        let command = super::desktop_shell_command(rootfs, None, &limits);
+        let command = super::desktop_shell_command(rootfs, "codex-1", None, &limits);
 
         assert!(command[2].contains("(deny network*)"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_desktop_shell_runs_zsh_without_rc_prompt_override() {
+        let mut command = Vec::new();
+
+        super::push_agent_shell_command(&mut command, "/bin/zsh".to_string());
+        super::push_agent_shell_command(&mut command, "/bin/bash".to_string());
+
+        assert_eq!(command, vec!["/bin/zsh", "-f", "/bin/bash"]);
     }
 
     async fn create_native_env_fixture(service: &DesktopService) {

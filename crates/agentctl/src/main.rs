@@ -36,6 +36,9 @@ struct Cli {
 enum Command {
     Init(InitArgs),
     Ls,
+    Rm {
+        env_id: String,
+    },
     New(NewArgs),
     Base {
         #[command(subcommand)]
@@ -268,6 +271,10 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
             args.push("env".to_string());
             args.push("list".to_string());
         }
+        Command::Rm { env_id } => {
+            args.push("env".to_string());
+            push_env_id_command(args, "destroy", env_id);
+        }
         Command::New(new) => {
             args.push("new".to_string());
             args.push("-t".to_string());
@@ -424,6 +431,7 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             Ok(Request::Init { agentfs })
         }
         Command::Ls => Ok(Request::EnvList),
+        Command::Rm { env_id } => Ok(Request::EnvDestroy { id: env_id.clone() }),
         Command::New(args) => Ok(Request::New {
             target: args.target.clone(),
             base: args.base.clone(),
@@ -650,20 +658,65 @@ fn print_response(response: Response) -> Result<()> {
 }
 
 fn run_desktop_shell(rootfs_path: PathBuf, command: Vec<String>) -> Result<i32> {
+    let start_dir = desktop_shell_start_dir(&rootfs_path, &command)?;
     let mut shell = desktop_shell_command(command)?;
-    run_desktop_shell_command(&mut shell, rootfs_path)
+    run_desktop_shell_command(&mut shell, rootfs_path, start_dir)
 }
 
 #[cfg(not(windows))]
-fn run_desktop_shell_command(shell: &mut StdCommand, rootfs_path: PathBuf) -> Result<i32> {
+fn run_desktop_shell_command(
+    shell: &mut StdCommand,
+    rootfs_path: PathBuf,
+    start_dir: PathBuf,
+) -> Result<i32> {
     apply_desktop_shell_env(shell, &rootfs_path)?;
-    let status = shell.current_dir(rootfs_path).status()?;
+    let status = shell.current_dir(start_dir).status()?;
     Ok(status.code().unwrap_or(128))
 }
 
 #[cfg(windows)]
-fn run_desktop_shell_command(shell: &mut StdCommand, rootfs_path: PathBuf) -> Result<i32> {
+fn run_desktop_shell_command(
+    shell: &mut StdCommand,
+    rootfs_path: PathBuf,
+    _start_dir: PathBuf,
+) -> Result<i32> {
     windows_desktop_shell::run_in_job(shell, rootfs_path)
+}
+
+fn desktop_shell_start_dir(rootfs_path: &Path, command: &[String]) -> Result<PathBuf> {
+    let current_dir = std::env::current_dir()?;
+    Ok(desktop_shell_start_dir_for_current_dir(
+        rootfs_path,
+        command,
+        &current_dir,
+    ))
+}
+
+fn desktop_shell_start_dir_for_current_dir(
+    rootfs_path: &Path,
+    command: &[String],
+    current_dir: &Path,
+) -> PathBuf {
+    let Some(host_workspace) = desktop_shell_host_workspace(command) else {
+        return rootfs_path.to_path_buf();
+    };
+    let Ok(relative_dir) = current_dir.strip_prefix(host_workspace) else {
+        return rootfs_path.to_path_buf();
+    };
+    let mapped_dir = rootfs_path.join(relative_dir);
+    if mapped_dir.is_dir() {
+        mapped_dir
+    } else {
+        rootfs_path.to_path_buf()
+    }
+}
+
+fn desktop_shell_host_workspace(command: &[String]) -> Option<PathBuf> {
+    command.iter().find_map(|arg| {
+        arg.strip_prefix("HOST_WORKSPACE=")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 fn desktop_shell_command(command: Vec<String>) -> Result<StdCommand> {
@@ -821,17 +874,18 @@ mod tests {
     #[cfg(not(windows))]
     use super::apply_desktop_shell_env;
     use super::{
-        desktop_shell_command, effective_agentfs, env_state_label, machinectl_attach_args,
-        needs_remote_tty, parse_response_line, remote_agentctl_args, remote_shell_command,
-        session_state_label, shell_quote, tmux_attach_command, to_request, Cli, Command,
-        EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs, StdCommand,
+        desktop_shell_command, desktop_shell_start_dir_for_current_dir, effective_agentfs,
+        env_state_label, machinectl_attach_args, needs_remote_tty, parse_response_line,
+        remote_agentctl_args, remote_shell_command, session_state_label, shell_quote,
+        tmux_attach_command, to_request, Cli, Command, EnvCommand, ExportArgs, ExportKind,
+        InitArgs, NewArgs, StdCommand,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
     use agent_core::protocol::Request;
     use clap::Parser;
     use std::ffi::OsStr;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn init_agentfs_override_controls_request_and_socket_base() {
@@ -1092,6 +1146,17 @@ mod tests {
     }
 
     #[test]
+    fn top_level_rm_maps_to_env_destroy_request() {
+        let cli =
+            Cli::try_parse_from(["agentctl", "--agentfs", "/agentfs", "rm", "codex-1"]).unwrap();
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::EnvDestroy { id } => assert_eq!(id, "codex-1"),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
     fn shell_command_maps_to_shell_request() {
         let cli = Cli {
             agentfs: PathBuf::from("/agentfs"),
@@ -1126,6 +1191,68 @@ mod tests {
 
         assert_eq!(program, "sandbox-exec");
         assert_eq!(args, vec!["-p", "(version 1)", "/bin/sh"]);
+    }
+
+    #[test]
+    fn desktop_shell_start_dir_inherits_host_workspace_relative_cwd() {
+        let rootfs = std::env::temp_dir().join(format!(
+            "agentctl-desktop-start-dir-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&rootfs);
+        std::fs::create_dir_all(rootfs.join("crates/agentctl")).unwrap();
+        let command = vec![
+            "/usr/bin/env".to_string(),
+            "HOST_WORKSPACE=/Users/mizuame/Desktop/project".to_string(),
+            "/bin/zsh".to_string(),
+        ];
+        let current_dir = Path::new("/Users/mizuame/Desktop/project/crates/agentctl");
+
+        assert_eq!(
+            desktop_shell_start_dir_for_current_dir(&rootfs, &command, current_dir),
+            rootfs.join("crates/agentctl")
+        );
+
+        std::fs::remove_dir_all(&rootfs).unwrap();
+    }
+
+    #[test]
+    fn desktop_shell_start_dir_falls_back_when_cwd_is_outside_workspace() {
+        let rootfs = PathBuf::from("/agentfs/envs/codex-1/rootfs");
+        let command = vec![
+            "/usr/bin/env".to_string(),
+            "HOST_WORKSPACE=/Users/mizuame/Desktop/project".to_string(),
+            "/bin/zsh".to_string(),
+        ];
+        let current_dir = Path::new("/Users/mizuame/Downloads");
+
+        assert_eq!(
+            desktop_shell_start_dir_for_current_dir(&rootfs, &command, current_dir),
+            rootfs
+        );
+    }
+
+    #[test]
+    fn desktop_shell_start_dir_falls_back_when_mapped_dir_is_missing() {
+        let rootfs = std::env::temp_dir().join(format!(
+            "agentctl-desktop-missing-start-dir-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&rootfs);
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let command = vec![
+            "/usr/bin/env".to_string(),
+            "HOST_WORKSPACE=/Users/mizuame/Desktop/project".to_string(),
+            "/bin/zsh".to_string(),
+        ];
+        let current_dir = Path::new("/Users/mizuame/Desktop/project/deleted");
+
+        assert_eq!(
+            desktop_shell_start_dir_for_current_dir(&rootfs, &command, current_dir),
+            rootfs
+        );
+
+        std::fs::remove_dir_all(&rootfs).unwrap();
     }
 
     #[cfg(not(windows))]
@@ -1298,6 +1425,25 @@ mod tests {
         assert_eq!(
             remote_agentctl_args(&cli),
             vec!["--agentfs", "/agentfs", "env", "list"]
+        );
+        assert!(!needs_remote_tty(&cli.command));
+    }
+
+    #[test]
+    fn remote_rm_rebuilds_as_env_destroy() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            remote: Some("devbox".to_string()),
+            remote_agentctl: "/usr/local/bin/agentctl".to_string(),
+            command: Command::Rm {
+                env_id: "codex-1".to_string(),
+            },
+        };
+
+        assert_eq!(
+            remote_agentctl_args(&cli),
+            vec!["--agentfs", "/agentfs", "env", "destroy", "codex-1"]
         );
         assert!(!needs_remote_tty(&cli.command));
     }
