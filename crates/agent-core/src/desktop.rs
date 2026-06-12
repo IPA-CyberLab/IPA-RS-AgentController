@@ -99,23 +99,27 @@ impl DesktopService {
             Request::EnvStatus { id } => Ok(Response::EnvStatus {
                 status: Box::new(self.env_status(&id).await?),
             }),
-            Request::Exec { id, command } => {
-                let output = self.exec(&id, &command).await?;
+            Request::Exec { id, command, cwd } => {
+                let output = self.exec(&id, &command, cwd.as_deref()).await?;
                 Ok(Response::Exec {
                     status: output.status,
                     stdout: output.stdout,
                     stderr: output.stderr,
                 })
             }
-            Request::Shell { id } => {
+            Request::Shell { id, cwd } => {
                 let env = self.shell_target(&id).await?;
                 let base = self.layout.read_base(&env.base_id).await?;
+                let preserved_cwd = cwd
+                    .as_ref()
+                    .and_then(|cwd| cwd.to_str())
+                    .unwrap_or(&base.source);
                 Ok(Response::DesktopShell {
                     command: desktop_shell_command(
                         &env.rootfs_path,
                         env.backend.clone(),
                         &env.id,
-                        Some(&base.source),
+                        Some(preserved_cwd),
                         &env.limits,
                     ),
                     rootfs_path: env.rootfs_path,
@@ -126,8 +130,10 @@ impl DesktopService {
                 env_id,
                 session_id,
                 command,
+                cwd,
             } => {
-                self.session_create(&env_id, &session_id, &command).await?;
+                self.session_create(&env_id, &session_id, &command, cwd.as_deref())
+                    .await?;
                 Ok(Response::Ok)
             }
             Request::SessionAttach { .. } => Err(anyhow!(
@@ -189,7 +195,7 @@ impl DesktopService {
                 rootfs_path: env.rootfs_path,
             })
         } else {
-            let output = self.exec(target, command).await?;
+            let output = self.exec(target, command, None).await?;
             Ok(Response::Exec {
                 status: output.status,
                 stdout: output.stdout,
@@ -358,7 +364,12 @@ impl DesktopService {
         Ok(statuses)
     }
 
-    pub async fn exec(&self, id: &str, command: &[String]) -> Result<CmdOutput> {
+    pub async fn exec(
+        &self,
+        id: &str,
+        command: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<CmdOutput> {
         if command.is_empty() {
             return Err(anyhow!("exec command cannot be empty"));
         }
@@ -370,7 +381,9 @@ impl DesktopService {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| anyhow!("exec command cannot be empty"))?;
-        let output = self.run_desktop_env_command(&env, program, args).await?;
+        let output = self
+            .run_desktop_env_command(&env, program, args, cwd)
+            .await?;
         env.last_active_at = Utc::now();
         self.layout.write_env(&env).await?;
         Ok(output)
@@ -381,6 +394,7 @@ impl DesktopService {
         env_id: &str,
         session_id: &str,
         command: &[String],
+        cwd: Option<&Path>,
     ) -> Result<()> {
         validate_id(session_id)?;
         if command.is_empty() {
@@ -412,7 +426,7 @@ impl DesktopService {
             .ok_or_else(|| anyhow!("session command cannot be empty"))?;
         let log_path = desktop_session_log_path(&self.layout, env_id, session_id);
         let pid = self
-            .spawn_desktop_env_session(&env, program, args, &log_path)
+            .spawn_desktop_env_session(&env, program, args, &log_path, cwd)
             .await?;
         write_text_file(
             &desktop_session_pid_path(&self.layout, env_id, session_id),
@@ -616,9 +630,11 @@ impl DesktopService {
         env: &Env,
         program: &str,
         args: &[String],
+        cwd: Option<&Path>,
     ) -> Result<CmdOutput> {
         if env.backend == RootfsBackend::PathPreservingOverlay {
             let base = self.layout.read_base(&env.base_id).await?;
+            let preserved_cwd = cwd.unwrap_or_else(|| Path::new(&base.source));
             return self
                 .runner
                 .run_macos_path_preserving_overlay(
@@ -626,7 +642,7 @@ impl DesktopService {
                     &self.layout.env_lower(&env.id),
                     &self.layout.env_upper(&env.id),
                     &self.layout.env_whiteouts(&env.id),
-                    Path::new(&base.source),
+                    preserved_cwd,
                     program,
                     args,
                     &env.limits,
@@ -644,15 +660,17 @@ impl DesktopService {
         program: &str,
         args: &[String],
         log_path: &Path,
+        cwd: Option<&Path>,
     ) -> Result<u32> {
         if env.backend == RootfsBackend::PathPreservingOverlay {
             let base = self.layout.read_base(&env.base_id).await?;
+            let preserved_cwd = cwd.unwrap_or_else(|| Path::new(&base.source));
             return self.runner.spawn_macos_path_preserving_overlay_session(
                 &env.rootfs_path,
                 &self.layout.env_lower(&env.id),
                 &self.layout.env_upper(&env.id),
                 &self.layout.env_whiteouts(&env.id),
-                Path::new(&base.source),
+                preserved_cwd,
                 program,
                 args,
                 log_path,
@@ -1190,6 +1208,7 @@ mod tests {
                     "-c".to_string(),
                     "echo hello from desktop session; sleep 30".to_string(),
                 ],
+                None,
             )
             .await
             .unwrap();

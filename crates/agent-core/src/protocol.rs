@@ -43,14 +43,20 @@ pub enum Request {
     Exec {
         id: String,
         command: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
     },
     Shell {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
     },
     SessionCreate {
         env_id: String,
         session_id: String,
         command: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
     },
     SessionAttach {
         env_id: String,
@@ -162,10 +168,11 @@ fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]>
         ],
         "base_freeze" => &["type", "name", "from"],
         "env_create" => &["type", "id", "base", "profile", "limits"],
-        "env_start" | "env_stop" | "env_destroy" | "env_status" | "shell" => &["type", "id"],
+        "env_start" | "env_stop" | "env_destroy" | "env_status" => &["type", "id"],
+        "shell" => &["type", "id", "cwd"],
         "env_list" | "ping" => &["type"],
-        "exec" => &["type", "id", "command"],
-        "session_create" => &["type", "env_id", "session_id", "command"],
+        "exec" => &["type", "id", "command", "cwd"],
+        "session_create" => &["type", "env_id", "session_id", "command", "cwd"],
         "session_attach" | "session_detach" | "session_kill" | "session_logs" => {
             &["type", "env_id", "session_id"]
         }
@@ -285,14 +292,17 @@ mod tests {
             Request::Exec {
                 id: "codex-1".to_string(),
                 command: vec!["bash".to_string()],
+                cwd: Some("/workspace".into()),
             },
             Request::Shell {
                 id: "codex-1".to_string(),
+                cwd: Some("/workspace".into()),
             },
             Request::SessionCreate {
                 env_id: "codex-1".to_string(),
                 session_id: "dev".to_string(),
                 command: vec!["bash".to_string()],
+                cwd: Some("/workspace".into()),
             },
             Request::SessionAttach {
                 env_id: "codex-1".to_string(),

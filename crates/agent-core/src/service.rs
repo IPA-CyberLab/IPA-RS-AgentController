@@ -99,7 +99,7 @@ impl AgentService {
             Request::EnvStatus { id } => Ok(Response::EnvStatus {
                 status: Box::new(self.env_status(&id).await?),
             }),
-            Request::Exec { id, command } => {
+            Request::Exec { id, command, .. } => {
                 let output = self.exec(&id, &command).await?;
                 Ok(Response::Exec {
                     status: output.status,
@@ -107,7 +107,7 @@ impl AgentService {
                     stderr: output.stderr,
                 })
             }
-            Request::Shell { id } => {
+            Request::Shell { id, .. } => {
                 let (machine_name, session_id) = self.shell_attach_target(&id).await?;
                 Ok(Response::Attach {
                     machine_name,
@@ -118,6 +118,7 @@ impl AgentService {
                 env_id,
                 session_id,
                 command,
+                ..
             } => {
                 self.session_create(&env_id, &session_id, &command).await?;
                 Ok(Response::Ok)

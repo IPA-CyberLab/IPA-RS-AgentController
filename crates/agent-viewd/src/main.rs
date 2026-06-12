@@ -159,8 +159,7 @@ fn enter_and_run(
     let (program, args) = split_command(&command)?;
     ensure_overlay_mounted(&view_root, &lower, &upper, &whiteouts)?;
     enter_view(&view_root, &cwd, &network)?;
-    let status = Command::new(program)
-        .args(args)
+    let status = command_for_network(program, args, &network)
         .status()
         .with_context(|| format!("failed to execute {program} inside {}", view_root.display()))?;
     Ok(status.code().unwrap_or(128))
@@ -183,9 +182,8 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
     let stderr = stdout
         .try_clone()
         .with_context(|| format!("failed to clone log {}", args.log_path.display()))?;
-    let mut command = Command::new(program);
+    let mut command = command_for_network(program, command_args, &args.network);
     command
-        .args(command_args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -278,6 +276,11 @@ fn ensure_overlay_mounted(
         .arg(upper)
         .arg("--whiteouts")
         .arg(whiteouts)
+        .args(
+            system_fallback_roots()
+                .iter()
+                .flat_map(|path| ["--fallback-root".into(), path.display().to_string()]),
+        )
         .arg("--fs-name")
         .arg("agent-overlayfs")
         .stdin(Stdio::null())
@@ -310,6 +313,34 @@ fn overlayfs_program() -> PathBuf {
         }
     }
     PathBuf::from("agent-overlayfs")
+}
+
+#[cfg(target_os = "macos")]
+fn system_fallback_roots() -> Vec<PathBuf> {
+    [
+        "/bin", "/sbin", "/usr", "/System", "/Library", "/private", "/dev", "/etc", "/var", "/tmp",
+        "/opt",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .filter(|path| path.exists())
+    .collect()
+}
+
+fn command_for_network(program: &str, args: &[String], network: &str) -> Command {
+    if network == "none" {
+        let mut command = Command::new("/usr/bin/sandbox-exec");
+        command
+            .arg("-p")
+            .arg("(version 1)\n(allow default)\n(deny network*)")
+            .arg(program)
+            .args(args);
+        command
+    } else {
+        let mut command = Command::new(program);
+        command.args(args);
+        command
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

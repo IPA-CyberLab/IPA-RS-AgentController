@@ -501,16 +501,21 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             EnvCommand::List => Request::EnvList,
             EnvCommand::Status { env_id } => Request::EnvStatus { id: env_id.clone() },
         }),
-        Command::Shell { env_id } => Ok(Request::Shell { id: env_id.clone() }),
+        Command::Shell { env_id } => Ok(Request::Shell {
+            id: env_id.clone(),
+            cwd: Some(std::env::current_dir()?),
+        }),
         Command::Exec(args) => Ok(Request::Exec {
             id: args.env_id.clone(),
             command: args.command.clone(),
+            cwd: Some(std::env::current_dir()?),
         }),
         Command::Session { command } => Ok(match command {
             SessionCommand::Create(args) => Request::SessionCreate {
                 env_id: args.env_id.clone(),
                 session_id: args.session_id.clone(),
                 command: args.command.clone(),
+                cwd: Some(std::env::current_dir()?),
             },
             SessionCommand::Attach { env_id, session_id } => Request::SessionAttach {
                 env_id: env_id.clone(),
@@ -1228,7 +1233,10 @@ mod tests {
         };
 
         match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
-            Request::Shell { id } => assert_eq!(id, "codex-1"),
+            Request::Shell { id, cwd } => {
+                assert_eq!(id, "codex-1");
+                assert_eq!(cwd.unwrap(), std::env::current_dir().unwrap());
+            }
             other => panic!("unexpected request {other:?}"),
         }
     }

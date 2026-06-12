@@ -28,6 +28,8 @@ struct MountArgs {
     upper: PathBuf,
     #[arg(long)]
     whiteouts: PathBuf,
+    #[arg(long = "fallback-root")]
+    fallback_roots: Vec<PathBuf>,
     #[arg(long, default_value = "agent-overlayfs")]
     fs_name: String,
 }
@@ -77,7 +79,7 @@ mod platform {
 
     pub fn mount(args: MountArgs) -> Result<()> {
         validate_mount_args(&args)?;
-        let fs = OverlayFs::new(args.lower, args.upper, args.whiteouts);
+        let fs = OverlayFs::new(args.lower, args.upper, args.whiteouts, args.fallback_roots);
         let mut config = Config::default();
         config.mount_options = vec![
             MountOption::FSName(args.fs_name),
@@ -99,6 +101,11 @@ mod platform {
                 bail!("{name} must be absolute: {}", path.display());
             }
         }
+        for path in &args.fallback_roots {
+            if !path.is_absolute() {
+                bail!("fallback-root must be absolute: {}", path.display());
+            }
+        }
         if !args.mount_point.is_dir() {
             bail!("mount-point {} does not exist", args.mount_point.display());
         }
@@ -110,17 +117,26 @@ mod platform {
 
     struct OverlayFs {
         overlay: PathOverlay,
+        fallback_roots: Vec<PathBuf>,
         paths: Mutex<InodeTable>,
         files: Mutex<HashMap<u64, File>>,
         next_fh: AtomicU64,
     }
 
     impl OverlayFs {
-        fn new(lower: PathBuf, upper: PathBuf, whiteouts: PathBuf) -> Self {
+        fn new(
+            lower: PathBuf,
+            upper: PathBuf,
+            whiteouts: PathBuf,
+            mut fallback_roots: Vec<PathBuf>,
+        ) -> Self {
             let mut table = InodeTable::default();
             table.intern(PathBuf::from("/"));
+            fallback_roots.sort();
+            fallback_roots.dedup();
             Self {
                 overlay: PathOverlay::new(lower, upper, whiteouts),
+                fallback_roots,
                 paths: Mutex::new(table),
                 files: Mutex::new(HashMap::new()),
                 next_fh: AtomicU64::new(2),
@@ -171,11 +187,9 @@ mod platform {
                 }
                 OverlayLookup::Whiteout(_) => Err(Errno::ENOENT),
                 OverlayLookup::Missing => {
-                    if !visible.exists() {
-                        return Err(Errno::ENOENT);
-                    }
+                    let fallback = self.fallback_path(visible).ok_or(Errno::ENOENT)?;
                     let ino = self.ino_for_path(visible)?;
-                    let attr = file_attr(ino, visible).map_err(|_| Errno::EIO)?;
+                    let attr = file_attr(ino, &fallback).map_err(|_| Errno::EIO)?;
                     Ok((ino, attr))
                 }
             }
@@ -185,13 +199,7 @@ mod platform {
             match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
                 OverlayLookup::Found(found) => Ok(found.storage_path),
                 OverlayLookup::Whiteout(_) => Err(Errno::ENOENT),
-                OverlayLookup::Missing => {
-                    if visible.exists() {
-                        Ok(visible.to_path_buf())
-                    } else {
-                        Err(Errno::ENOENT)
-                    }
-                }
+                OverlayLookup::Missing => self.fallback_path(visible).ok_or(Errno::ENOENT),
             }
         }
 
@@ -207,8 +215,9 @@ mod platform {
                 OverlayLookup::Found(found) => {
                     copy_up(&found.storage_path, &upper).map_err(|_| Errno::EIO)?
                 }
-                OverlayLookup::Missing if visible.exists() => {
-                    copy_up(visible, &upper).map_err(|_| Errno::EIO)?
+                OverlayLookup::Missing if self.fallback_path(visible).is_some() => {
+                    let fallback = self.fallback_path(visible).ok_or(Errno::ENOENT)?;
+                    copy_up(&fallback, &upper).map_err(|_| Errno::EIO)?
                 }
                 OverlayLookup::Whiteout(_) | OverlayLookup::Missing => {
                     File::create(&upper).map_err(|_| Errno::EIO)?;
@@ -219,11 +228,10 @@ mod platform {
 
         fn merged_dir_entries(&self, visible: &Path) -> Result<Vec<(OsString, FileType)>, Errno> {
             let mut entries = BTreeMap::new();
-            for root in [
-                visible.to_path_buf(),
+            for root in self.fallback_entries_root(visible).into_iter().chain([
                 self.overlay.lower_path(visible).map_err(|_| Errno::EIO)?,
                 self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?,
-            ] {
+            ]) {
                 if !root.exists() {
                     continue;
                 }
@@ -252,8 +260,38 @@ mod platform {
             }
             if visible == Path::new("/") {
                 entries.insert(OsString::from(READY_FILE), FileType::RegularFile);
+                for root in &self.fallback_roots {
+                    if let Some(name) =
+                        root.components()
+                            .nth(1)
+                            .and_then(|component| match component {
+                                std::path::Component::Normal(name) => Some(name.to_os_string()),
+                                _ => None,
+                            })
+                    {
+                        if root.exists() {
+                            let kind = fuser_kind(root.clone()).map_err(|_| Errno::EIO)?;
+                            entries.entry(name).or_insert(kind);
+                        }
+                    }
+                }
             }
             Ok(entries.into_iter().collect())
+        }
+
+        fn fallback_path(&self, visible: &Path) -> Option<PathBuf> {
+            self.fallback_roots
+                .iter()
+                .any(|root| visible == root || visible.starts_with(root))
+                .then(|| visible.to_path_buf())
+                .filter(|path| path.exists())
+        }
+
+        fn fallback_entries_root(&self, visible: &Path) -> Option<PathBuf> {
+            if visible == Path::new("/") {
+                return None;
+            }
+            self.fallback_path(visible).filter(|path| path.is_dir())
         }
     }
 
