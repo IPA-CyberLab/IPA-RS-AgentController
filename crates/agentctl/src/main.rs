@@ -669,8 +669,9 @@ fn print_response(response: Response) -> Result<()> {
 
 fn run_desktop_shell(rootfs_path: PathBuf, command: Vec<String>) -> Result<i32> {
     let start_dir = desktop_shell_start_dir(&rootfs_path, &command)?;
+    let path_preserving = desktop_shell_path_preserving_overlay(&command);
     let mut shell = desktop_shell_command(command)?;
-    run_desktop_shell_command(&mut shell, rootfs_path, start_dir)
+    run_desktop_shell_command(&mut shell, rootfs_path, start_dir, path_preserving)
 }
 
 #[cfg(not(windows))]
@@ -678,8 +679,11 @@ fn run_desktop_shell_command(
     shell: &mut StdCommand,
     rootfs_path: PathBuf,
     start_dir: PathBuf,
+    path_preserving: bool,
 ) -> Result<i32> {
-    apply_desktop_shell_env(shell, &rootfs_path)?;
+    if !path_preserving {
+        apply_desktop_shell_env(shell, &rootfs_path)?;
+    }
     let status = shell.current_dir(start_dir).status()?;
     Ok(status.code().unwrap_or(128))
 }
@@ -689,6 +693,7 @@ fn run_desktop_shell_command(
     shell: &mut StdCommand,
     rootfs_path: PathBuf,
     _start_dir: PathBuf,
+    _path_preserving: bool,
 ) -> Result<i32> {
     windows_desktop_shell::run_in_job(shell, rootfs_path)
 }
@@ -707,6 +712,9 @@ fn desktop_shell_start_dir_for_current_dir(
     command: &[String],
     current_dir: &Path,
 ) -> PathBuf {
+    if desktop_shell_path_preserving_overlay(command) {
+        return desktop_shell_existing_dir_or_rootfs(current_dir, rootfs_path);
+    }
     let Some(host_workspace) = desktop_shell_host_workspace(command) else {
         return desktop_shell_existing_dir_or_rootfs(current_dir, rootfs_path);
     };
@@ -719,6 +727,12 @@ fn desktop_shell_start_dir_for_current_dir(
     } else {
         rootfs_path.to_path_buf()
     }
+}
+
+fn desktop_shell_path_preserving_overlay(command: &[String]) -> bool {
+    command.first().is_some_and(|program| program == "agent-viewd")
+        && command.iter().any(|arg| arg == "--view-root")
+        && command.iter().any(|arg| arg == "--cwd")
 }
 
 fn desktop_shell_existing_dir_or_rootfs(current_dir: &Path, rootfs_path: &Path) -> PathBuf {
@@ -892,11 +906,11 @@ mod tests {
     #[cfg(not(windows))]
     use super::apply_desktop_shell_env;
     use super::{
-        desktop_shell_command, desktop_shell_start_dir_for_current_dir, effective_agentfs,
-        env_state_label, machinectl_attach_args, needs_remote_tty, parse_response_line,
-        remote_agentctl_args, remote_shell_command, session_state_label, shell_quote,
-        tmux_attach_command, to_request, Cli, Command, EnvCommand, ExportArgs, ExportKind,
-        InitArgs, NewArgs, StdCommand,
+        desktop_shell_command, desktop_shell_path_preserving_overlay,
+        desktop_shell_start_dir_for_current_dir, effective_agentfs, env_state_label,
+        machinectl_attach_args, needs_remote_tty, parse_response_line, remote_agentctl_args,
+        remote_shell_command, session_state_label, shell_quote, tmux_attach_command, to_request,
+        Cli, Command, EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs, StdCommand,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
@@ -1257,6 +1271,37 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&rootfs).unwrap();
+    }
+
+    #[test]
+    fn path_preserving_desktop_shell_start_dir_keeps_absolute_host_cwd() {
+        let temp = std::env::temp_dir().join(format!(
+            "agentctl-path-preserving-start-dir-test-{}",
+            std::process::id()
+        ));
+        let rootfs = temp.join("view-root");
+        let current_dir = temp.join("Users/mizuame/Desktop/project/crates/agentctl");
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&rootfs).unwrap();
+        std::fs::create_dir_all(&current_dir).unwrap();
+        let command = vec![
+            "agent-viewd".to_string(),
+            "shell".to_string(),
+            "--view-root".to_string(),
+            rootfs.display().to_string(),
+            "--cwd".to_string(),
+            "/Users/mizuame/Desktop/project/crates/agentctl".to_string(),
+            "--".to_string(),
+            "/bin/zsh".to_string(),
+        ];
+
+        assert_eq!(
+            desktop_shell_start_dir_for_current_dir(&rootfs, &command, &current_dir),
+            current_dir
+        );
+        assert!(desktop_shell_path_preserving_overlay(&command));
+
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 
     #[test]

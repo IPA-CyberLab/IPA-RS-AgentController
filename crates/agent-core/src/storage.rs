@@ -46,12 +46,32 @@ impl Layout {
         self.base_dir(id).join("rootfs")
     }
 
+    pub fn base_lower(&self, id: &str) -> PathBuf {
+        self.base_dir(id).join("lower")
+    }
+
     pub fn env_dir(&self, id: &str) -> PathBuf {
         self.envs_dir().join(id)
     }
 
     pub fn env_rootfs(&self, id: &str) -> PathBuf {
         self.env_dir(id).join("rootfs")
+    }
+
+    pub fn env_lower(&self, id: &str) -> PathBuf {
+        self.env_dir(id).join("lower")
+    }
+
+    pub fn env_upper(&self, id: &str) -> PathBuf {
+        self.env_dir(id).join("upper")
+    }
+
+    pub fn env_whiteouts(&self, id: &str) -> PathBuf {
+        self.env_dir(id).join("whiteouts")
+    }
+
+    pub fn env_view_root(&self, id: &str) -> PathBuf {
+        self.env_dir(id).join("view-root")
     }
 
     pub fn env_logs(&self, id: &str) -> PathBuf {
@@ -211,6 +231,17 @@ impl Layout {
                     ));
                 }
             }
+            RootfsBackend::PathPreservingOverlay => {
+                let expected_lower = self.base_lower(&base.id);
+                if base.rootfs_path != expected_lower {
+                    return Err(anyhow!(
+                        "path-preserving base {} has rootfs_path {}, expected {}",
+                        base.id,
+                        base.rootfs_path.display(),
+                        expected_lower.display()
+                    ));
+                }
+            }
             RootfsBackend::Overlay => {
                 if !base.rootfs_path.is_absolute() {
                     return Err(anyhow!(
@@ -260,7 +291,10 @@ impl Layout {
                 expected_machine
             ));
         }
-        let expected_rootfs = self.env_rootfs(&env.id);
+        let expected_rootfs = match env.backend {
+            RootfsBackend::PathPreservingOverlay => self.env_view_root(&env.id),
+            _ => self.env_rootfs(&env.id),
+        };
         if env.rootfs_path != expected_rootfs {
             return Err(anyhow!(
                 "env {} has rootfs_path {}, expected {}",

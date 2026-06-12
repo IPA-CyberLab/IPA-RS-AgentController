@@ -90,6 +90,36 @@ impl CommandRunner {
         spawn_desktop_session(cwd, program, args, log_path, limits)
     }
 
+    pub async fn run_macos_path_preserving_overlay(
+        &self,
+        view_root: &Path,
+        preserved_cwd: &Path,
+        program: &str,
+        args: &[String],
+        limits: &Limits,
+    ) -> Result<CmdOutput> {
+        run_macos_path_preserving_overlay(view_root, preserved_cwd, program, args, limits).await
+    }
+
+    pub fn spawn_macos_path_preserving_overlay_session(
+        &self,
+        view_root: &Path,
+        preserved_cwd: &Path,
+        program: &str,
+        args: &[String],
+        log_path: &Path,
+        limits: &Limits,
+    ) -> Result<u32> {
+        spawn_macos_path_preserving_overlay_session(
+            view_root,
+            preserved_cwd,
+            program,
+            args,
+            log_path,
+            limits,
+        )
+    }
+
     pub async fn append_to_file(path: &Path, content: &str) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 
@@ -108,6 +138,103 @@ impl CommandRunner {
         }
         Ok(())
     }
+}
+
+#[cfg(target_os = "macos")]
+async fn run_macos_path_preserving_overlay(
+    view_root: &Path,
+    preserved_cwd: &Path,
+    program: &str,
+    args: &[String],
+    limits: &Limits,
+) -> Result<CmdOutput> {
+    let mut command = Command::new("agent-viewd");
+    command
+        .arg("exec")
+        .arg("--view-root")
+        .arg(view_root)
+        .arg("--cwd")
+        .arg(preserved_cwd)
+        .arg("--network")
+        .arg(&limits.network)
+        .arg("--")
+        .arg(program)
+        .args(args);
+    let output = command
+        .output()
+        .await
+        .with_context(|| "failed to execute agent-viewd for macOS path-preserving overlay")?;
+    Ok(CmdOutput {
+        status: output.status.code().unwrap_or(128),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn run_macos_path_preserving_overlay(
+    _view_root: &Path,
+    _preserved_cwd: &Path,
+    _program: &str,
+    _args: &[String],
+    _limits: &Limits,
+) -> Result<CmdOutput> {
+    Err(anyhow!(
+        "macOS path-preserving overlay execution is available only on macOS"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_macos_path_preserving_overlay_session(
+    view_root: &Path,
+    preserved_cwd: &Path,
+    program: &str,
+    args: &[String],
+    log_path: &Path,
+    limits: &Limits,
+) -> Result<u32> {
+    let output = std::process::Command::new("agent-viewd")
+        .arg("session")
+        .arg("--view-root")
+        .arg(view_root)
+        .arg("--cwd")
+        .arg(preserved_cwd)
+        .arg("--network")
+        .arg(&limits.network)
+        .arg("--log-path")
+        .arg(log_path)
+        .arg("--")
+        .arg(program)
+        .args(args)
+        .output()
+        .with_context(|| "failed to execute agent-viewd session for macOS path-preserving overlay")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "agent-viewd session exited with {}: {}{}",
+            output.status.code().unwrap_or(128),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("agent-viewd session returned invalid pid: {stdout:?}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_macos_path_preserving_overlay_session(
+    _view_root: &Path,
+    _preserved_cwd: &Path,
+    _program: &str,
+    _args: &[String],
+    _log_path: &Path,
+    _limits: &Limits,
+) -> Result<u32> {
+    Err(anyhow!(
+        "macOS path-preserving overlay sessions are available only on macOS"
+    ))
 }
 
 #[cfg(not(windows))]

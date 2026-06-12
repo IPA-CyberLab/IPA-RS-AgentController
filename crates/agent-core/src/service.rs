@@ -392,7 +392,9 @@ impl AgentService {
                     return Err(error);
                 }
             }
-            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+            RootfsBackend::ApfsClone
+            | RootfsBackend::WindowsBlockClone
+            | RootfsBackend::PathPreservingOverlay => {
                 if let Err(error) = reflink::clone_tree(&base.rootfs_path, &rootfs) {
                     cleanup_failed_env_dir(&env_dir).await;
                     return Err(error);
@@ -589,7 +591,9 @@ impl AgentService {
             RootfsBackend::Overlay => {
                 self.umount_overlay_rootfs(&env).await?;
             }
-            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+            RootfsBackend::ApfsClone
+            | RootfsBackend::WindowsBlockClone
+            | RootfsBackend::PathPreservingOverlay => {
                 remove_dir_all_if_exists(&env.rootfs_path).await?;
             }
         }
@@ -850,7 +854,9 @@ impl AgentService {
                     Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
                 }
                 RootfsBackend::Overlay => self.overlay_changed_paths(&env).await,
-                RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+                RootfsBackend::ApfsClone
+                | RootfsBackend::WindowsBlockClone
+                | RootfsBackend::PathPreservingOverlay => {
                     Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
                 }
             },
@@ -991,7 +997,10 @@ impl AgentService {
 
     async fn env_disk_used(&self, env: &Env) -> Result<String> {
         let path = match env.backend {
-            RootfsBackend::Btrfs | RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+            RootfsBackend::Btrfs
+            | RootfsBackend::ApfsClone
+            | RootfsBackend::WindowsBlockClone
+            | RootfsBackend::PathPreservingOverlay => {
                 env.rootfs_path.clone()
             }
             RootfsBackend::Overlay => self.overlay_upper_dir(&env.id),
@@ -1084,7 +1093,9 @@ impl AgentService {
                         .await;
                 }
             }
-            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+            RootfsBackend::ApfsClone
+            | RootfsBackend::WindowsBlockClone
+            | RootfsBackend::PathPreservingOverlay => {
                 let _ = remove_dir_all_if_exists(rootfs).await;
             }
             RootfsBackend::Overlay => {}

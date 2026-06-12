@@ -44,6 +44,7 @@ pub enum RootfsBackend {
     #[default]
     Btrfs,
     Overlay,
+    PathPreservingOverlay,
     ApfsClone,
     WindowsBlockClone,
 }
@@ -56,7 +57,7 @@ impl RootfsBackend {
 
 #[cfg(target_os = "macos")]
 fn native_clone_backend() -> Option<RootfsBackend> {
-    Some(RootfsBackend::ApfsClone)
+    Some(RootfsBackend::PathPreservingOverlay)
 }
 
 #[cfg(target_os = "windows")]
@@ -475,12 +476,24 @@ mod tests {
         assert_schema_enum_values(
             include_str!("../../../schemas/base.schema.json"),
             &["properties", "backend", "enum"],
-            &["btrfs", "overlay", "apfs_clone", "windows_block_clone"],
+            &[
+                "btrfs",
+                "overlay",
+                "path_preserving_overlay",
+                "apfs_clone",
+                "windows_block_clone",
+            ],
         );
         assert_schema_enum_values(
             include_str!("../../../schemas/env.schema.json"),
             &["properties", "backend", "enum"],
-            &["btrfs", "overlay", "apfs_clone", "windows_block_clone"],
+            &[
+                "btrfs",
+                "overlay",
+                "path_preserving_overlay",
+                "apfs_clone",
+                "windows_block_clone",
+            ],
         );
         assert_schema_enum_values(
             include_str!("../../../schemas/session.schema.json"),
@@ -512,7 +525,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             RootfsBackend::native_clone_for_current_os(),
-            Some(RootfsBackend::ApfsClone)
+            Some(RootfsBackend::PathPreservingOverlay)
         );
         #[cfg(target_os = "windows")]
         assert_eq!(

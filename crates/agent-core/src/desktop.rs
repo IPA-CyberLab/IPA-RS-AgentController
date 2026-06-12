@@ -112,6 +112,7 @@ impl DesktopService {
                 Ok(Response::DesktopShell {
                     command: desktop_shell_command(
                         &env.rootfs_path,
+                        env.backend.clone(),
                         &env.id,
                         Some(&base.source),
                         &env.limits,
@@ -179,6 +180,7 @@ impl DesktopService {
             Ok(Response::DesktopShell {
                 command: desktop_shell_command(
                     &env.rootfs_path,
+                    env.backend.clone(),
                     &env.id,
                     Some(&base.source),
                     &env.limits,
@@ -211,7 +213,9 @@ impl DesktopService {
         validate_id(name)?;
         if !matches!(
             backend,
-            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone
+            RootfsBackend::PathPreservingOverlay
+                | RootfsBackend::ApfsClone
+                | RootfsBackend::WindowsBlockClone
         ) {
             return Err(anyhow!(
                 "backend {backend:?} is not a desktop clone backend"
@@ -222,7 +226,10 @@ impl DesktopService {
             return Err(anyhow!("base {name} already exists"));
         }
         tokio::fs::create_dir_all(&base_dir).await?;
-        let rootfs = self.layout.base_rootfs(name);
+        let rootfs = match backend {
+            RootfsBackend::PathPreservingOverlay => self.layout.base_lower(name),
+            _ => self.layout.base_rootfs(name),
+        };
         if let Err(error) = reflink::clone_tree(from, &rootfs) {
             let _ = remove_dir_all_if_exists(&base_dir).await;
             return Err(error);
@@ -260,7 +267,9 @@ impl DesktopService {
         let base = self.layout.read_base(base_id).await?;
         if !matches!(
             base.backend,
-            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone
+            RootfsBackend::PathPreservingOverlay
+                | RootfsBackend::ApfsClone
+                | RootfsBackend::WindowsBlockClone
         ) {
             return Err(anyhow!("base {base_id} is not a desktop native base"));
         }
@@ -269,11 +278,25 @@ impl DesktopService {
             return Err(anyhow!("env {id} already exists"));
         }
         tokio::fs::create_dir_all(&env_dir).await?;
-        let rootfs = self.layout.env_rootfs(id);
-        if let Err(error) = reflink::clone_tree(&base.rootfs_path, &rootfs) {
-            let _ = remove_dir_all_if_exists(&env_dir).await;
-            return Err(error);
-        }
+        let rootfs = match base.backend {
+            RootfsBackend::PathPreservingOverlay => {
+                let lower = self.layout.env_lower(id);
+                if let Err(error) = reflink::clone_tree(&base.rootfs_path, &lower) {
+                    let _ = remove_dir_all_if_exists(&env_dir).await;
+                    return Err(error);
+                }
+                self.ensure_path_preserving_overlay_dirs(id).await?;
+                self.layout.env_view_root(id)
+            }
+            _ => {
+                let rootfs = self.layout.env_rootfs(id);
+                if let Err(error) = reflink::clone_tree(&base.rootfs_path, &rootfs) {
+                    let _ = remove_dir_all_if_exists(&env_dir).await;
+                    return Err(error);
+                }
+                rootfs
+            }
+        };
         let limits = profile.limits.clone().with_overrides(limit_overrides);
         limits.validate()?;
         tokio::fs::create_dir_all(self.layout.session_logs(id)).await?;
@@ -346,8 +369,7 @@ impl DesktopService {
             .split_first()
             .ok_or_else(|| anyhow!("exec command cannot be empty"))?;
         let output = self
-            .runner
-            .run_desktop_isolated(&env.rootfs_path, program, args, &env.limits)
+            .run_desktop_env_command(&env, program, args)
             .await?;
         env.last_active_at = Utc::now();
         self.layout.write_env(&env).await?;
@@ -389,13 +411,9 @@ impl DesktopService {
             .split_first()
             .ok_or_else(|| anyhow!("session command cannot be empty"))?;
         let log_path = desktop_session_log_path(&self.layout, env_id, session_id);
-        let pid = self.runner.spawn_desktop_session(
-            &env.rootfs_path,
-            program,
-            args,
-            &log_path,
-            &env.limits,
-        )?;
+        let pid = self
+            .spawn_desktop_env_session(&env, program, args, &log_path)
+            .await?;
         write_text_file(
             &desktop_session_pid_path(&self.layout, env_id, session_id),
             pid.to_string(),
@@ -513,7 +531,11 @@ impl DesktopService {
         let text = match export_type {
             ExportType::WorkspacePatch => self.exporter.workspace_patch(&env).await?,
             ExportType::RootfsChangedPaths => {
-                Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)?
+                if env.backend == RootfsBackend::PathPreservingOverlay {
+                    self.path_preserving_overlay_changed_paths(env_id)?
+                } else {
+                    Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)?
+                }
             }
             ExportType::DpkgDelta => {
                 return Err(anyhow!(
@@ -577,12 +599,89 @@ impl DesktopService {
         }
         Ok(env)
     }
+
+    async fn ensure_path_preserving_overlay_dirs(&self, id: &str) -> Result<()> {
+        for dir in [
+            self.layout.env_upper(id),
+            self.layout.env_whiteouts(id),
+            self.layout.env_view_root(id),
+        ] {
+            tokio::fs::create_dir_all(dir).await?;
+        }
+        Ok(())
+    }
+
+    async fn run_desktop_env_command(
+        &self,
+        env: &Env,
+        program: &str,
+        args: &[String],
+    ) -> Result<CmdOutput> {
+        if env.backend == RootfsBackend::PathPreservingOverlay {
+            let base = self.layout.read_base(&env.base_id).await?;
+            return self
+                .runner
+                .run_macos_path_preserving_overlay(
+                    &env.rootfs_path,
+                    Path::new(&base.source),
+                    program,
+                    args,
+                    &env.limits,
+                )
+                .await;
+        }
+        self.runner
+            .run_desktop_isolated(&env.rootfs_path, program, args, &env.limits)
+            .await
+    }
+
+    async fn spawn_desktop_env_session(
+        &self,
+        env: &Env,
+        program: &str,
+        args: &[String],
+        log_path: &Path,
+    ) -> Result<u32> {
+        if env.backend == RootfsBackend::PathPreservingOverlay {
+            let base = self.layout.read_base(&env.base_id).await?;
+            return self.runner.spawn_macos_path_preserving_overlay_session(
+                &env.rootfs_path,
+                Path::new(&base.source),
+                program,
+                args,
+                log_path,
+                &env.limits,
+            );
+        }
+        self.runner
+            .spawn_desktop_session(&env.rootfs_path, program, args, log_path, &env.limits)
+    }
+
+    fn path_preserving_overlay_changed_paths(&self, id: &str) -> Result<String> {
+        let mut paths = Vec::new();
+        collect_path_preserving_overlay_entries(
+            &self.layout.env_upper(id),
+            &self.layout.env_upper(id),
+            false,
+            &mut paths,
+        )?;
+        collect_path_preserving_overlay_entries(
+            &self.layout.env_whiteouts(id),
+            &self.layout.env_whiteouts(id),
+            true,
+            &mut paths,
+        )?;
+        paths.sort();
+        Ok(paths.join("\n"))
+    }
 }
 
 fn ensure_desktop_backend(env: &Env) -> Result<()> {
     if matches!(
         env.backend,
-        RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone
+        RootfsBackend::PathPreservingOverlay
+            | RootfsBackend::ApfsClone
+            | RootfsBackend::WindowsBlockClone
     ) {
         Ok(())
     } else {
@@ -794,22 +893,56 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
+fn collect_path_preserving_overlay_entries(
+    root: &Path,
+    dir: &Path,
+    deleted: bool,
+    paths: &mut Vec<String>,
+) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            collect_path_preserving_overlay_entries(root, &path, deleted, paths)?;
+            continue;
+        }
+        let rel = path.strip_prefix(root)?;
+        let visible = format!("/{}", rel.display());
+        if deleted {
+            paths.push(format!("deleted {visible}"));
+        } else {
+            paths.push(visible);
+        }
+    }
+    Ok(())
+}
+
 fn desktop_shell_command(
     rootfs_path: &Path,
+    backend: RootfsBackend,
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
 ) -> Vec<String> {
-    platform_desktop_shell_command(rootfs_path, env_id, host_workspace, limits)
+    platform_desktop_shell_command(rootfs_path, backend, env_id, host_workspace, limits)
 }
 
 #[cfg(target_os = "macos")]
 fn platform_desktop_shell_command(
     rootfs_path: &Path,
+    backend: RootfsBackend,
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
 ) -> Vec<String> {
+    if backend == RootfsBackend::PathPreservingOverlay {
+        return macos_path_preserving_shell_command(rootfs_path, env_id, host_workspace, limits);
+    }
     let tmpdir = rootfs_path.join(".tmp");
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut command = vec![
@@ -830,6 +963,32 @@ fn platform_desktop_shell_command(
     if let Some(host_workspace) = host_workspace {
         command.push(format!("HOST_WORKSPACE={host_workspace}"));
     }
+    push_agent_shell_command(&mut command, shell);
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn macos_path_preserving_shell_command(
+    view_root: &Path,
+    env_id: &str,
+    host_workspace: Option<&str>,
+    limits: &Limits,
+) -> Vec<String> {
+    let preserved_cwd = host_workspace.unwrap_or("/");
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let mut command = vec![
+        "agent-viewd".to_string(),
+        "shell".to_string(),
+        "--view-root".to_string(),
+        view_root.display().to_string(),
+        "--cwd".to_string(),
+        preserved_cwd.to_string(),
+        "--env-id".to_string(),
+        env_id.to_string(),
+        "--network".to_string(),
+        limits.network.clone(),
+        "--".to_string(),
+    ];
     push_agent_shell_command(&mut command, shell);
     command
 }
@@ -873,6 +1032,7 @@ fn bash_agent_prompt(env_id: &str) -> String {
 #[cfg(not(target_os = "macos"))]
 fn platform_desktop_shell_command(
     _rootfs_path: &Path,
+    _backend: RootfsBackend,
     _env_id: &str,
     _host_workspace: Option<&str>,
     _limits: &Limits,
@@ -1005,6 +1165,7 @@ mod tests {
     fn non_macos_desktop_shell_uses_client_default_shell() {
         let command = super::desktop_shell_command(
             Path::new("/agentfs/envs/codex-1/rootfs"),
+            RootfsBackend::ApfsClone,
             "codex-1",
             None,
             &Limits::default(),
@@ -1019,6 +1180,7 @@ mod tests {
         let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
         let command = super::desktop_shell_command(
             rootfs,
+            RootfsBackend::ApfsClone,
             "codex-1",
             Some("/Users/mizuame/Desktop/project"),
             &Limits::default(),
@@ -1048,9 +1210,39 @@ mod tests {
         let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
         let mut limits = Limits::default();
         limits.network = "none".to_string();
-        let command = super::desktop_shell_command(rootfs, "codex-1", None, &limits);
+        let command = super::desktop_shell_command(
+            rootfs,
+            RootfsBackend::ApfsClone,
+            "codex-1",
+            None,
+            &limits,
+        );
 
         assert!(command[2].contains("(deny network*)"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_path_preserving_shell_uses_view_helper_with_preserved_cwd() {
+        let view_root = Path::new("/Users/mizuame/.agentfs/envs/codex-1/view-root");
+        let command = super::desktop_shell_command(
+            view_root,
+            RootfsBackend::PathPreservingOverlay,
+            "codex-1",
+            Some("/Users/mizuame/Desktop/script/example"),
+            &Limits::default(),
+        );
+
+        assert_eq!(command[0], "agent-viewd");
+        assert!(command.contains(&"shell".to_string()));
+        assert!(command.contains(&"--view-root".to_string()));
+        assert!(command.contains(&view_root.display().to_string()));
+        assert!(command.contains(&"--cwd".to_string()));
+        assert!(command.contains(&"/Users/mizuame/Desktop/script/example".to_string()));
+        assert!(!command.contains(&"sandbox-exec".to_string()));
+        assert!(!command
+            .iter()
+            .any(|arg| arg == "HOME=/Users/mizuame/Desktop/script/example"));
     }
 
     #[cfg(target_os = "macos")]
