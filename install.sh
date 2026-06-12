@@ -213,6 +213,9 @@ if [ "$target" = "${target%pc-windows-msvc}" ]; then
   if [ -f "$payload_dir/bin/agent-viewd" ]; then
     $install_cmd -m 0755 "$payload_dir/bin/agent-viewd" "$INSTALL_DIR/agent-viewd"
   fi
+  if [ -f "$payload_dir/bin/agent-overlayfs" ]; then
+    $install_cmd -m 0755 "$payload_dir/bin/agent-overlayfs" "$INSTALL_DIR/agent-overlayfs"
+  fi
   $ln_cmd agentctl "$INSTALL_DIR/agctl"
 else
   $cp_cmd "$payload_dir/bin/agentctl.exe" "$INSTALL_DIR/agentctl.exe"

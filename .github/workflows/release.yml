@@ -47,7 +47,14 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --workspace --target "${{ matrix.target }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(-p agentctl -p agent-forkd)
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            packages+=(-p agent-viewd -p agent-overlayfs)
+          fi
+          cargo build --release --target "${{ matrix.target }}" "${packages[@]}"
 
       - name: Package
         shell: bash
@@ -61,7 +68,10 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/agentctl" "$staging/bin/"
             cp "target/${{ matrix.target }}/release/agent-forkd" "$staging/bin/"
-            cp "target/${{ matrix.target }}/release/agent-viewd" "$staging/bin/"
+            if [[ "${{ runner.os }}" == "macOS" ]]; then
+              cp "target/${{ matrix.target }}/release/agent-viewd" "$staging/bin/"
+              cp "target/${{ matrix.target }}/release/agent-overlayfs" "$staging/bin/"
+            fi
           fi
           cp -R packaging/agent-forkd "$staging/packaging/"
           cp -R packaging/systemd "$staging/packaging/"

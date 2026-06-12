@@ -18,6 +18,7 @@ cargo build --release
 sudo install -m 0755 target/release/agent-forkd /usr/local/bin/agent-forkd
 sudo install -m 0755 target/release/agentctl /usr/local/bin/agentctl
 sudo install -m 0755 target/release/agent-viewd /usr/local/bin/agent-viewd
+sudo install -m 0755 target/release/agent-overlayfs /usr/local/bin/agent-overlayfs
 sudo ln -sf agentctl /usr/local/bin/agctl
 sudo install -d -m 0755 /etc/agent-forkd
 sudo install -m 0644 packaging/agent-forkd/config.json /etc/agent-forkd/config.json
@@ -106,7 +107,8 @@ agentctl new -t codex -- uname -a
 ```
 
 By default the installer writes `agentctl`, its `agctl` alias, `agent-forkd`,
-and available helper binaries such as `agent-viewd` to `$HOME/.local/bin`.
+and available helper binaries such as `agent-viewd` and `agent-overlayfs` to
+`$HOME/.local/bin`.
 Override the release or destination with environment variables:
 
 ```bash
@@ -119,19 +121,20 @@ and arm64 targets. `agent-forkd` is operational on Linux where the runtime
 requirements below are available. Windows and macOS can either use `--remote`
 or `AGENT_REMOTE` for the Linux-backed workflow, or run the native desktop
 daemon locally. The native backend uses path-preserving overlay metadata and
-the `agent-viewd` helper on macOS, and `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block
-cloning on Windows so base/env trees can be derived without full copies on
-filesystems that support those primitives. It
-currently supports local exec/shell plus `workspace-patch` and
-`rootfs-changed-paths` export. macOS exec runs through `sandbox-exec` with
-writes limited to the env rootfs; `network=host` and `network=bridge` permit
-normal network access, while `network=none` denies network access. Windows exec runs
-inside a Job Object so child processes are grouped, capped by `pids_max`, and
-terminated when the job closes. This is still weaker than the Linux
-`systemd-nspawn` backend: macOS native shells run through the same sandbox
-profile as exec, Windows native shells run inside a Job Object rooted at the
-env directory, and native desktop sessions support background
-create/list/logs/kill but not interactive attach yet.
+the `agent-viewd` and `agent-overlayfs` helpers on macOS, and
+`FSCTL_DUPLICATE_EXTENTS_TO_FILE` block cloning on Windows so base/env trees can
+be derived without full copies on filesystems that support those primitives.
+macOS path-preserving views require macFUSE. The native backend currently
+supports local exec/shell plus `workspace-patch` and `rootfs-changed-paths`
+export. macOS exec and shell enter a chroot mounted by `agent-overlayfs`; writes
+are copied into the env upper layer while lower and whiteout layers preserve the
+host-visible path. `network=host` and `network=bridge` permit normal network
+access, while `network=none` denies network access. Windows exec runs inside a
+Job Object so child processes are grouped, capped by `pids_max`, and terminated
+when the job closes. This is still weaker than the Linux `systemd-nspawn`
+backend: Windows native shells run inside a Job Object rooted at the env
+directory, and native desktop sessions support background create/list/logs/kill
+but not interactive attach yet.
 
 ## Requirements
 
@@ -247,17 +250,17 @@ isolation, not a VM boundary. On macOS, new native environments store a lower
 snapshot, upper layer, whiteouts, and hidden `view-root`; commands enter that
 view through `agent-viewd` so the visible cwd can remain the original
 `/Users/...` path while writes are directed to the env upper layer. `agent-viewd`
-is a privileged helper and must not fall back to running directly in the host
-workspace. Windows exec uses a Job Object for process lifetime and
+is a privileged helper, `agent-overlayfs` performs the macFUSE mount, and
+neither helper must fall back to running directly in the host workspace. Windows
+exec uses a Job Object for process lifetime and
 process-count containment, but it does not yet provide filesystem or network
 isolation equivalent to Linux namespaces. Windows interactive shells run in a
 Job Object with the env rootfs as their working directory. Native desktop
-sessions are
-tracked as background host processes with transcript files under the env's
-session log directory; macOS session commands use the same sandbox profile as
-exec, while Windows session commands are kept in daemon-held Job Objects when
-started by the current daemon and fall back to PID-tree cleanup after daemon
-restart.
+sessions are tracked as background host processes with transcript files under
+the env's session log directory; macOS session commands use the same mounted
+path-preserving view as exec, while Windows session commands are kept in
+daemon-held Job Objects when started by the current daemon and fall back to
+PID-tree cleanup after daemon restart.
 
 ## Test Notes
 
