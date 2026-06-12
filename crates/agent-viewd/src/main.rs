@@ -485,8 +485,19 @@ fn overlayfs_program() -> PathBuf {
 #[cfg(target_os = "macos")]
 fn system_fallback_roots() -> Vec<PathBuf> {
     [
-        "/bin", "/sbin", "/usr", "/System", "/Library", "/private", "/dev", "/etc", "/var", "/tmp",
+        "/bin",
+        "/sbin",
+        "/usr",
+        "/System",
+        "/Library",
+        "/dev",
+        "/etc",
+        "/var",
+        "/tmp",
         "/opt",
+        "/private/etc",
+        "/private/tmp",
+        "/private/var/tmp",
     ]
     .into_iter()
     .map(PathBuf::from)
@@ -495,7 +506,7 @@ fn system_fallback_roots() -> Vec<PathBuf> {
 }
 
 fn command_for_network(program: &str, args: &[String], network: &str) -> Command {
-    if network == "none" {
+    let mut command = if network == "none" {
         let mut command = Command::new("/usr/bin/sandbox-exec");
         command
             .arg("-p")
@@ -507,7 +518,13 @@ fn command_for_network(program: &str, args: &[String], network: &str) -> Command
         let mut command = Command::new(program);
         command.args(args);
         command
-    }
+    };
+    command
+        .env("AGENT_NETWORK", network)
+        .env("TMPDIR", "/tmp")
+        .env("TMP", "/tmp")
+        .env("TEMP", "/tmp");
+    command
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -678,6 +695,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ok".to_string()]
         );
+    }
+
+    #[test]
+    fn commands_use_chroot_local_runtime_env() {
+        let command = super::command_for_network("/bin/echo", &["ok".to_string()], "host");
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(envs.contains(&("AGENT_NETWORK".to_string(), Some("host".to_string()))));
+        assert!(envs.contains(&("TMPDIR".to_string(), Some("/tmp".to_string()))));
+        assert!(envs.contains(&("TMP".to_string(), Some("/tmp".to_string()))));
+        assert!(envs.contains(&("TEMP".to_string(), Some("/tmp".to_string()))));
     }
 
     #[test]

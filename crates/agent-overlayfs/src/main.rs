@@ -85,6 +85,40 @@ impl FallbackRoots {
             .any(|root| visible == root.visible || visible.starts_with(&root.visible))
     }
 
+    fn is_virtual_dir(&self, visible: &Path) -> bool {
+        visible != Path::new("/")
+            && self
+                .roots
+                .iter()
+                .any(|root| root.visible != visible && root.visible.starts_with(visible))
+    }
+
+    fn child_names(&self, visible: &Path) -> Vec<std::ffi::OsString> {
+        let mut names = Vec::new();
+        for root in &self.roots {
+            let name = if visible == Path::new("/") {
+                root.visible
+                    .components()
+                    .nth(1)
+                    .map(|component| component.as_os_str().to_os_string())
+            } else if root.visible != visible && root.visible.starts_with(visible) {
+                root.visible
+                    .strip_prefix(visible)
+                    .ok()
+                    .and_then(|relative| relative.components().next())
+                    .map(|component| component.as_os_str().to_os_string())
+            } else {
+                None
+            };
+            if let Some(name) = name {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
+
     fn path(&self, visible: &Path) -> Option<PathBuf> {
         let root = self
             .roots
@@ -97,6 +131,7 @@ impl FallbackRoots {
         (real == root.real || real.starts_with(&root.real)).then(|| visible.to_path_buf())
     }
 
+    #[cfg(test)]
     fn roots(&self) -> impl Iterator<Item = &Path> {
         self.roots.iter().map(|root| root.visible.as_path())
     }
@@ -239,10 +274,15 @@ mod platform {
                 }
                 OverlayLookup::Whiteout(_) => Err(Errno::ENOENT),
                 OverlayLookup::Missing => {
-                    let fallback = self.fallback_path(visible).ok_or(Errno::ENOENT)?;
                     let ino = self.ino_for_path(visible)?;
-                    let attr = file_attr(ino, &fallback).map_err(|_| Errno::EIO)?;
-                    Ok((ino, attr))
+                    if let Some(fallback) = self.fallback_path(visible) {
+                        let attr = file_attr(ino, &fallback).map_err(|_| Errno::EIO)?;
+                        Ok((ino, attr))
+                    } else if self.fallback_roots.is_virtual_dir(visible) {
+                        Ok((ino, virtual_dir_attr(ino)))
+                    } else {
+                        Err(Errno::ENOENT)
+                    }
                 }
             }
         }
@@ -312,21 +352,28 @@ mod platform {
             }
             if visible == Path::new("/") {
                 entries.insert(OsString::from(READY_FILE), FileType::RegularFile);
-                for root in self.fallback_roots.roots() {
-                    if let Some(name) =
-                        root.components()
-                            .nth(1)
-                            .and_then(|component| match component {
-                                std::path::Component::Normal(name) => Some(name.to_os_string()),
-                                _ => None,
-                            })
-                    {
-                        if root.exists() {
-                            let kind = fuser_kind(root.to_path_buf()).map_err(|_| Errno::EIO)?;
-                            entries.entry(name).or_insert(kind);
-                        }
-                    }
+            }
+            for name in self.fallback_roots.child_names(visible) {
+                let child_visible = if visible == Path::new("/") {
+                    PathBuf::from("/").join(&name)
+                } else {
+                    visible.join(&name)
+                };
+                if self
+                    .overlay
+                    .whiteout_path(&child_visible)
+                    .map_err(|_| Errno::EIO)?
+                    .exists()
+                {
+                    continue;
                 }
+                let kind = self
+                    .fallback_path(&child_visible)
+                    .map(fuser_kind)
+                    .transpose()
+                    .map_err(|_| Errno::EIO)?
+                    .unwrap_or(FileType::Directory);
+                entries.entry(name).or_insert(kind);
             }
             Ok(entries.into_iter().collect())
         }
@@ -769,9 +816,17 @@ mod platform {
     }
 
     fn root_attr() -> FileAttr {
+        dir_attr(INodeNo(ROOT_INO))
+    }
+
+    fn virtual_dir_attr(ino: INodeNo) -> FileAttr {
+        dir_attr(ino)
+    }
+
+    fn dir_attr(ino: INodeNo) -> FileAttr {
         let now = SystemTime::now();
         FileAttr {
-            ino: INodeNo(ROOT_INO),
+            ino,
             size: 0,
             blocks: 0,
             atime: now,
@@ -947,5 +1002,28 @@ mod tests {
         let roots = FallbackRoots::new(vec![root.clone()]);
 
         assert_eq!(roots.path(&root.join("link")), Some(root.join("link")));
+    }
+
+    #[test]
+    fn fallback_roots_expose_virtual_parent_dirs_without_sibling_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let private = temp.path().join("private");
+        let etc = private.join("etc");
+        let secret = private.join("var/db");
+        fs::create_dir_all(&etc).unwrap();
+        fs::create_dir_all(&secret).unwrap();
+        fs::write(etc.join("zshrc"), "ok").unwrap();
+        fs::write(secret.join("secret.txt"), "secret").unwrap();
+
+        let roots = FallbackRoots::new(vec![etc.clone()]);
+
+        assert!(roots.is_virtual_dir(&private));
+        assert_eq!(
+            roots.child_names(&private),
+            vec![std::ffi::OsString::from("etc")]
+        );
+        assert_eq!(roots.path(&etc.join("zshrc")), Some(etc.join("zshrc")));
+        assert!(roots.path(&secret.join("secret.txt")).is_none());
+        assert!(!roots.is_virtual_dir(&secret));
     }
 }
