@@ -33,6 +33,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-viewd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
+
+[[package]]
 name = "agentctl"
 version = "0.1.0"
 dependencies = [

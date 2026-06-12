@@ -3,6 +3,7 @@ members = [
     "crates/agent-core",
     "crates/agentctl",
     "crates/agent-forkd",
+    "crates/agent-viewd",
 ]
 resolver = "2"
 
