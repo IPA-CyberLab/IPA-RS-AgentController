@@ -4,6 +4,8 @@ use clap::{Parser, Subcommand};
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
 use std::io::Read;
+#[cfg(any(target_os = "macos", test))]
+use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -217,31 +219,23 @@ fn split_command(command: &[String]) -> Result<(&str, &[String])> {
 
 #[cfg(any(target_os = "macos", test))]
 fn validate_view_runtime(view_root: &Path, cwd: &Path, program: &str, network: &str) -> Result<()> {
-    let mut required = vec![
+    for path in [
         Path::new("/bin"),
         Path::new("/usr"),
-        Path::new("/usr/bin/env"),
         Path::new("/System"),
         Path::new("/Library"),
         Path::new("/private"),
         Path::new("/dev"),
         cwd,
-    ];
+    ] {
+        validate_view_dir(view_root, path)?;
+    }
+    validate_view_executable(view_root, Path::new("/usr/bin/env"))?;
     if program.starts_with('/') {
-        required.push(Path::new(program));
+        validate_view_executable(view_root, Path::new(program))?;
     }
     if network == "none" {
-        required.push(Path::new("/usr/bin/sandbox-exec"));
-    }
-    for path in required {
-        let host_path = path_in_view_root(view_root, path)?;
-        if !host_path.exists() {
-            bail!(
-                "path-preserving view at {} is missing required chroot path {}; macOS system fallback roots are not mounted correctly",
-                view_root.display(),
-                path.display()
-            );
-        }
+        validate_view_executable(view_root, Path::new("/usr/bin/sandbox-exec"))?;
     }
     Ok(())
 }
@@ -265,6 +259,39 @@ fn path_in_view_root(view_root: &Path, absolute_path: &Path) -> Result<PathBuf> 
         .strip_prefix("/")
         .map(|relative| view_root.join(relative))
         .unwrap_or_else(|_| view_root.to_path_buf()))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_view_dir(view_root: &Path, path: &Path) -> Result<()> {
+    let host_path = path_in_view_root(view_root, path)?;
+    if !host_path.is_dir() {
+        bail!(
+            "path-preserving view at {} is missing required chroot directory {}; macOS system fallback roots are not mounted correctly",
+            view_root.display(),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_view_executable(view_root: &Path, path: &Path) -> Result<()> {
+    let host_path = path_in_view_root(view_root, path)?;
+    let metadata = std::fs::metadata(&host_path).with_context(|| {
+        format!(
+            "path-preserving view at {} is missing required executable {}; macOS system fallback roots are not mounted correctly",
+            view_root.display(),
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        bail!(
+            "path-preserving view at {} has non-executable required chroot path {}; macOS system fallback roots are not mounted correctly",
+            view_root.display(),
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn enter_view(view_root: &Path, cwd: &Path, network: &str) -> Result<()> {
@@ -567,6 +594,7 @@ mod tests {
     use super::Cli;
     use clap::Parser;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     #[test]
@@ -672,7 +700,7 @@ mod tests {
         let view_root = temp.path();
         seed_required_view_paths(view_root);
         fs::create_dir_all(view_root.join("Users/me/project")).unwrap();
-        fs::write(view_root.join("bin/zsh"), "").unwrap();
+        write_executable(view_root.join("bin/zsh"));
 
         super::validate_view_runtime(
             view_root,
@@ -700,7 +728,7 @@ mod tests {
         let view_root = temp.path();
         seed_required_view_paths(view_root);
         fs::create_dir_all(view_root.join("Users/me/project")).unwrap();
-        fs::write(view_root.join("bin/zsh"), "").unwrap();
+        write_executable(view_root.join("bin/zsh"));
 
         let error = super::validate_view_runtime(
             view_root,
@@ -712,7 +740,7 @@ mod tests {
         .to_string();
         assert!(error.contains("/usr/bin/sandbox-exec"));
 
-        fs::write(view_root.join("usr/bin/sandbox-exec"), "").unwrap();
+        write_executable(view_root.join("usr/bin/sandbox-exec"));
         super::validate_view_runtime(
             view_root,
             &PathBuf::from("/Users/me/project"),
@@ -722,10 +750,56 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn view_runtime_rejects_non_executable_program() {
+        let temp = tempfile::tempdir().unwrap();
+        let view_root = temp.path();
+        seed_required_view_paths(view_root);
+        fs::create_dir_all(view_root.join("Users/me/project")).unwrap();
+        fs::write(view_root.join("bin/zsh"), "").unwrap();
+
+        let error = super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "host",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("non-executable"));
+        assert!(error.contains("/bin/zsh"));
+    }
+
+    #[test]
+    fn view_runtime_requires_cwd_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let view_root = temp.path();
+        seed_required_view_paths(view_root);
+        write_executable(view_root.join("bin/zsh"));
+        fs::create_dir_all(view_root.join("Users/me")).unwrap();
+        fs::write(view_root.join("Users/me/project"), "").unwrap();
+
+        let error = super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "host",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("required chroot directory"));
+        assert!(error.contains("/Users/me/project"));
+    }
+
     fn seed_required_view_paths(view_root: &std::path::Path) {
         for path in ["bin", "usr/bin", "System", "Library", "private", "dev"] {
             fs::create_dir_all(view_root.join(path)).unwrap();
         }
-        fs::write(view_root.join("usr/bin/env"), "").unwrap();
+        write_executable(view_root.join("usr/bin/env"));
+    }
+
+    fn write_executable(path: PathBuf) {
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
