@@ -268,7 +268,7 @@ fn ensure_overlay_mounted(
         return Ok(());
     }
 
-    Command::new("agent-overlayfs")
+    Command::new(overlayfs_program())
         .arg("mount")
         .arg("--mount-point")
         .arg(view_root)
@@ -299,6 +299,19 @@ fn ensure_overlay_mounted(
     )
 }
 
+#[cfg(target_os = "macos")]
+fn overlayfs_program() -> PathBuf {
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(parent) = current.parent() {
+            let sibling = parent.join("agent-overlayfs");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("agent-overlayfs")
+}
+
 #[cfg(not(target_os = "macos"))]
 fn ensure_overlay_mounted(
     _view_root: &Path,
@@ -318,6 +331,9 @@ fn enter_view_for_child(view_root: &Path, cwd: &Path, network: &str) -> Result<(
     let uid = target_uid();
     let gid = target_gid();
     unsafe {
+        if geteuid() != 0 {
+            bail!("agent-viewd must run as root for chroot setup; install the macOS privileged helper");
+        }
         if chroot(view_root_c.as_ptr()) != 0 {
             return Err(std::io::Error::last_os_error())
                 .with_context(|| format!("failed to chroot {}", view_root.display()));
@@ -327,6 +343,10 @@ fn enter_view_for_child(view_root: &Path, cwd: &Path, network: &str) -> Result<(
                 .with_context(|| format!("failed to chdir preserved cwd {}", cwd.display()));
         }
         if let Some(gid) = gid {
+            if setgroups(0, std::ptr::null()) != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| "failed to drop supplementary groups");
+            }
             if setgid(gid) != 0 {
                 return Err(std::io::Error::last_os_error())
                     .with_context(|| format!("failed to drop gid to {gid}"));
@@ -353,6 +373,10 @@ fn target_uid() -> Option<u32> {
     std::env::var("SUDO_UID")
         .ok()
         .and_then(|value| value.parse().ok())
+        .or_else(|| {
+            let uid = unsafe { getuid() };
+            (uid != 0).then_some(uid)
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -360,6 +384,10 @@ fn target_gid() -> Option<u32> {
     std::env::var("SUDO_GID")
         .ok()
         .and_then(|value| value.parse().ok())
+        .or_else(|| {
+            let gid = unsafe { getgid() };
+            (gid != 0).then_some(gid)
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -368,6 +396,10 @@ extern "C" {
     fn chdir(path: *const std::os::raw::c_char) -> std::os::raw::c_int;
     fn setuid(uid: u32) -> std::os::raw::c_int;
     fn setgid(gid: u32) -> std::os::raw::c_int;
+    fn setgroups(ngroups: std::os::raw::c_int, groups: *const u32) -> std::os::raw::c_int;
+    fn geteuid() -> u32;
+    fn getuid() -> u32;
+    fn getgid() -> u32;
 }
 
 #[cfg(test)]

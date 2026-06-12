@@ -150,6 +150,18 @@ EOF
   echo "Installed and started launch agent: $label"
 }
 
+install_macos_privileged_helpers() {
+  helper_dir="${AGENT_PRIVILEGED_HELPER_DIR:-/usr/local/libexec/ipa-rs-isolated-agent}"
+  SUDO="$(sudo_cmd)"
+  $SUDO mkdir -p "$helper_dir"
+  $SUDO install -o root -g wheel -m 4755 "$payload_dir/bin/agent-viewd" "$helper_dir/agent-viewd"
+  if [ -f "$payload_dir/bin/agent-overlayfs" ]; then
+    $SUDO install -o root -g wheel -m 0755 "$payload_dir/bin/agent-overlayfs" "$helper_dir/agent-overlayfs"
+  fi
+  $ln_cmd "$helper_dir/agent-viewd" "$INSTALL_DIR/agent-viewd"
+  echo "Installed macOS privileged helper: $helper_dir/agent-viewd"
+}
+
 target="$(detect_target)"
 asset="ipa-rs-isolated-agent-$target.tar.gz"
 if [ "$VERSION" = "latest" ]; then
@@ -210,10 +222,12 @@ fi
 if [ "$target" = "${target%pc-windows-msvc}" ]; then
   $install_cmd -m 0755 "$payload_dir/bin/agentctl" "$INSTALL_DIR/agentctl"
   $install_cmd -m 0755 "$payload_dir/bin/agent-forkd" "$INSTALL_DIR/agent-forkd"
-  if [ -f "$payload_dir/bin/agent-viewd" ]; then
+  if [ -f "$payload_dir/bin/agent-viewd" ] && [ "$target" != "${target%apple-darwin}" ]; then
+    install_macos_privileged_helpers
+  elif [ -f "$payload_dir/bin/agent-viewd" ]; then
     $install_cmd -m 0755 "$payload_dir/bin/agent-viewd" "$INSTALL_DIR/agent-viewd"
   fi
-  if [ -f "$payload_dir/bin/agent-overlayfs" ]; then
+  if [ -f "$payload_dir/bin/agent-overlayfs" ] && [ "$target" = "${target%apple-darwin}" ]; then
     $install_cmd -m 0755 "$payload_dir/bin/agent-overlayfs" "$INSTALL_DIR/agent-overlayfs"
   fi
   $ln_cmd agentctl "$INSTALL_DIR/agctl"

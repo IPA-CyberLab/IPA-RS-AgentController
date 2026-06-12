@@ -109,6 +109,10 @@ agentctl new -t codex -- uname -a
 By default the installer writes `agentctl`, its `agctl` alias, `agent-forkd`,
 and available helper binaries such as `agent-viewd` and `agent-overlayfs` to
 `$HOME/.local/bin`.
+On macOS, `agent-viewd` is installed as a root-owned setuid helper under
+`/usr/local/libexec/ipa-rs-isolated-agent` because it must perform mount and
+chroot setup before dropping back to the invoking user. The installer leaves an
+`agent-viewd` symlink in the selected install directory.
 Override the release or destination with environment variables:
 
 ```bash
