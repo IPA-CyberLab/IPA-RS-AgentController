@@ -730,7 +730,9 @@ fn desktop_shell_start_dir_for_current_dir(
 }
 
 fn desktop_shell_path_preserving_overlay(command: &[String]) -> bool {
-    command.first().is_some_and(|program| program == "agent-viewd")
+    command
+        .first()
+        .is_some_and(|program| program == "agent-viewd")
         && command.iter().any(|arg| arg == "--view-root")
         && command.iter().any(|arg| arg == "--cwd")
 }

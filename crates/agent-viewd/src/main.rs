@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,6 +33,12 @@ struct EnterArgs {
     #[arg(long)]
     view_root: PathBuf,
     #[arg(long)]
+    lower: PathBuf,
+    #[arg(long)]
+    upper: PathBuf,
+    #[arg(long)]
+    whiteouts: PathBuf,
+    #[arg(long)]
     cwd: PathBuf,
     #[arg(long, default_value = "host")]
     network: String,
@@ -42,6 +50,12 @@ struct EnterArgs {
 struct ShellArgs {
     #[arg(long)]
     view_root: PathBuf,
+    #[arg(long)]
+    lower: PathBuf,
+    #[arg(long)]
+    upper: PathBuf,
+    #[arg(long)]
+    whiteouts: PathBuf,
     #[arg(long)]
     cwd: PathBuf,
     #[arg(long)]
@@ -56,6 +70,12 @@ struct ShellArgs {
 struct SessionArgs {
     #[arg(long)]
     view_root: PathBuf,
+    #[arg(long)]
+    lower: PathBuf,
+    #[arg(long)]
+    upper: PathBuf,
+    #[arg(long)]
+    whiteouts: PathBuf,
     #[arg(long)]
     cwd: PathBuf,
     #[arg(long, default_value = "host")]
@@ -76,13 +96,29 @@ fn main() {
 fn run() -> Result<()> {
     match Cli::parse().command {
         CommandKind::Exec(args) => {
-            let status = enter_and_run(args.view_root, args.cwd, args.network, args.command)?;
+            let status = enter_and_run(
+                args.view_root,
+                args.lower,
+                args.upper,
+                args.whiteouts,
+                args.cwd,
+                args.network,
+                args.command,
+            )?;
             std::process::exit(status);
         }
         CommandKind::Shell(args) => {
             let mut command = args.command;
             apply_prompt_env(&mut command, &args.env_id);
-            let status = enter_and_run(args.view_root, args.cwd, args.network, command)?;
+            let status = enter_and_run(
+                args.view_root,
+                args.lower,
+                args.upper,
+                args.whiteouts,
+                args.cwd,
+                args.network,
+                command,
+            )?;
             std::process::exit(status);
         }
         CommandKind::Session(args) => {
@@ -104,17 +140,24 @@ fn apply_prompt_env(command: &mut [String], env_id: &str) {
     if shell_name.contains("zsh") {
         std::env::set_var("PROMPT", format!("%F{{green}}{env_id}%f@%m %1~ %# "));
     } else {
-        std::env::set_var("PS1", format!("\\[\\033[32m\\]{env_id}\\[\\033[0m\\]@\\h \\w \\\\$ "));
+        std::env::set_var(
+            "PS1",
+            format!("\\[\\033[32m\\]{env_id}\\[\\033[0m\\]@\\h \\w \\\\$ "),
+        );
     }
 }
 
 fn enter_and_run(
     view_root: PathBuf,
+    lower: PathBuf,
+    upper: PathBuf,
+    whiteouts: PathBuf,
     cwd: PathBuf,
     network: String,
     command: Vec<String>,
 ) -> Result<i32> {
     let (program, args) = split_command(&command)?;
+    ensure_overlay_mounted(&view_root, &lower, &upper, &whiteouts)?;
     enter_view(&view_root, &cwd, &network)?;
     let status = Command::new(program)
         .args(args)
@@ -127,6 +170,7 @@ fn enter_and_run(
 fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
     validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
+    ensure_overlay_mounted(&args.view_root, &args.lower, &args.upper, &args.whiteouts)?;
     if let Some(parent) = args.log_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create log dir {}", parent.display()))?;
@@ -191,6 +235,78 @@ fn validate_enter_args(view_root: &Path, cwd: &Path, network: &str) -> Result<()
         bail!("view-root {} does not exist", view_root.display());
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_overlay_mounted(
+    view_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+) -> Result<()> {
+    for (name, path) in [
+        ("view-root", view_root),
+        ("lower", lower),
+        ("upper", upper),
+        ("whiteouts", whiteouts),
+    ] {
+        if !path.is_absolute() {
+            bail!("{name} must be absolute: {}", path.display());
+        }
+    }
+    std::fs::create_dir_all(view_root)
+        .with_context(|| format!("failed to create view-root {}", view_root.display()))?;
+    std::fs::create_dir_all(lower)
+        .with_context(|| format!("failed to create lower {}", lower.display()))?;
+    std::fs::create_dir_all(upper)
+        .with_context(|| format!("failed to create upper {}", upper.display()))?;
+    std::fs::create_dir_all(whiteouts)
+        .with_context(|| format!("failed to create whiteouts {}", whiteouts.display()))?;
+
+    let ready = view_root.join(".agent-overlayfs-ready");
+    if ready.is_file() {
+        return Ok(());
+    }
+
+    Command::new("agent-overlayfs")
+        .arg("mount")
+        .arg("--mount-point")
+        .arg(view_root)
+        .arg("--lower")
+        .arg(lower)
+        .arg("--upper")
+        .arg(upper)
+        .arg("--whiteouts")
+        .arg(whiteouts)
+        .arg("--fs-name")
+        .arg("agent-overlayfs")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| "failed to spawn agent-overlayfs mount helper")?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if ready.is_file() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    bail!(
+        "agent-overlayfs did not become ready at {} within 5s",
+        view_root.display()
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_overlay_mounted(
+    _view_root: &Path,
+    _lower: &Path,
+    _upper: &Path,
+    _whiteouts: &Path,
+) -> Result<()> {
+    bail!("agent-overlayfs is supported only on macOS")
 }
 
 #[cfg(target_os = "macos")]
@@ -267,6 +383,12 @@ mod tests {
             "exec",
             "--view-root",
             "/Users/mizuame/.agentfs/envs/codex/view-root",
+            "--lower",
+            "/Users/mizuame/.agentfs/envs/codex/lower",
+            "--upper",
+            "/Users/mizuame/.agentfs/envs/codex/upper",
+            "--whiteouts",
+            "/Users/mizuame/.agentfs/envs/codex/whiteouts",
             "--cwd",
             "/Users/mizuame/Desktop/project",
             "--network",
@@ -281,6 +403,18 @@ mod tests {
         assert_eq!(
             args.view_root,
             PathBuf::from("/Users/mizuame/.agentfs/envs/codex/view-root")
+        );
+        assert_eq!(
+            args.lower,
+            PathBuf::from("/Users/mizuame/.agentfs/envs/codex/lower")
+        );
+        assert_eq!(
+            args.upper,
+            PathBuf::from("/Users/mizuame/.agentfs/envs/codex/upper")
+        );
+        assert_eq!(
+            args.whiteouts,
+            PathBuf::from("/Users/mizuame/.agentfs/envs/codex/whiteouts")
         );
         assert_eq!(args.cwd, PathBuf::from("/Users/mizuame/Desktop/project"));
         assert_eq!(args.network, "none");

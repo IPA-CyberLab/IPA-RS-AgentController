@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/agent-core",
+    "crates/agent-overlayfs",
     "crates/agentctl",
     "crates/agent-forkd",
     "crates/agent-viewd",
@@ -25,3 +26,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2.5"
 windows-sys = "0.59"
+libc = "0.2"

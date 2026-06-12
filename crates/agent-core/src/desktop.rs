@@ -368,9 +368,7 @@ impl DesktopService {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| anyhow!("exec command cannot be empty"))?;
-        let output = self
-            .run_desktop_env_command(&env, program, args)
-            .await?;
+        let output = self.run_desktop_env_command(&env, program, args).await?;
         env.last_active_at = Utc::now();
         self.layout.write_env(&env).await?;
         Ok(output)
@@ -623,6 +621,9 @@ impl DesktopService {
                 .runner
                 .run_macos_path_preserving_overlay(
                     &env.rootfs_path,
+                    &self.layout.env_lower(&env.id),
+                    &self.layout.env_upper(&env.id),
+                    &self.layout.env_whiteouts(&env.id),
                     Path::new(&base.source),
                     program,
                     args,
@@ -646,6 +647,9 @@ impl DesktopService {
             let base = self.layout.read_base(&env.base_id).await?;
             return self.runner.spawn_macos_path_preserving_overlay_session(
                 &env.rootfs_path,
+                &self.layout.env_lower(&env.id),
+                &self.layout.env_upper(&env.id),
+                &self.layout.env_whiteouts(&env.id),
                 Path::new(&base.source),
                 program,
                 args,
@@ -902,7 +906,8 @@ fn collect_path_preserving_overlay_entries(
     if !root.exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
@@ -975,12 +980,22 @@ fn macos_path_preserving_shell_command(
     limits: &Limits,
 ) -> Vec<String> {
     let preserved_cwd = host_workspace.unwrap_or("/");
+    let env_dir = view_root.parent().unwrap_or_else(|| Path::new("/"));
+    let lower = env_dir.join("lower");
+    let upper = env_dir.join("upper");
+    let whiteouts = env_dir.join("whiteouts");
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut command = vec![
         "agent-viewd".to_string(),
         "shell".to_string(),
         "--view-root".to_string(),
         view_root.display().to_string(),
+        "--lower".to_string(),
+        lower.display().to_string(),
+        "--upper".to_string(),
+        upper.display().to_string(),
+        "--whiteouts".to_string(),
+        whiteouts.display().to_string(),
         "--cwd".to_string(),
         preserved_cwd.to_string(),
         "--env-id".to_string(),

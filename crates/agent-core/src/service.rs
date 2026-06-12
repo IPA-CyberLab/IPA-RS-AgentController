@@ -1000,9 +1000,7 @@ impl AgentService {
             RootfsBackend::Btrfs
             | RootfsBackend::ApfsClone
             | RootfsBackend::WindowsBlockClone
-            | RootfsBackend::PathPreservingOverlay => {
-                env.rootfs_path.clone()
-            }
+            | RootfsBackend::PathPreservingOverlay => env.rootfs_path.clone(),
             RootfsBackend::Overlay => self.overlay_upper_dir(&env.id),
         };
         self.disk_used(&path).await

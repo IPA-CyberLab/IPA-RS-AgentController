@@ -251,7 +251,10 @@ mod tests {
         };
         assert_eq!(found.source, OverlaySource::Upper);
         assert_eq!(fs::read_to_string(found.storage_path).unwrap(), "lower");
-        assert_eq!(fs::read_to_string(overlay.lower_path(old).unwrap()).unwrap(), "lower");
+        assert_eq!(
+            fs::read_to_string(overlay.lower_path(old).unwrap()).unwrap(),
+            "lower"
+        );
     }
 
     #[test]
@@ -274,7 +277,10 @@ mod tests {
             fs::read_to_string(overlay.lower_path(target).unwrap()).unwrap(),
             "old"
         );
-        assert!(matches!(overlay.resolve(tmp).unwrap(), OverlayLookup::Whiteout(_)));
+        assert!(matches!(
+            overlay.resolve(tmp).unwrap(),
+            OverlayLookup::Whiteout(_)
+        ));
     }
 
     #[test]
@@ -304,7 +310,10 @@ mod tests {
 
         assert_eq!(fs::read_to_string(a.storage_path).unwrap(), "A");
         assert_eq!(fs::read_to_string(b.storage_path).unwrap(), "lower");
-        assert_ne!(env_a.upper_path(path).unwrap(), env_b.upper_path(path).unwrap());
+        assert_ne!(
+            env_a.upper_path(path).unwrap(),
+            env_b.upper_path(path).unwrap()
+        );
     }
 
     fn fixture_overlay(root: &Path) -> PathOverlay {

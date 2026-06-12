@@ -1,0 +1,791 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "agent-overlayfs",
+    about = "macOS FUSE overlay filesystem for path-preserving agent views"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: CommandKind,
+}
+
+#[derive(Debug, Subcommand)]
+enum CommandKind {
+    Mount(MountArgs),
+    Check,
+}
+
+#[derive(Debug, Parser, Clone)]
+struct MountArgs {
+    #[arg(long)]
+    mount_point: PathBuf,
+    #[arg(long)]
+    lower: PathBuf,
+    #[arg(long)]
+    upper: PathBuf,
+    #[arg(long)]
+    whiteouts: PathBuf,
+    #[arg(long, default_value = "agent-overlayfs")]
+    fs_name: String,
+}
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    match Cli::parse().command {
+        CommandKind::Mount(args) => platform::mount(args),
+        CommandKind::Check => platform::check(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::MountArgs;
+    use agent_core::path_overlay::{OverlayLookup, PathOverlay};
+    use anyhow::{bail, Context, Result};
+    use fuser::{
+        BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
+        Generation, INodeNo, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
+        ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
+    };
+    use std::collections::{BTreeMap, HashMap};
+    use std::ffi::{OsStr, OsString};
+    use std::fs::{self, File, OpenOptions};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, SystemTime};
+
+    const ROOT_INO: u64 = 1;
+    const TTL: Duration = Duration::from_secs(1);
+    const READY_FILE: &str = ".agent-overlayfs-ready";
+
+    pub fn check() -> Result<()> {
+        Ok(())
+    }
+
+    pub fn mount(args: MountArgs) -> Result<()> {
+        validate_mount_args(&args)?;
+        let fs = OverlayFs::new(args.lower, args.upper, args.whiteouts);
+        let mut config = Config::default();
+        config.mount_options = vec![
+            MountOption::FSName(args.fs_name),
+            MountOption::Subtype("agent-overlayfs".to_string()),
+            MountOption::RW,
+            MountOption::NoSuid,
+        ];
+        fuser::mount2(fs, args.mount_point, &config).context("failed to mount agent-overlayfs")
+    }
+
+    fn validate_mount_args(args: &MountArgs) -> Result<()> {
+        for (name, path) in [
+            ("mount-point", &args.mount_point),
+            ("lower", &args.lower),
+            ("upper", &args.upper),
+            ("whiteouts", &args.whiteouts),
+        ] {
+            if !path.is_absolute() {
+                bail!("{name} must be absolute: {}", path.display());
+            }
+        }
+        if !args.mount_point.is_dir() {
+            bail!("mount-point {} does not exist", args.mount_point.display());
+        }
+        fs::create_dir_all(&args.lower)?;
+        fs::create_dir_all(&args.upper)?;
+        fs::create_dir_all(&args.whiteouts)?;
+        Ok(())
+    }
+
+    struct OverlayFs {
+        overlay: PathOverlay,
+        paths: Mutex<InodeTable>,
+        files: Mutex<HashMap<u64, File>>,
+        next_fh: AtomicU64,
+    }
+
+    impl OverlayFs {
+        fn new(lower: PathBuf, upper: PathBuf, whiteouts: PathBuf) -> Self {
+            let mut table = InodeTable::default();
+            table.intern(PathBuf::from("/"));
+            Self {
+                overlay: PathOverlay::new(lower, upper, whiteouts),
+                paths: Mutex::new(table),
+                files: Mutex::new(HashMap::new()),
+                next_fh: AtomicU64::new(2),
+            }
+        }
+
+        fn path_for_ino(&self, ino: INodeNo) -> Result<PathBuf, Errno> {
+            self.paths
+                .lock()
+                .map_err(|_| Errno::EIO)?
+                .path(ino)
+                .ok_or(Errno::ENOENT)
+        }
+
+        fn ino_for_path(&self, path: &Path) -> Result<INodeNo, Errno> {
+            Ok(self
+                .paths
+                .lock()
+                .map_err(|_| Errno::EIO)?
+                .intern(path.to_path_buf()))
+        }
+
+        fn child_path(&self, parent: INodeNo, name: &OsStr) -> Result<PathBuf, Errno> {
+            if name.as_bytes().contains(&b'/') || name.is_empty() {
+                return Err(Errno::EINVAL);
+            }
+            let parent = self.path_for_ino(parent)?;
+            Ok(if parent == Path::new("/") {
+                PathBuf::from("/").join(name)
+            } else {
+                parent.join(name)
+            })
+        }
+
+        fn lookup_path(&self, visible: &Path) -> Result<(INodeNo, FileAttr), Errno> {
+            if visible == Path::new("/") {
+                return Ok((INodeNo(ROOT_INO), root_attr()));
+            }
+            if visible == Path::new("/").join(READY_FILE) {
+                let ino = self.ino_for_path(visible)?;
+                return Ok((ino, virtual_ready_attr(ino)));
+            }
+            match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
+                OverlayLookup::Found(found) => {
+                    let ino = self.ino_for_path(visible)?;
+                    let attr = file_attr(ino, &found.storage_path).map_err(|_| Errno::EIO)?;
+                    Ok((ino, attr))
+                }
+                OverlayLookup::Whiteout(_) | OverlayLookup::Missing => Err(Errno::ENOENT),
+            }
+        }
+
+        fn storage_path_for_read(&self, visible: &Path) -> Result<PathBuf, Errno> {
+            match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
+                OverlayLookup::Found(found) => Ok(found.storage_path),
+                OverlayLookup::Whiteout(_) | OverlayLookup::Missing => Err(Errno::ENOENT),
+            }
+        }
+
+        fn ensure_upper_for_write(&self, visible: &Path) -> Result<PathBuf, Errno> {
+            let upper = self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?;
+            if upper.exists() {
+                return Ok(upper);
+            }
+            if let Some(parent) = upper.parent() {
+                fs::create_dir_all(parent).map_err(|_| Errno::EIO)?;
+            }
+            match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
+                OverlayLookup::Found(found) => {
+                    copy_up(&found.storage_path, &upper).map_err(|_| Errno::EIO)?
+                }
+                OverlayLookup::Whiteout(_) | OverlayLookup::Missing => {
+                    File::create(&upper).map_err(|_| Errno::EIO)?;
+                }
+            }
+            Ok(upper)
+        }
+
+        fn merged_dir_entries(&self, visible: &Path) -> Result<Vec<(OsString, FileType)>, Errno> {
+            let mut entries = BTreeMap::new();
+            for root in [
+                self.overlay.lower_path(visible).map_err(|_| Errno::EIO)?,
+                self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?,
+            ] {
+                if !root.exists() {
+                    continue;
+                }
+                if !root.is_dir() {
+                    return Err(Errno::ENOTDIR);
+                }
+                for entry in fs::read_dir(root).map_err(|_| Errno::EIO)? {
+                    let entry = entry.map_err(|_| Errno::EIO)?;
+                    let name = entry.file_name();
+                    let child_visible = if visible == Path::new("/") {
+                        PathBuf::from("/").join(&name)
+                    } else {
+                        visible.join(&name)
+                    };
+                    if self
+                        .overlay
+                        .whiteout_path(&child_visible)
+                        .map_err(|_| Errno::EIO)?
+                        .exists()
+                    {
+                        continue;
+                    }
+                    let kind = fuser_kind(entry.path()).map_err(|_| Errno::EIO)?;
+                    entries.insert(name, kind);
+                }
+            }
+            if visible == Path::new("/") {
+                entries.insert(OsString::from(READY_FILE), FileType::RegularFile);
+            }
+            Ok(entries.into_iter().collect())
+        }
+    }
+
+    impl Filesystem for OverlayFs {
+        fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+            let result = self
+                .child_path(parent, name)
+                .and_then(|path| self.lookup_path(&path));
+            match result {
+                Ok((_ino, attr)) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+            let result = self
+                .path_for_ino(ino)
+                .and_then(|path| self.lookup_path(&path).map(|(_, attr)| attr));
+            match result {
+                Ok(attr) => reply.attr(&TTL, &attr),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn setattr(
+            &self,
+            _req: &Request,
+            ino: INodeNo,
+            mode: Option<u32>,
+            _uid: Option<u32>,
+            _gid: Option<u32>,
+            size: Option<u64>,
+            _atime: Option<TimeOrNow>,
+            _mtime: Option<TimeOrNow>,
+            _ctime: Option<SystemTime>,
+            _fh: Option<FileHandle>,
+            _crtime: Option<SystemTime>,
+            _chgtime: Option<SystemTime>,
+            _bkuptime: Option<SystemTime>,
+            _flags: Option<BsdFileFlags>,
+            reply: ReplyAttr,
+        ) {
+            let result = (|| {
+                let path = self.path_for_ino(ino)?;
+                let upper = self.ensure_upper_for_write(&path)?;
+                if let Some(size) = size {
+                    OpenOptions::new()
+                        .write(true)
+                        .open(&upper)
+                        .and_then(|file| file.set_len(size))
+                        .map_err(|_| Errno::EIO)?;
+                }
+                if let Some(mode) = mode {
+                    fs::set_permissions(&upper, fs::Permissions::from_mode(mode & 0o7777))
+                        .map_err(|_| Errno::EIO)?;
+                }
+                file_attr(ino, &upper).map_err(|_| Errno::EIO)
+            })();
+            match result {
+                Ok(attr) => reply.attr(&TTL, &attr),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+            let result = self
+                .path_for_ino(ino)
+                .and_then(|path| self.storage_path_for_read(&path))
+                .and_then(|path| fs::read_link(path).map_err(|_| Errno::EIO));
+            match result {
+                Ok(target) => reply.data(target.as_os_str().as_bytes()),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn mkdir(
+            &self,
+            _req: &Request,
+            parent: INodeNo,
+            name: &OsStr,
+            mode: u32,
+            _umask: u32,
+            reply: ReplyEntry,
+        ) {
+            let result = (|| {
+                let path = self.child_path(parent, name)?;
+                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                if upper.exists() {
+                    return Err(Errno::EEXIST);
+                }
+                fs::create_dir_all(&upper).map_err(|_| Errno::EIO)?;
+                fs::set_permissions(&upper, fs::Permissions::from_mode(mode & 0o7777))
+                    .map_err(|_| Errno::EIO)?;
+                let ino = self.ino_for_path(&path)?;
+                let attr = file_attr(ino, &upper).map_err(|_| Errno::EIO)?;
+                Ok(attr)
+            })();
+            match result {
+                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+            let result = (|| {
+                let path = self.child_path(parent, name)?;
+                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                if upper.exists() {
+                    fs::remove_file(&upper).map_err(|_| Errno::EIO)?;
+                }
+                self.overlay.create_whiteout(&path).map_err(|_| Errno::EIO)
+            })();
+            reply_result(result, reply);
+        }
+
+        fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+            let result = (|| {
+                let path = self.child_path(parent, name)?;
+                if !self.merged_dir_entries(&path)?.is_empty() {
+                    return Err(Errno::ENOTEMPTY);
+                }
+                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                if upper.exists() {
+                    fs::remove_dir(&upper).map_err(|_| Errno::EIO)?;
+                }
+                self.overlay.create_whiteout(&path).map_err(|_| Errno::EIO)
+            })();
+            reply_result(result, reply);
+        }
+
+        fn symlink(
+            &self,
+            _req: &Request,
+            parent: INodeNo,
+            link_name: &OsStr,
+            target: &Path,
+            reply: ReplyEntry,
+        ) {
+            let result = (|| {
+                let path = self.child_path(parent, link_name)?;
+                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                if let Some(parent) = upper.parent() {
+                    fs::create_dir_all(parent).map_err(|_| Errno::EIO)?;
+                }
+                std::os::unix::fs::symlink(target, &upper).map_err(|_| Errno::EIO)?;
+                let ino = self.ino_for_path(&path)?;
+                file_attr(ino, &upper).map_err(|_| Errno::EIO)
+            })();
+            match result {
+                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn rename(
+            &self,
+            _req: &Request,
+            parent: INodeNo,
+            name: &OsStr,
+            newparent: INodeNo,
+            newname: &OsStr,
+            _flags: fuser::RenameFlags,
+            reply: ReplyEmpty,
+        ) {
+            let result = (|| {
+                let from = self.child_path(parent, name)?;
+                let to = self.child_path(newparent, newname)?;
+                self.overlay.rename(&from, &to).map_err(|_| Errno::EIO)
+            })();
+            reply_result(result, reply);
+        }
+
+        fn open(&self, _req: &Request, ino: INodeNo, flags: fuser::OpenFlags, reply: ReplyOpen) {
+            let result = (|| {
+                let visible = self.path_for_ino(ino)?;
+                let write = open_flags_write(flags.0);
+                let storage = if write {
+                    self.ensure_upper_for_write(&visible)?
+                } else {
+                    self.storage_path_for_read(&visible)?
+                };
+                let file = open_file(&storage, flags.0, write).map_err(|_| Errno::EIO)?;
+                let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+                self.files.lock().map_err(|_| Errno::EIO)?.insert(fh, file);
+                Ok(fh)
+            })();
+            match result {
+                Ok(fh) => reply.opened(FileHandle(fh), FopenFlags::empty()),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn create(
+            &self,
+            _req: &Request,
+            parent: INodeNo,
+            name: &OsStr,
+            mode: u32,
+            _umask: u32,
+            flags: i32,
+            reply: ReplyCreate,
+        ) {
+            let result = (|| {
+                let visible = self.child_path(parent, name)?;
+                let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
+                if let Some(parent) = upper.parent() {
+                    fs::create_dir_all(parent).map_err(|_| Errno::EIO)?;
+                }
+                let file = OpenOptions::new()
+                    .create(true)
+                    .truncate(flags & libc::O_TRUNC != 0)
+                    .read(true)
+                    .write(true)
+                    .mode(mode & 0o7777)
+                    .open(&upper)
+                    .map_err(|_| Errno::EIO)?;
+                let ino = self.ino_for_path(&visible)?;
+                let attr = file_attr(ino, &upper).map_err(|_| Errno::EIO)?;
+                let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+                self.files.lock().map_err(|_| Errno::EIO)?.insert(fh, file);
+                Ok((attr, fh))
+            })();
+            match result {
+                Ok((attr, fh)) => reply.created(
+                    &TTL,
+                    &attr,
+                    Generation(0),
+                    FileHandle(fh),
+                    FopenFlags::empty(),
+                ),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn read(
+            &self,
+            _req: &Request,
+            ino: INodeNo,
+            fh: FileHandle,
+            offset: u64,
+            size: u32,
+            _flags: fuser::OpenFlags,
+            _lock_owner: Option<fuser::LockOwner>,
+            reply: ReplyData,
+        ) {
+            if let Some(data) = virtual_data_for_ino(self, ino) {
+                let offset = offset as usize;
+                let end = data.len().min(offset.saturating_add(size as usize));
+                reply.data(data.get(offset..end).unwrap_or_default());
+                return;
+            }
+            let result = (|| {
+                let mut files = self.files.lock().map_err(|_| Errno::EIO)?;
+                let file = files.get_mut(&fh.0).ok_or(Errno::EIO)?;
+                let mut buf = vec![0; size as usize];
+                file.seek(SeekFrom::Start(offset)).map_err(|_| Errno::EIO)?;
+                let read = file.read(&mut buf).map_err(|_| Errno::EIO)?;
+                buf.truncate(read);
+                Ok(buf)
+            })();
+            match result {
+                Ok(buf) => reply.data(&buf),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn write(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            fh: FileHandle,
+            offset: u64,
+            data: &[u8],
+            _write_flags: fuser::WriteFlags,
+            _flags: fuser::OpenFlags,
+            _lock_owner: Option<fuser::LockOwner>,
+            reply: ReplyWrite,
+        ) {
+            let result = (|| {
+                let mut files = self.files.lock().map_err(|_| Errno::EIO)?;
+                let file = files.get_mut(&fh.0).ok_or(Errno::EIO)?;
+                file.seek(SeekFrom::Start(offset)).map_err(|_| Errno::EIO)?;
+                file.write_all(data).map_err(|_| Errno::EIO)?;
+                Ok(data.len() as u32)
+            })();
+            match result {
+                Ok(bytes) => reply.written(bytes),
+                Err(errno) => reply.error(errno),
+            }
+        }
+
+        fn fsync(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            fh: FileHandle,
+            _datasync: bool,
+            reply: ReplyEmpty,
+        ) {
+            let result = self.files.lock().map_err(|_| Errno::EIO).and_then(|files| {
+                files
+                    .get(&fh.0)
+                    .ok_or(Errno::EIO)
+                    .and_then(|file| file.sync_all().map_err(|_| Errno::EIO))
+            });
+            reply_result(result, reply);
+        }
+
+        fn release(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            fh: FileHandle,
+            _flags: fuser::OpenFlags,
+            _lock_owner: Option<fuser::LockOwner>,
+            _flush: bool,
+            reply: ReplyEmpty,
+        ) {
+            if let Ok(mut files) = self.files.lock() {
+                files.remove(&fh.0);
+            }
+            reply.ok();
+        }
+
+        fn readdir(
+            &self,
+            _req: &Request,
+            ino: INodeNo,
+            _fh: FileHandle,
+            offset: u64,
+            mut reply: ReplyDirectory,
+        ) {
+            let result = (|| {
+                let visible = self.path_for_ino(ino)?;
+                let mut entries = vec![
+                    (ino, FileType::Directory, OsString::from(".")),
+                    (
+                        parent_ino(&visible, self).unwrap_or(INodeNo(ROOT_INO)),
+                        FileType::Directory,
+                        OsString::from(".."),
+                    ),
+                ];
+                for (name, kind) in self.merged_dir_entries(&visible)? {
+                    let child = if visible == Path::new("/") {
+                        PathBuf::from("/").join(&name)
+                    } else {
+                        visible.join(&name)
+                    };
+                    let child_ino = self.ino_for_path(&child)?;
+                    entries.push((child_ino, kind, name));
+                }
+                Ok(entries)
+            })();
+            match result {
+                Ok(entries) => {
+                    for (index, (ino, kind, name)) in
+                        entries.into_iter().enumerate().skip(offset as usize)
+                    {
+                        if reply.add(ino, (index + 1) as u64, kind, name) {
+                            break;
+                        }
+                    }
+                    reply.ok();
+                }
+                Err(errno) => reply.error(errno),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct InodeTable {
+        next: u64,
+        by_path: HashMap<PathBuf, u64>,
+        by_ino: HashMap<u64, PathBuf>,
+    }
+
+    impl InodeTable {
+        fn intern(&mut self, path: PathBuf) -> INodeNo {
+            if let Some(ino) = self.by_path.get(&path) {
+                return INodeNo(*ino);
+            }
+            let ino = if path == Path::new("/") {
+                ROOT_INO
+            } else {
+                self.next = self.next.max(ROOT_INO + 1);
+                let ino = self.next;
+                self.next += 1;
+                ino
+            };
+            self.by_path.insert(path.clone(), ino);
+            self.by_ino.insert(ino, path);
+            INodeNo(ino)
+        }
+
+        fn path(&self, ino: INodeNo) -> Option<PathBuf> {
+            self.by_ino.get(&ino.0).cloned()
+        }
+    }
+
+    fn file_attr(ino: INodeNo, path: &Path) -> std::io::Result<FileAttr> {
+        let metadata = fs::symlink_metadata(path)?;
+        let kind = FileType::from_std(metadata.file_type()).unwrap_or(FileType::RegularFile);
+        Ok(FileAttr {
+            ino,
+            size: metadata.len(),
+            blocks: metadata.blocks(),
+            atime: unix_time(metadata.atime(), metadata.atime_nsec()),
+            mtime: unix_time(metadata.mtime(), metadata.mtime_nsec()),
+            ctime: unix_time(metadata.ctime(), metadata.ctime_nsec()),
+            crtime: SystemTime::UNIX_EPOCH,
+            kind,
+            perm: (metadata.mode() & 0o7777) as u16,
+            nlink: metadata.nlink() as u32,
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            rdev: metadata.rdev() as u32,
+            blksize: metadata.blksize() as u32,
+            flags: 0,
+        })
+    }
+
+    fn root_attr() -> FileAttr {
+        let now = SystemTime::now();
+        FileAttr {
+            ino: INodeNo(ROOT_INO),
+            size: 0,
+            blocks: 0,
+            atime: now,
+            mtime: now,
+            ctime: now,
+            crtime: now,
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: 2,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        }
+    }
+
+    fn virtual_ready_attr(ino: INodeNo) -> FileAttr {
+        let now = SystemTime::now();
+        FileAttr {
+            ino,
+            size: b"ready\n".len() as u64,
+            blocks: 1,
+            atime: now,
+            mtime: now,
+            ctime: now,
+            crtime: now,
+            kind: FileType::RegularFile,
+            perm: 0o444,
+            nlink: 1,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        }
+    }
+
+    fn virtual_data_for_ino(fs: &OverlayFs, ino: INodeNo) -> Option<&'static [u8]> {
+        let path = fs.path_for_ino(ino).ok()?;
+        (path == Path::new("/").join(READY_FILE)).then_some(b"ready\n")
+    }
+
+    fn fuser_kind(path: PathBuf) -> std::io::Result<FileType> {
+        fs::symlink_metadata(path)?
+            .file_type()
+            .pipe(FileType::from_std)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "unsupported file type"))
+    }
+
+    trait Pipe: Sized {
+        fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+            f(self)
+        }
+    }
+    impl<T> Pipe for T {}
+
+    fn unix_time(sec: i64, nsec: i64) -> SystemTime {
+        if sec >= 0 {
+            SystemTime::UNIX_EPOCH + Duration::new(sec as u64, nsec.max(0) as u32)
+        } else {
+            SystemTime::UNIX_EPOCH
+        }
+    }
+
+    fn copy_up(src: &Path, dst: &Path) -> Result<()> {
+        let metadata = fs::symlink_metadata(src)?;
+        if metadata.is_dir() {
+            fs::create_dir_all(dst)?;
+        } else if metadata.file_type().is_symlink() {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            std::os::unix::fs::symlink(fs::read_link(src)?, dst)?;
+        } else {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(src, dst)?;
+            fs::set_permissions(dst, fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
+        }
+        Ok(())
+    }
+
+    fn open_flags_write(flags: i32) -> bool {
+        matches!(flags & libc::O_ACCMODE, libc::O_WRONLY | libc::O_RDWR)
+            || flags & libc::O_TRUNC != 0
+            || flags & libc::O_APPEND != 0
+    }
+
+    fn open_file(path: &Path, flags: i32, write: bool) -> std::io::Result<File> {
+        let mut options = OpenOptions::new();
+        options.read(!write || flags & libc::O_ACCMODE == libc::O_RDWR);
+        options.write(write);
+        options.append(flags & libc::O_APPEND != 0);
+        options.truncate(flags & libc::O_TRUNC != 0);
+        options.open(path)
+    }
+
+    fn parent_ino(path: &Path, fs: &OverlayFs) -> Option<INodeNo> {
+        path.parent()
+            .and_then(|parent| fs.ino_for_path(parent).ok())
+    }
+
+    fn reply_result(result: Result<(), Errno>, reply: ReplyEmpty) {
+        match result {
+            Ok(()) => reply.ok(),
+            Err(errno) => reply.error(errno),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod platform {
+    use super::MountArgs;
+    use anyhow::{bail, Result};
+
+    pub fn check() -> Result<()> {
+        bail!("agent-overlayfs is supported only on macOS")
+    }
+
+    pub fn mount(_args: MountArgs) -> Result<()> {
+        bail!("agent-overlayfs is supported only on macOS")
+    }
+}

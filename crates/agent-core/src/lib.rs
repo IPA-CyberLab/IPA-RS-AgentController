@@ -4,9 +4,9 @@ pub mod config;
 pub mod desktop;
 pub mod export;
 pub mod model;
-pub mod path_overlay;
 #[cfg(unix)]
 pub mod nspawn;
+pub mod path_overlay;
 pub mod protocol;
 pub mod reflink;
 #[cfg(unix)]

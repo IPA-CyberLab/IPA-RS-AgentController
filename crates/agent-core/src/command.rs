@@ -93,17 +93,33 @@ impl CommandRunner {
     pub async fn run_macos_path_preserving_overlay(
         &self,
         view_root: &Path,
+        lower: &Path,
+        upper: &Path,
+        whiteouts: &Path,
         preserved_cwd: &Path,
         program: &str,
         args: &[String],
         limits: &Limits,
     ) -> Result<CmdOutput> {
-        run_macos_path_preserving_overlay(view_root, preserved_cwd, program, args, limits).await
+        run_macos_path_preserving_overlay(
+            view_root,
+            lower,
+            upper,
+            whiteouts,
+            preserved_cwd,
+            program,
+            args,
+            limits,
+        )
+        .await
     }
 
     pub fn spawn_macos_path_preserving_overlay_session(
         &self,
         view_root: &Path,
+        lower: &Path,
+        upper: &Path,
+        whiteouts: &Path,
         preserved_cwd: &Path,
         program: &str,
         args: &[String],
@@ -112,6 +128,9 @@ impl CommandRunner {
     ) -> Result<u32> {
         spawn_macos_path_preserving_overlay_session(
             view_root,
+            lower,
+            upper,
+            whiteouts,
             preserved_cwd,
             program,
             args,
@@ -143,6 +162,9 @@ impl CommandRunner {
 #[cfg(target_os = "macos")]
 async fn run_macos_path_preserving_overlay(
     view_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
     preserved_cwd: &Path,
     program: &str,
     args: &[String],
@@ -153,6 +175,12 @@ async fn run_macos_path_preserving_overlay(
         .arg("exec")
         .arg("--view-root")
         .arg(view_root)
+        .arg("--lower")
+        .arg(lower)
+        .arg("--upper")
+        .arg(upper)
+        .arg("--whiteouts")
+        .arg(whiteouts)
         .arg("--cwd")
         .arg(preserved_cwd)
         .arg("--network")
@@ -174,6 +202,9 @@ async fn run_macos_path_preserving_overlay(
 #[cfg(not(target_os = "macos"))]
 async fn run_macos_path_preserving_overlay(
     _view_root: &Path,
+    _lower: &Path,
+    _upper: &Path,
+    _whiteouts: &Path,
     _preserved_cwd: &Path,
     _program: &str,
     _args: &[String],
@@ -187,6 +218,9 @@ async fn run_macos_path_preserving_overlay(
 #[cfg(target_os = "macos")]
 fn spawn_macos_path_preserving_overlay_session(
     view_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
     preserved_cwd: &Path,
     program: &str,
     args: &[String],
@@ -197,6 +231,12 @@ fn spawn_macos_path_preserving_overlay_session(
         .arg("session")
         .arg("--view-root")
         .arg(view_root)
+        .arg("--lower")
+        .arg(lower)
+        .arg("--upper")
+        .arg(upper)
+        .arg("--whiteouts")
+        .arg(whiteouts)
         .arg("--cwd")
         .arg(preserved_cwd)
         .arg("--network")
@@ -207,7 +247,9 @@ fn spawn_macos_path_preserving_overlay_session(
         .arg(program)
         .args(args)
         .output()
-        .with_context(|| "failed to execute agent-viewd session for macOS path-preserving overlay")?;
+        .with_context(|| {
+            "failed to execute agent-viewd session for macOS path-preserving overlay"
+        })?;
     if !output.status.success() {
         return Err(anyhow!(
             "agent-viewd session exited with {}: {}{}",
@@ -226,6 +268,9 @@ fn spawn_macos_path_preserving_overlay_session(
 #[cfg(not(target_os = "macos"))]
 fn spawn_macos_path_preserving_overlay_session(
     _view_root: &Path,
+    _lower: &Path,
+    _upper: &Path,
+    _whiteouts: &Path,
     _preserved_cwd: &Path,
     _program: &str,
     _args: &[String],
