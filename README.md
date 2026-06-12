@@ -17,6 +17,7 @@ The implementation uses:
 cargo build --release
 sudo install -m 0755 target/release/agent-forkd /usr/local/bin/agent-forkd
 sudo install -m 0755 target/release/agentctl /usr/local/bin/agentctl
+sudo ln -sf agentctl /usr/local/bin/agctl
 sudo install -d -m 0755 /etc/agent-forkd
 sudo install -m 0644 packaging/agent-forkd/config.json /etc/agent-forkd/config.json
 sudo install -m 0644 packaging/systemd/agent-forkd.service /etc/systemd/system/agent-forkd.service
@@ -90,7 +91,7 @@ agent-forkd --agentfs "$HOME/.agentfs"
 agentctl --agentfs "$HOME/.agentfs" new -t codex --from "$PWD" -- uname -a
 ```
 
-By default the installer writes `agentctl` and `agent-forkd` to
+By default the installer writes `agentctl`, its `agctl` alias, and `agent-forkd` to
 `$HOME/.local/bin`. Override the release or destination with environment
 variables:
 

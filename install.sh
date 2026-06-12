@@ -198,18 +198,22 @@ if [ -w "$(dirname "$INSTALL_DIR")" ] || { [ -d "$INSTALL_DIR" ] && [ -w "$INSTA
   mkdir -p "$INSTALL_DIR"
   install_cmd="install"
   cp_cmd="cp"
+  ln_cmd="ln -sf"
 else
   SUDO="$(sudo_cmd)"
   $SUDO mkdir -p "$INSTALL_DIR"
   install_cmd="$SUDO install"
   cp_cmd="$SUDO cp"
+  ln_cmd="$SUDO ln -sf"
 fi
 
 if [ "$target" = "${target%pc-windows-msvc}" ]; then
   $install_cmd -m 0755 "$payload_dir/bin/agentctl" "$INSTALL_DIR/agentctl"
   $install_cmd -m 0755 "$payload_dir/bin/agent-forkd" "$INSTALL_DIR/agent-forkd"
+  $ln_cmd agentctl "$INSTALL_DIR/agctl"
 else
   $cp_cmd "$payload_dir/bin/agentctl.exe" "$INSTALL_DIR/agentctl.exe"
+  $cp_cmd "$payload_dir/bin/agentctl.exe" "$INSTALL_DIR/agctl.exe"
   $cp_cmd "$payload_dir/bin/agent-forkd.exe" "$INSTALL_DIR/agent-forkd.exe"
 fi
 
@@ -237,5 +241,5 @@ case "$target" in
   *pc-windows-msvc) ensure_windows_path ;;
 esac
 
-echo "Installed agentctl and agent-forkd to $INSTALL_DIR"
+echo "Installed agentctl, agctl, and agent-forkd to $INSTALL_DIR"
 echo "Restart your shell or run: export PATH=\"$INSTALL_DIR:\$PATH\""

@@ -75,13 +75,14 @@ try {
     $payload = Join-Path $tmp "ipa-rs-isolated-agent-$target"
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Copy-Item (Join-Path $payload "bin\agentctl.exe") (Join-Path $InstallDir "agentctl.exe") -Force
+    Copy-Item (Join-Path $payload "bin\agentctl.exe") (Join-Path $InstallDir "agctl.exe") -Force
     Copy-Item (Join-Path $payload "bin\agent-forkd.exe") (Join-Path $InstallDir "agent-forkd.exe") -Force
     Add-UserPath $InstallDir
     if ($installServiceRequested) {
         Install-AgentTask -InstallDir $InstallDir -Agentfs $Agentfs
     }
 
-    Write-Host "Installed agentctl.exe and agent-forkd.exe to $InstallDir"
+    Write-Host "Installed agentctl.exe, agctl.exe, and agent-forkd.exe to $InstallDir"
     Write-Host "Restart your shell or run: `$env:Path = `"$InstallDir;`$env:Path`""
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
