@@ -160,6 +160,7 @@ fn enter_and_run(
 ) -> Result<i32> {
     let (program, args) = split_command(&command)?;
     ensure_overlay_mounted(&view_root, &lower, &upper, &whiteouts)?;
+    validate_view_runtime(&view_root, &cwd, program, &network)?;
     enter_view(&view_root, &cwd, &network)?;
     let status = command_for_network(program, args, &network)
         .status()
@@ -171,6 +172,7 @@ fn enter_and_run(
 fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
     ensure_overlay_mounted(&args.view_root, &args.lower, &args.upper, &args.whiteouts)?;
+    validate_view_runtime(&args.view_root, &args.cwd, program, &args.network)?;
     validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
     if let Some(parent) = args.log_path.parent() {
         std::fs::create_dir_all(parent)
@@ -211,6 +213,58 @@ fn split_command(command: &[String]) -> Result<(&str, &[String])> {
         .split_first()
         .map(|(program, args)| (program.as_str(), args))
         .ok_or_else(|| anyhow!("command cannot be empty"))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_view_runtime(view_root: &Path, cwd: &Path, program: &str, network: &str) -> Result<()> {
+    let mut required = vec![
+        Path::new("/bin"),
+        Path::new("/usr"),
+        Path::new("/usr/bin/env"),
+        Path::new("/System"),
+        Path::new("/Library"),
+        Path::new("/private"),
+        Path::new("/dev"),
+        cwd,
+    ];
+    if program.starts_with('/') {
+        required.push(Path::new(program));
+    }
+    if network == "none" {
+        required.push(Path::new("/usr/bin/sandbox-exec"));
+    }
+    for path in required {
+        let host_path = path_in_view_root(view_root, path)?;
+        if !host_path.exists() {
+            bail!(
+                "path-preserving view at {} is missing required chroot path {}; macOS system fallback roots are not mounted correctly",
+                view_root.display(),
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", test)))]
+fn validate_view_runtime(
+    _view_root: &Path,
+    _cwd: &Path,
+    _program: &str,
+    _network: &str,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn path_in_view_root(view_root: &Path, absolute_path: &Path) -> Result<PathBuf> {
+    if !absolute_path.is_absolute() {
+        bail!("chroot path must be absolute: {}", absolute_path.display());
+    }
+    Ok(absolute_path
+        .strip_prefix("/")
+        .map(|relative| view_root.join(relative))
+        .unwrap_or_else(|_| view_root.to_path_buf()))
 }
 
 fn enter_view(view_root: &Path, cwd: &Path, network: &str) -> Result<()> {
@@ -512,6 +566,7 @@ extern "C" {
 mod tests {
     use super::Cli;
     use clap::Parser;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -609,5 +664,68 @@ mod tests {
         assert_eq!(super::status_display(None), "terminated by signal");
         assert_eq!(super::stderr_suffix(""), "");
         assert_eq!(super::stderr_suffix("  mount failed\n"), ": mount failed");
+    }
+
+    #[test]
+    fn view_runtime_requires_macos_system_paths_and_requested_program() {
+        let temp = tempfile::tempdir().unwrap();
+        let view_root = temp.path();
+        seed_required_view_paths(view_root);
+        fs::create_dir_all(view_root.join("Users/me/project")).unwrap();
+        fs::write(view_root.join("bin/zsh"), "").unwrap();
+
+        super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "host",
+        )
+        .unwrap();
+
+        fs::remove_file(view_root.join("usr/bin/env")).unwrap();
+        let error = super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "host",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("/usr/bin/env"));
+    }
+
+    #[test]
+    fn view_runtime_requires_sandbox_exec_for_network_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let view_root = temp.path();
+        seed_required_view_paths(view_root);
+        fs::create_dir_all(view_root.join("Users/me/project")).unwrap();
+        fs::write(view_root.join("bin/zsh"), "").unwrap();
+
+        let error = super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "none",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("/usr/bin/sandbox-exec"));
+
+        fs::write(view_root.join("usr/bin/sandbox-exec"), "").unwrap();
+        super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "none",
+        )
+        .unwrap();
+    }
+
+    fn seed_required_view_paths(view_root: &std::path::Path) {
+        for path in ["bin", "usr/bin", "System", "Library", "private", "dev"] {
+            fs::create_dir_all(view_root.join(path)).unwrap();
+        }
+        fs::write(view_root.join("usr/bin/env"), "").unwrap();
     }
 }
