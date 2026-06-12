@@ -145,12 +145,13 @@ are copied into the env upper layer while lower and whiteout layers preserve the
 host-visible path. The mounted view exposes only the env lower/upper/whiteout
 layers plus a fixed read-only set of macOS system fallback roots needed to run
 `/bin`, `/usr`, `/System`, `/Library`, and related system paths; arbitrary host
-paths outside those roots are not used as fallback content. `network=host` and
-`network=bridge` permit normal network access, while `network=none` wraps the
-entered command in the macOS sandbox profile that denies `network*`. Windows
-exec runs inside a Job Object so child processes are grouped, capped by
-`pids_max`, and terminated when the job closes. This is still weaker than the
-Linux `systemd-nspawn`
+paths outside those roots are not used as fallback content. macOS
+path-preserving views support `network=host` and `network=none`; `bridge` is a
+Linux nspawn mode and is rejected instead of silently running with host
+networking. `network=none` wraps the entered command in the macOS sandbox
+profile that denies `network*`. Windows exec runs inside a Job Object so child
+processes are grouped, capped by `pids_max`, and terminated when the job closes.
+This is still weaker than the Linux `systemd-nspawn`
 backend: Windows native shells run inside a Job Object rooted at the env
 directory, and native desktop sessions support background create/list/logs/kill
 but not interactive attach yet.

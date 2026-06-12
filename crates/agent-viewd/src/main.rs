@@ -161,6 +161,7 @@ fn enter_and_run(
     command: Vec<String>,
 ) -> Result<i32> {
     let (program, args) = split_command(&command)?;
+    validate_network_mode(&network)?;
     ensure_overlay_mounted(&view_root, &lower, &upper, &whiteouts)?;
     validate_view_runtime(&view_root, &cwd, program, &network)?;
     enter_view(&view_root, &cwd, &network)?;
@@ -173,6 +174,7 @@ fn enter_and_run(
 #[cfg(target_os = "macos")]
 fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
+    validate_network_mode(&args.network)?;
     ensure_overlay_mounted(&args.view_root, &args.lower, &args.upper, &args.whiteouts)?;
     validate_view_runtime(&args.view_root, &args.cwd, program, &args.network)?;
     validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
@@ -311,13 +313,21 @@ fn validate_enter_args(view_root: &Path, cwd: &Path, network: &str) -> Result<()
     if !cwd.is_absolute() {
         bail!("preserved cwd must be absolute: {}", cwd.display());
     }
-    if !matches!(network, "host" | "bridge" | "none") {
-        bail!("unsupported network mode {network}; use host, bridge, or none");
-    }
+    validate_network_mode(network)?;
     if !view_root.is_dir() {
         bail!("view-root {} does not exist", view_root.display());
     }
     Ok(())
+}
+
+fn validate_network_mode(network: &str) -> Result<()> {
+    if matches!(network, "host" | "none") {
+        return Ok(());
+    }
+    if network == "bridge" {
+        bail!("network mode bridge is not supported by macOS path-preserving views yet; use host or none");
+    }
+    bail!("unsupported network mode {network}; use host or none")
 }
 
 #[cfg(target_os = "macos")]
@@ -668,6 +678,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ok".to_string()]
         );
+    }
+
+    #[test]
+    fn bridge_network_is_rejected_instead_of_running_as_host() {
+        let error = super::validate_network_mode("bridge")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("bridge is not supported"));
+
+        let error = super::validate_network_mode("invalid")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported network mode invalid"));
     }
 
     #[test]
