@@ -698,14 +698,22 @@ fn desktop_shell_start_dir_for_current_dir(
     current_dir: &Path,
 ) -> PathBuf {
     let Some(host_workspace) = desktop_shell_host_workspace(command) else {
-        return rootfs_path.to_path_buf();
+        return desktop_shell_existing_dir_or_rootfs(current_dir, rootfs_path);
     };
     let Ok(relative_dir) = current_dir.strip_prefix(host_workspace) else {
-        return rootfs_path.to_path_buf();
+        return desktop_shell_existing_dir_or_rootfs(current_dir, rootfs_path);
     };
     let mapped_dir = rootfs_path.join(relative_dir);
     if mapped_dir.is_dir() {
         mapped_dir
+    } else {
+        rootfs_path.to_path_buf()
+    }
+}
+
+fn desktop_shell_existing_dir_or_rootfs(current_dir: &Path, rootfs_path: &Path) -> PathBuf {
+    if current_dir.is_dir() {
+        current_dir.to_path_buf()
     } else {
         rootfs_path.to_path_buf()
     }
@@ -1217,19 +1225,28 @@ mod tests {
     }
 
     #[test]
-    fn desktop_shell_start_dir_falls_back_when_cwd_is_outside_workspace() {
-        let rootfs = PathBuf::from("/agentfs/envs/codex-1/rootfs");
+    fn desktop_shell_start_dir_uses_host_cwd_when_outside_workspace() {
+        let temp = std::env::temp_dir().join(format!(
+            "agentctl-desktop-outside-start-dir-test-{}",
+            std::process::id()
+        ));
+        let rootfs = temp.join("rootfs");
+        let outside = temp.join("outside");
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&rootfs).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
         let command = vec![
             "/usr/bin/env".to_string(),
             "HOST_WORKSPACE=/Users/mizuame/Desktop/project".to_string(),
             "/bin/zsh".to_string(),
         ];
-        let current_dir = Path::new("/Users/mizuame/Downloads");
 
         assert_eq!(
-            desktop_shell_start_dir_for_current_dir(&rootfs, &command, current_dir),
-            rootfs
+            desktop_shell_start_dir_for_current_dir(&rootfs, &command, &outside),
+            outside
         );
+
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 
     #[test]
