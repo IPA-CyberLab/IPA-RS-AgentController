@@ -17,6 +17,7 @@ The implementation uses:
 cargo build --release
 sudo install -m 0755 target/release/agent-forkd /usr/local/bin/agent-forkd
 sudo install -m 0755 target/release/agentctl /usr/local/bin/agentctl
+sudo install -m 0755 target/release/agent-viewd /usr/local/bin/agent-viewd
 sudo ln -sf agentctl /usr/local/bin/agctl
 sudo install -d -m 0755 /etc/agent-forkd
 sudo install -m 0644 packaging/agent-forkd/config.json /etc/agent-forkd/config.json
@@ -104,9 +105,9 @@ agent-forkd --agentfs "$HOME/.agentfs"
 agentctl new -t codex -- uname -a
 ```
 
-By default the installer writes `agentctl`, its `agctl` alias, and `agent-forkd` to
-`$HOME/.local/bin`. Override the release or destination with environment
-variables:
+By default the installer writes `agentctl`, its `agctl` alias, `agent-forkd`,
+and available helper binaries such as `agent-viewd` to `$HOME/.local/bin`.
+Override the release or destination with environment variables:
 
 ```bash
 AGENT_VERSION=v0.1.0 AGENT_INSTALL_DIR=/usr/local/bin \
@@ -117,9 +118,10 @@ GitHub Actions builds release archives for Linux, macOS, and Windows on x86_64
 and arm64 targets. `agent-forkd` is operational on Linux where the runtime
 requirements below are available. Windows and macOS can either use `--remote`
 or `AGENT_REMOTE` for the Linux-backed workflow, or run the native desktop
-daemon locally. The native backend uses APFS `clonefile(2)` on macOS and
-`FSCTL_DUPLICATE_EXTENTS_TO_FILE` block cloning on Windows so base/env trees can
-be derived without full copies on filesystems that support those primitives. It
+daemon locally. The native backend uses path-preserving overlay metadata and
+the `agent-viewd` helper on macOS, and `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block
+cloning on Windows so base/env trees can be derived without full copies on
+filesystems that support those primitives. It
 currently supports local exec/shell plus `workspace-patch` and
 `rootfs-changed-paths` export. macOS exec runs through `sandbox-exec` with
 writes limited to the env rootfs; `network=host` and `network=bridge` permit
@@ -241,15 +243,16 @@ Session operations invoke `tmux` through `machinectl shell` inside the child nsp
 Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users, applies the selected network mode, marks `/agentfs` and common Docker socket paths inaccessible, and keeps base and sibling rootfs trees outside the child view.
 
 On macOS and Windows, the native desktop backend is copy-on-write workspace
-isolation, not a VM boundary. The env tree is cloned without a full copy where
-the filesystem supports it. macOS exec applies a sandbox profile that limits
-writes to the env rootfs, allows host reads needed to run installed tools, and
-uses the profile's `network` mode to allow (`host`/`bridge`) or deny (`none`)
-network access. Windows exec uses a Job Object for process
-lifetime and process-count containment, but it does not yet provide filesystem
-or network isolation equivalent to Linux namespaces. macOS interactive shells
-also use that sandbox profile; Windows interactive shells run in a Job Object
-with the env rootfs as their working directory. Native desktop sessions are
+isolation, not a VM boundary. On macOS, new native environments store a lower
+snapshot, upper layer, whiteouts, and hidden `view-root`; commands enter that
+view through `agent-viewd` so the visible cwd can remain the original
+`/Users/...` path while writes are directed to the env upper layer. `agent-viewd`
+is a privileged helper and must not fall back to running directly in the host
+workspace. Windows exec uses a Job Object for process lifetime and
+process-count containment, but it does not yet provide filesystem or network
+isolation equivalent to Linux namespaces. Windows interactive shells run in a
+Job Object with the env rootfs as their working directory. Native desktop
+sessions are
 tracked as background host processes with transcript files under the env's
 session log directory; macOS session commands use the same sandbox profile as
 exec, while Windows session commands are kept in daemon-held Job Objects when

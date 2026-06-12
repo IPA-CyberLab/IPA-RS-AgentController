@@ -210,6 +210,9 @@ fi
 if [ "$target" = "${target%pc-windows-msvc}" ]; then
   $install_cmd -m 0755 "$payload_dir/bin/agentctl" "$INSTALL_DIR/agentctl"
   $install_cmd -m 0755 "$payload_dir/bin/agent-forkd" "$INSTALL_DIR/agent-forkd"
+  if [ -f "$payload_dir/bin/agent-viewd" ]; then
+    $install_cmd -m 0755 "$payload_dir/bin/agent-viewd" "$INSTALL_DIR/agent-viewd"
+  fi
   $ln_cmd agentctl "$INSTALL_DIR/agctl"
 else
   $cp_cmd "$payload_dir/bin/agentctl.exe" "$INSTALL_DIR/agentctl.exe"
@@ -241,5 +244,5 @@ case "$target" in
   *pc-windows-msvc) ensure_windows_path ;;
 esac
 
-echo "Installed agentctl, agctl, and agent-forkd to $INSTALL_DIR"
+echo "Installed agentctl, agctl, agent-forkd, and available helper binaries to $INSTALL_DIR"
 echo "Restart your shell or run: export PATH=\"$INSTALL_DIR:\$PATH\""

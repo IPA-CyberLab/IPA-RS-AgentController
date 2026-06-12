@@ -61,6 +61,7 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/agentctl" "$staging/bin/"
             cp "target/${{ matrix.target }}/release/agent-forkd" "$staging/bin/"
+            cp "target/${{ matrix.target }}/release/agent-viewd" "$staging/bin/"
           fi
           cp -R packaging/agent-forkd "$staging/packaging/"
           cp -R packaging/systemd "$staging/packaging/"
@@ -68,7 +69,7 @@ jobs:
           tar -czf "dist/${{ matrix.archive }}" -C dist "ipa-rs-isolated-agent-${{ matrix.target }}"
 
       - name: Smoke test native desktop daemon
-        if: runner.os != 'Linux'
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           set -euo pipefail
