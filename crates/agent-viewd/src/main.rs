@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
+use std::io::Read;
+#[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -267,7 +269,7 @@ fn ensure_overlay_mounted(
         return Ok(());
     }
 
-    Command::new(overlayfs_program())
+    let mut child = Command::new(overlayfs_program())
         .arg("mount")
         .arg("--mount-point")
         .arg(view_root)
@@ -286,21 +288,62 @@ fn ensure_overlay_mounted(
         .arg("agent-overlayfs")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| "failed to spawn agent-overlayfs mount helper")?;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if overlay_is_ready(view_root) {
             return Ok(());
         }
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| "failed to poll agent-overlayfs mount helper")?
+        {
+            let stderr = child_stderr(&mut child)?;
+            bail!(
+                "agent-overlayfs exited before {} became ready: {}{}",
+                view_root.display(),
+                status_display(status.code()),
+                stderr_suffix(&stderr)
+            );
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
+    let _ = child.kill();
+    let stderr = child_stderr(&mut child).unwrap_or_default();
     bail!(
-        "agent-overlayfs did not become ready at {} within 5s",
-        view_root.display()
+        "agent-overlayfs did not become ready at {} within 10s{}",
+        view_root.display(),
+        stderr_suffix(&stderr)
     )
+}
+
+#[cfg(target_os = "macos")]
+fn child_stderr(child: &mut std::process::Child) -> Result<String> {
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_string(&mut stderr)
+            .with_context(|| "failed to read agent-overlayfs stderr")?;
+    }
+    Ok(stderr)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn status_display(code: Option<i32>) -> String {
+    code.map(|code| format!("status {code}"))
+        .unwrap_or_else(|| "terminated by signal".to_string())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn stderr_suffix(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!(": {trimmed}")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -558,5 +601,13 @@ mod tests {
             "/dev/disk3s1 on /Users/me/.agentfs/envs/codex/view-root (apfs, local)",
             "/Users/me/.agentfs/envs/codex/view-root"
         ));
+    }
+
+    #[test]
+    fn mount_helper_error_message_parts_are_compact() {
+        assert_eq!(super::status_display(Some(42)), "status 42");
+        assert_eq!(super::status_display(None), "terminated by signal");
+        assert_eq!(super::stderr_suffix(""), "");
+        assert_eq!(super::stderr_suffix("  mount failed\n"), ": mount failed");
     }
 }
