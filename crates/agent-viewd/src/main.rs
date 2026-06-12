@@ -492,7 +492,7 @@ fn system_fallback_roots() -> Vec<PathBuf> {
         "/Library",
         "/dev",
         "/etc",
-        "/var",
+        "/var/tmp",
         "/tmp",
         "/opt",
         "/private/etc",

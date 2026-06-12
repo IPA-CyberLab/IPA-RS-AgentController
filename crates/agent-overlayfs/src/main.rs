@@ -1010,20 +1010,38 @@ mod tests {
         let private = temp.path().join("private");
         let etc = private.join("etc");
         let secret = private.join("var/db");
+        let var = temp.path().join("var");
+        let var_tmp = var.join("tmp");
+        let var_secret = var.join("db");
         fs::create_dir_all(&etc).unwrap();
         fs::create_dir_all(&secret).unwrap();
+        fs::create_dir_all(&var_tmp).unwrap();
+        fs::create_dir_all(&var_secret).unwrap();
         fs::write(etc.join("zshrc"), "ok").unwrap();
         fs::write(secret.join("secret.txt"), "secret").unwrap();
+        fs::write(var_tmp.join("scratch.txt"), "ok").unwrap();
+        fs::write(var_secret.join("secret.txt"), "secret").unwrap();
 
-        let roots = FallbackRoots::new(vec![etc.clone()]);
+        let roots = FallbackRoots::new(vec![etc.clone(), var_tmp.clone()]);
 
         assert!(roots.is_virtual_dir(&private));
         assert_eq!(
             roots.child_names(&private),
             vec![std::ffi::OsString::from("etc")]
         );
+        assert!(roots.is_virtual_dir(&var));
+        assert_eq!(
+            roots.child_names(&var),
+            vec![std::ffi::OsString::from("tmp")]
+        );
         assert_eq!(roots.path(&etc.join("zshrc")), Some(etc.join("zshrc")));
+        assert_eq!(
+            roots.path(&var_tmp.join("scratch.txt")),
+            Some(var_tmp.join("scratch.txt"))
+        );
         assert!(roots.path(&secret.join("secret.txt")).is_none());
+        assert!(roots.path(&var_secret.join("secret.txt")).is_none());
         assert!(!roots.is_virtual_dir(&secret));
+        assert!(!roots.is_virtual_dir(&var_secret));
     }
 }
