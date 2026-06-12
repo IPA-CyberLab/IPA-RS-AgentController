@@ -2,10 +2,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -121,6 +123,7 @@ fn enter_and_run(
     Ok(status.code().unwrap_or(128))
 }
 
+#[cfg(target_os = "macos")]
 fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
     validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
@@ -152,6 +155,11 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
         .spawn()
         .with_context(|| format!("failed to spawn {program} inside path-preserving view"))?;
     Ok(child.id())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_session(_args: SessionArgs) -> Result<u32> {
+    bail!("agent-viewd path-preserving sessions are supported only on macOS")
 }
 
 fn split_command(command: &[String]) -> Result<(&str, &[String])> {
