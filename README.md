@@ -17,8 +17,6 @@ The implementation uses:
 cargo build --release
 sudo install -m 0755 target/release/agent-forkd /usr/local/bin/agent-forkd
 sudo install -m 0755 target/release/agentctl /usr/local/bin/agentctl
-sudo install -m 0755 target/release/agent-viewd /usr/local/bin/agent-viewd
-sudo install -m 0755 target/release/agent-overlayfs /usr/local/bin/agent-overlayfs
 sudo ln -sf agentctl /usr/local/bin/agctl
 sudo install -d -m 0755 /etc/agent-forkd
 sudo install -m 0644 packaging/agent-forkd/config.json /etc/agent-forkd/config.json
@@ -26,6 +24,12 @@ sudo install -m 0644 packaging/systemd/agent-forkd.service /etc/systemd/system/a
 sudo systemctl daemon-reload
 sudo systemctl enable --now agent-forkd
 ```
+
+For macOS path-preserving native views, install the helper pair through
+`install.sh` so `agent-viewd` is root-owned setuid under
+`/usr/local/libexec/ipa-rs-isolated-agent` and both helper names are symlinked
+from the selected install directory. A plain unprivileged copy of `agent-viewd`
+cannot perform the required `chroot`.
 
 ## Install
 
@@ -112,7 +116,9 @@ and available helper binaries such as `agent-viewd` and `agent-overlayfs` to
 On macOS, `agent-viewd` is installed as a root-owned setuid helper under
 `/usr/local/libexec/ipa-rs-isolated-agent` because it must perform mount and
 chroot setup before dropping back to the invoking user. The installer leaves an
-`agent-viewd` symlink in the selected install directory.
+`agent-viewd` symlink in the selected install directory, and also symlinks the
+same-directory `agent-overlayfs` helper for diagnostics and direct helper
+checks.
 Override the release or destination with environment variables:
 
 ```bash
@@ -132,10 +138,15 @@ macOS path-preserving views require macFUSE. The native backend currently
 supports local exec/shell plus `workspace-patch` and `rootfs-changed-paths`
 export. macOS exec and shell enter a chroot mounted by `agent-overlayfs`; writes
 are copied into the env upper layer while lower and whiteout layers preserve the
-host-visible path. `network=host` and `network=bridge` permit normal network
-access, while `network=none` denies network access. Windows exec runs inside a
-Job Object so child processes are grouped, capped by `pids_max`, and terminated
-when the job closes. This is still weaker than the Linux `systemd-nspawn`
+host-visible path. The mounted view exposes only the env lower/upper/whiteout
+layers plus a fixed read-only set of macOS system fallback roots needed to run
+`/bin`, `/usr`, `/System`, `/Library`, and related system paths; arbitrary host
+paths outside those roots are not used as fallback content. `network=host` and
+`network=bridge` permit normal network access, while `network=none` wraps the
+entered command in the macOS sandbox profile that denies `network*`. Windows
+exec runs inside a Job Object so child processes are grouped, capped by
+`pids_max`, and terminated when the job closes. This is still weaker than the
+Linux `systemd-nspawn`
 backend: Windows native shells run inside a Job Object rooted at the env
 directory, and native desktop sessions support background create/list/logs/kill
 but not interactive attach yet.

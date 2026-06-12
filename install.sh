@@ -157,6 +157,7 @@ install_macos_privileged_helpers() {
   $SUDO install -o root -g wheel -m 4755 "$payload_dir/bin/agent-viewd" "$helper_dir/agent-viewd"
   if [ -f "$payload_dir/bin/agent-overlayfs" ]; then
     $SUDO install -o root -g wheel -m 0755 "$payload_dir/bin/agent-overlayfs" "$helper_dir/agent-overlayfs"
+    $ln_cmd "$helper_dir/agent-overlayfs" "$INSTALL_DIR/agent-overlayfs"
   fi
   $ln_cmd "$helper_dir/agent-viewd" "$INSTALL_DIR/agent-viewd"
   echo "Installed macOS privileged helper: $helper_dir/agent-viewd"

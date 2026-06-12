@@ -168,8 +168,8 @@ fn enter_and_run(
 #[cfg(target_os = "macos")]
 fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
-    validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
     ensure_overlay_mounted(&args.view_root, &args.lower, &args.upper, &args.whiteouts)?;
+    validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
     if let Some(parent) = args.log_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create log dir {}", parent.display()))?;
@@ -184,13 +184,13 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
         .with_context(|| format!("failed to clone log {}", args.log_path.display()))?;
     let mut command = command_for_network(program, command_args, &args.network);
     command
+        .env("AGENT_NETWORK", &args.network)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     unsafe {
         command.pre_exec(move || {
-            enter_view_for_child(&args.view_root, &args.cwd, &args.network)
-                .map_err(std::io::Error::other)
+            enter_view_for_child(&args.view_root, &args.cwd).map_err(std::io::Error::other)
         });
     }
     let child = command
@@ -213,7 +213,9 @@ fn split_command(command: &[String]) -> Result<(&str, &[String])> {
 
 fn enter_view(view_root: &Path, cwd: &Path, network: &str) -> Result<()> {
     validate_enter_args(view_root, cwd, network)?;
-    enter_view_for_child(view_root, cwd, network)
+    enter_view_for_child(view_root, cwd)?;
+    std::env::set_var("AGENT_NETWORK", network);
+    Ok(())
 }
 
 fn validate_enter_args(view_root: &Path, cwd: &Path, network: &str) -> Result<()> {
@@ -354,7 +356,7 @@ fn ensure_overlay_mounted(
 }
 
 #[cfg(target_os = "macos")]
-fn enter_view_for_child(view_root: &Path, cwd: &Path, network: &str) -> Result<()> {
+fn enter_view_for_child(view_root: &Path, cwd: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
 
     let view_root_c = CString::new(view_root.as_os_str().as_bytes())?;
@@ -390,12 +392,11 @@ fn enter_view_for_child(view_root: &Path, cwd: &Path, network: &str) -> Result<(
             }
         }
     }
-    std::env::set_var("AGENT_NETWORK", network);
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn enter_view_for_child(_view_root: &Path, _cwd: &Path, _network: &str) -> Result<()> {
+fn enter_view_for_child(_view_root: &Path, _cwd: &Path) -> Result<()> {
     bail!("agent-viewd path-preserving views are supported only on macOS")
 }
 
@@ -482,5 +483,33 @@ mod tests {
         assert_eq!(args.cwd, PathBuf::from("/Users/mizuame/Desktop/project"));
         assert_eq!(args.network, "none");
         assert_eq!(args.command, vec!["/bin/pwd"]);
+    }
+
+    #[test]
+    fn network_none_wraps_command_with_sandbox_exec() {
+        let command = super::command_for_network("/bin/echo", &["ok".to_string()], "none");
+
+        assert_eq!(command.get_program(), "/usr/bin/sandbox-exec");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.contains(&"(version 1)\n(allow default)\n(deny network*)".to_string()));
+        assert!(args.contains(&"/bin/echo".to_string()));
+        assert!(args.contains(&"ok".to_string()));
+    }
+
+    #[test]
+    fn host_network_runs_command_directly() {
+        let command = super::command_for_network("/bin/echo", &["ok".to_string()], "host");
+
+        assert_eq!(command.get_program(), "/bin/echo");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["ok".to_string()]
+        );
     }
 }
