@@ -1,4 +1,4 @@
-use agent_core::config::AgentConfig;
+use agent_core::config::{default_agentfs, AgentConfig};
 #[cfg(not(target_os = "linux"))]
 use agent_core::desktop::DesktopService;
 use agent_core::protocol::{parse_request_json, Request, Response};
@@ -25,7 +25,7 @@ use tracing::{error, info};
 #[derive(Debug, Parser)]
 #[command(name = "agent-forkd", about = "Forked dev environment daemon")]
 struct Args {
-    #[arg(long, env = "AGENTFS", default_value = "/agentfs")]
+    #[arg(long, env = "AGENTFS", default_value_os_t = default_agentfs())]
     agentfs: PathBuf,
     #[arg(long, env = "AGENT_FORKD_CONFIG")]
     config: Option<PathBuf>,

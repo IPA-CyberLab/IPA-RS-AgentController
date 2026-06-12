@@ -78,14 +78,63 @@ impl AgentConfig {
     }
 }
 
+pub fn default_agentfs() -> PathBuf {
+    default_agentfs_path()
+}
+
+#[cfg(target_os = "linux")]
+fn default_agentfs_path() -> PathBuf {
+    PathBuf::from("/agentfs")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_agentfs_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".agentfs")
+}
+
+#[cfg(windows)]
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            Some(PathBuf::from(format!(
+                "{}{}",
+                drive.to_string_lossy(),
+                path.to_string_lossy()
+            )))
+        })
+}
+
+#[cfg(all(not(target_os = "linux"), not(windows)))]
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
 fn default_tcp_addr() -> String {
     "127.0.0.1:38475".to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::AgentConfig;
+    use super::{default_agentfs, AgentConfig};
     use crate::model::NetworkPolicy;
+    use std::path::PathBuf;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_default_agentfs_is_system_agentfs() {
+        assert_eq!(default_agentfs(), PathBuf::from("/agentfs"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn native_default_agentfs_is_user_local() {
+        assert!(default_agentfs().ends_with(".agentfs"));
+    }
 
     #[tokio::test]
     async fn config_loads_from_json_file() {

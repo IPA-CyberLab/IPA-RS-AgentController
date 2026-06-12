@@ -62,6 +62,19 @@ $env:AGENT_INSTALL_SERVICE = "1"
 iwr https://raw.githubusercontent.com/IPA-CyberLab/IPA-RS-IsolatedAgent/master/install.ps1 -UseB | iex
 ```
 
+On Linux, the default agent store is `/agentfs`. On macOS and Windows, the
+default is `$HOME/.agentfs`, matching the user-level launchd/Scheduled Task
+installed by the service option. That means a native desktop install can be
+started with:
+
+```bash
+agentctl new -t codex
+```
+
+```powershell
+agentctl new -t codex
+```
+
 For the stable workflow on Windows and macOS, point the client at a Linux host,
 WSL VM, or Linux VM where `agent-forkd` is installed:
 
@@ -83,12 +96,12 @@ and macOS, `agent-forkd` listens on `tcp_addr` from config, defaulting to
 
 ```powershell
 agent-forkd --agentfs "$env:USERPROFILE\.agentfs"
-agentctl --agentfs "$env:USERPROFILE\.agentfs" new -t codex --from "$PWD" -- cmd /C ver
+agentctl new -t codex -- cmd /C ver
 ```
 
 ```bash
 agent-forkd --agentfs "$HOME/.agentfs"
-agentctl --agentfs "$HOME/.agentfs" new -t codex --from "$PWD" -- uname -a
+agentctl new -t codex -- uname -a
 ```
 
 By default the installer writes `agentctl`, its `agctl` alias, and `agent-forkd` to
@@ -168,6 +181,10 @@ agentctl env destroy codex-1
 the target env when needed, starts it, and attaches the persistent `shell`
 session. Supplying a command after `--` performs the same bootstrap and then
 executes that command instead of attaching a shell.
+
+On native macOS and Windows, `agentctl new -t <env-id>` uses `$HOME/.agentfs`
+and clones the current directory by default. Pass `--from <path>` to choose a
+different native source tree.
 
 `agentctl shell <env-id>` creates or reuses a persistent `shell` tmux session
 inside the child and attaches the current terminal to it. `agentctl diff`

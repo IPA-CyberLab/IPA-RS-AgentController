@@ -1,4 +1,4 @@
-use agent_core::config::AgentConfig;
+use agent_core::config::{default_agentfs, AgentConfig};
 use agent_core::model::{EnvState, LimitOverrides, SessionState};
 use agent_core::protocol::parse_response_json;
 use agent_core::protocol::{Request, Response};
@@ -15,7 +15,7 @@ use tokio::net::UnixStream;
 #[derive(Debug, Parser)]
 #[command(name = "agentctl", about = "Control forked dev environments")]
 struct Cli {
-    #[arg(long, env = "AGENTFS", default_value = "/agentfs", global = true)]
+    #[arg(long, env = "AGENTFS", default_value_os_t = default_agentfs(), global = true)]
     agentfs: PathBuf,
     #[arg(long, env = "AGENT_FORKD_CONFIG", global = true)]
     config: Option<PathBuf>,
@@ -74,7 +74,7 @@ struct NewArgs {
     target: String,
     #[arg(long, default_value = "base-001")]
     base: String,
-    #[arg(long = "from", default_value = "/")]
+    #[arg(long = "from", default_value_os_t = default_new_source())]
     from: PathBuf,
     #[arg(long)]
     profile: Option<String>,
@@ -94,6 +94,16 @@ struct NewArgs {
     max_runtime: Option<String>,
     #[arg(last = true)]
     command: Vec<String>,
+}
+
+#[cfg(target_os = "linux")]
+fn default_new_source() -> PathBuf {
+    PathBuf::from("/")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_new_source() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[derive(Debug, Subcommand)]
@@ -894,6 +904,31 @@ mod tests {
     use clap::Parser;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_defaults_keep_agentfs_and_new_source_at_root() {
+        let cli = Cli::parse_from(["agentctl", "new", "-t", "codex"]);
+
+        assert_eq!(cli.agentfs, PathBuf::from("/agentfs"));
+        match cli.command {
+            Command::New(args) => assert_eq!(args.from, PathBuf::from("/")),
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn native_defaults_use_user_agentfs_and_current_directory_source() {
+        let cwd = std::env::current_dir().unwrap();
+        let cli = Cli::parse_from(["agentctl", "new", "-t", "codex"]);
+
+        assert!(cli.agentfs.ends_with(".agentfs"));
+        match cli.command {
+            Command::New(args) => assert_eq!(args.from, cwd),
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
 
     #[test]
     fn init_agentfs_override_controls_request_and_socket_base() {
