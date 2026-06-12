@@ -1,5 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+#[cfg(any(target_os = "macos", test))]
+use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -48,9 +50,61 @@ fn run() -> Result<()> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone)]
+struct FallbackRoots {
+    roots: Vec<FallbackRoot>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone)]
+struct FallbackRoot {
+    visible: PathBuf,
+    real: PathBuf,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl FallbackRoots {
+    fn new(mut roots: Vec<PathBuf>) -> Self {
+        roots.sort();
+        roots.dedup();
+        let roots = roots
+            .into_iter()
+            .filter_map(|visible| {
+                std::fs::canonicalize(&visible)
+                    .ok()
+                    .map(|real| FallbackRoot { visible, real })
+            })
+            .collect();
+        Self { roots }
+    }
+
+    fn contains_visible(&self, visible: &Path) -> bool {
+        self.roots
+            .iter()
+            .any(|root| visible == root.visible || visible.starts_with(&root.visible))
+    }
+
+    fn path(&self, visible: &Path) -> Option<PathBuf> {
+        let root = self
+            .roots
+            .iter()
+            .find(|root| visible == root.visible || visible.starts_with(&root.visible))?;
+        if !visible.exists() {
+            return None;
+        }
+        let real = std::fs::canonicalize(visible).ok()?;
+        (real == root.real || real.starts_with(&root.real)).then(|| visible.to_path_buf())
+    }
+
+    fn roots(&self) -> impl Iterator<Item = &Path> {
+        self.roots.iter().map(|root| root.visible.as_path())
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::MountArgs;
+    use super::{FallbackRoots, MountArgs};
     use agent_core::path_overlay::{OverlayLookup, PathOverlay};
     use anyhow::{bail, Context, Result};
     use fuser::{
@@ -117,7 +171,7 @@ mod platform {
 
     struct OverlayFs {
         overlay: PathOverlay,
-        fallback_roots: Vec<PathBuf>,
+        fallback_roots: FallbackRoots,
         paths: Mutex<InodeTable>,
         files: Mutex<HashMap<u64, File>>,
         next_fh: AtomicU64,
@@ -128,15 +182,13 @@ mod platform {
             lower: PathBuf,
             upper: PathBuf,
             whiteouts: PathBuf,
-            mut fallback_roots: Vec<PathBuf>,
+            fallback_roots: Vec<PathBuf>,
         ) -> Self {
             let mut table = InodeTable::default();
             table.intern(PathBuf::from("/"));
-            fallback_roots.sort();
-            fallback_roots.dedup();
             Self {
                 overlay: PathOverlay::new(lower, upper, whiteouts),
-                fallback_roots,
+                fallback_roots: FallbackRoots::new(fallback_roots),
                 paths: Mutex::new(table),
                 files: Mutex::new(HashMap::new()),
                 next_fh: AtomicU64::new(2),
@@ -260,7 +312,7 @@ mod platform {
             }
             if visible == Path::new("/") {
                 entries.insert(OsString::from(READY_FILE), FileType::RegularFile);
-                for root in &self.fallback_roots {
+                for root in self.fallback_roots.roots() {
                     if let Some(name) =
                         root.components()
                             .nth(1)
@@ -270,7 +322,7 @@ mod platform {
                             })
                     {
                         if root.exists() {
-                            let kind = fuser_kind(root.clone()).map_err(|_| Errno::EIO)?;
+                            let kind = fuser_kind(root.to_path_buf()).map_err(|_| Errno::EIO)?;
                             entries.entry(name).or_insert(kind);
                         }
                     }
@@ -280,15 +332,14 @@ mod platform {
         }
 
         fn fallback_path(&self, visible: &Path) -> Option<PathBuf> {
-            self.fallback_roots
-                .iter()
-                .any(|root| visible == root || visible.starts_with(root))
-                .then(|| visible.to_path_buf())
-                .filter(|path| path.exists())
+            self.fallback_roots.path(visible)
         }
 
         fn fallback_entries_root(&self, visible: &Path) -> Option<PathBuf> {
             if visible == Path::new("/") {
+                return None;
+            }
+            if !self.fallback_roots.contains_visible(visible) {
                 return None;
             }
             self.fallback_path(visible).filter(|path| path.is_dir())
@@ -844,5 +895,57 @@ mod platform {
 
     pub fn mount(_args: MountArgs) -> Result<()> {
         bail!("agent-overlayfs is supported only on macOS")
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::FallbackRoots;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn fallback_path_allows_files_inside_canonical_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("file.txt"), "ok").unwrap();
+
+        let roots = FallbackRoots::new(vec![root.clone()]);
+
+        assert!(roots.contains_visible(&root.join("file.txt")));
+        assert_eq!(roots.roots().collect::<Vec<_>>(), vec![root.as_path()]);
+        assert_eq!(
+            roots.path(&root.join("file.txt")),
+            Some(root.join("file.txt"))
+        );
+    }
+
+    #[test]
+    fn fallback_path_rejects_symlink_escape_outside_canonical_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("leak")).unwrap();
+
+        let roots = FallbackRoots::new(vec![root.clone()]);
+
+        assert!(roots.path(&root.join("leak")).is_none());
+    }
+
+    #[test]
+    fn fallback_path_accepts_symlink_staying_inside_canonical_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real/file.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink(Path::new("real/file.txt"), root.join("link")).unwrap();
+
+        let roots = FallbackRoots::new(vec![root.clone()]);
+
+        assert_eq!(roots.path(&root.join("link")), Some(root.join("link")));
     }
 }

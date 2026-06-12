@@ -17,3 +17,6 @@ agent-core = { path = "../agent-core" }
 [target.'cfg(target_os = "macos")'.dependencies]
 fuser = { version = "0.17.0", features = ["macfuse-4-compat", "macos-no-mount"] }
 libc.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
