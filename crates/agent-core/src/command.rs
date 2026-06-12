@@ -2,6 +2,8 @@ use crate::model::Limits;
 use anyhow::{anyhow, Context, Result};
 use std::ffi::OsStr;
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::process::Stdio;
 use tokio::process::Command;
@@ -170,7 +172,7 @@ async fn run_macos_path_preserving_overlay(
     args: &[String],
     limits: &Limits,
 ) -> Result<CmdOutput> {
-    let mut command = Command::new("agent-viewd");
+    let mut command = Command::new(macos_agent_viewd_program());
     command
         .arg("exec")
         .arg("--view-root")
@@ -227,7 +229,7 @@ fn spawn_macos_path_preserving_overlay_session(
     log_path: &Path,
     limits: &Limits,
 ) -> Result<u32> {
-    let output = std::process::Command::new("agent-viewd")
+    let output = std::process::Command::new(macos_agent_viewd_program())
         .arg("session")
         .arg("--view-root")
         .arg(view_root)
@@ -263,6 +265,13 @@ fn spawn_macos_path_preserving_overlay_session(
         .trim()
         .parse::<u32>()
         .with_context(|| format!("agent-viewd session returned invalid pid: {stdout:?}"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_agent_viewd_program() -> PathBuf {
+    std::env::var_os("AGENT_VIEWD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("agent-viewd"))
 }
 
 #[cfg(not(target_os = "macos"))]

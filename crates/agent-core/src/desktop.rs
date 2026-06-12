@@ -1006,7 +1006,7 @@ fn macos_path_preserving_shell_command(
     let whiteouts = env_dir.join("whiteouts");
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut command = vec![
-        "agent-viewd".to_string(),
+        macos_agent_viewd_program(),
         "shell".to_string(),
         "--view-root".to_string(),
         view_root.display().to_string(),
@@ -1026,6 +1026,11 @@ fn macos_path_preserving_shell_command(
     ];
     push_agent_shell_command(&mut command, shell);
     command
+}
+
+#[cfg(target_os = "macos")]
+fn macos_agent_viewd_program() -> String {
+    std::env::var("AGENT_VIEWD").unwrap_or_else(|_| "agent-viewd".to_string())
 }
 
 #[cfg(target_os = "macos")]

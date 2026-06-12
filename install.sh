@@ -113,6 +113,7 @@ ensure_windows_path() {
 install_macos_service() {
   need launchctl
   agentfs="${AGENTFS:-$HOME/.agentfs}"
+  helper_dir="${AGENT_PRIVILEGED_HELPER_DIR:-/usr/local/libexec/ipa-rs-isolated-agent}"
   label="com.ipa-cyberlab.agent-forkd"
   plist_dir="$HOME/Library/LaunchAgents"
   plist="$plist_dir/$label.plist"
@@ -131,6 +132,13 @@ install_macos_service() {
     <string>--agentfs</string>
     <string>$agentfs</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENT_VIEWD</key>
+    <string>$helper_dir/agent-viewd</string>
+    <key>PATH</key>
+    <string>$INSTALL_DIR:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
