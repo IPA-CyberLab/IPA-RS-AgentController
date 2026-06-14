@@ -16,6 +16,8 @@ pub enum Request {
         profile: String,
         limits: LimitOverrides,
         command: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
     },
     BaseFreeze {
         name: String,
@@ -164,7 +166,7 @@ fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]>
     Some(match message_type {
         "init" => &["type", "agentfs"],
         "new" => &[
-            "type", "target", "base", "from", "profile", "limits", "command",
+            "type", "target", "base", "from", "profile", "limits", "command", "cwd",
         ],
         "base_freeze" => &["type", "name", "from"],
         "env_create" => &["type", "id", "base", "profile", "limits"],
@@ -234,6 +236,19 @@ mod tests {
     }
 
     #[test]
+    fn new_request_accepts_missing_cwd_for_wire_compatibility() {
+        let request = parse_request_json(
+            r#"{"type":"new","target":"codex","base":"base-001","from":"/workspace","profile":"privileged-dev","limits":{},"command":[]}"#,
+        )
+        .unwrap();
+
+        match request {
+            Request::New { cwd, .. } => assert_eq!(cwd, None),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
     fn strict_request_parser_covers_all_variants() {
         for request in sample_requests() {
             let json = serde_json::to_string(&request).unwrap();
@@ -265,6 +280,7 @@ mod tests {
                 profile: "privileged-dev".to_string(),
                 limits: LimitOverrides::default(),
                 command: Vec::new(),
+                cwd: Some("/workspace".into()),
             },
             Request::BaseFreeze {
                 name: "base-001".to_string(),

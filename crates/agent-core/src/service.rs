@@ -64,6 +64,7 @@ impl AgentService {
                 profile,
                 limits,
                 command,
+                cwd: _,
             } => {
                 self.new_target(&target, &base, &from, &profile, limits, &command)
                     .await

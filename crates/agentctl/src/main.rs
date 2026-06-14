@@ -460,6 +460,7 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
                 max_runtime: args.max_runtime.clone(),
             },
             command: args.command.clone(),
+            cwd: Some(std::env::current_dir()?),
         }),
         Command::Base { command } => Ok(match command {
             BaseCommand::Freeze { name, from } => Request::BaseFreeze {
@@ -1027,6 +1028,7 @@ mod tests {
                 from,
                 profile,
                 command,
+                cwd,
                 ..
             } => {
                 assert_eq!(target, "codex");
@@ -1034,6 +1036,10 @@ mod tests {
                 assert_eq!(from, PathBuf::from("/"));
                 assert_eq!(profile, "custom-dev");
                 assert!(command.is_empty());
+                assert_eq!(
+                    cwd.as_deref(),
+                    Some(std::env::current_dir().unwrap().as_path())
+                );
             }
             other => panic!("unexpected request {other:?}"),
         }
@@ -1069,6 +1075,7 @@ mod tests {
                 profile,
                 limits,
                 command,
+                cwd,
                 ..
             } => {
                 assert_eq!(target, "codex");
@@ -1082,6 +1089,10 @@ mod tests {
                 assert_eq!(limits.idle_timeout.as_deref(), Some("30m"));
                 assert_eq!(limits.max_runtime.as_deref(), Some("6h"));
                 assert_eq!(command, vec!["echo".to_string(), "ready".to_string()]);
+                assert_eq!(
+                    cwd.as_deref(),
+                    Some(std::env::current_dir().unwrap().as_path())
+                );
             }
             other => panic!("unexpected request {other:?}"),
         }
