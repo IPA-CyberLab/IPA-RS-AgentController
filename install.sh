@@ -199,6 +199,16 @@ verify_macos_privileged_helpers() {
     exit 1
   fi
 
+  if [ "$(readlink "$INSTALL_DIR/agent-viewd")" != "$viewd" ]; then
+    echo "error: agent-viewd symlink must point at privileged helper $viewd" >&2
+    exit 1
+  fi
+
+  if [ "$(readlink "$INSTALL_DIR/agent-overlayfs")" != "$overlayfs" ]; then
+    echo "error: agent-overlayfs symlink must point at privileged helper $overlayfs" >&2
+    exit 1
+  fi
+
   viewd_owner="$(stat -f '%u' "$viewd")"
   viewd_mode="$(stat -f '%Sp' "$viewd")"
   if [ "$viewd_owner" != "0" ]; then

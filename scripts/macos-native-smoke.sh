@@ -36,6 +36,22 @@ echo "agent-forkd=$forkd"
 echo "agent-viewd=$viewd"
 echo "agent-overlayfs=$overlayfs"
 
+path_viewd="$(command -v agent-viewd || true)"
+path_overlayfs="$(command -v agent-overlayfs || true)"
+if [[ -z "$path_viewd" || -z "$path_overlayfs" ]]; then
+  echo "agent-viewd and agent-overlayfs must be visible on PATH after install" >&2
+  exit 2
+fi
+if [[ "$(stat -L -f '%d:%i' "$path_viewd")" != "$(stat -L -f '%d:%i' "$viewd")" ]]; then
+  echo "PATH agent-viewd resolves to $path_viewd, but smoke uses $viewd" >&2
+  exit 2
+fi
+if [[ "$(stat -L -f '%d:%i' "$path_overlayfs")" != "$(stat -L -f '%d:%i' "$overlayfs")" ]]; then
+  echo "PATH agent-overlayfs resolves to $path_overlayfs, but smoke uses $overlayfs" >&2
+  exit 2
+fi
+echo "verified helpers are visible on PATH"
+
 if [[ ! -d /Library/Filesystems/macfuse.fs && ! -x /usr/local/bin/macfuse ]]; then
   echo "macFUSE is not installed; install macFUSE before running this smoke test" >&2
   exit 2
