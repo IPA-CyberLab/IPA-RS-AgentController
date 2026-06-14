@@ -14,6 +14,7 @@ viewd="${AGENT_VIEWD:-$(command -v agent-viewd || true)}"
 overlayfs="${AGENT_OVERLAYFS:-$(command -v agent-overlayfs || true)}"
 daemon_log=""
 cwd_out=""
+new_cwd_out=""
 
 require_executable() {
   local name="$1"
@@ -69,6 +70,10 @@ dump_failure() {
     echo "---- cwd command output ----" >&2
     cat "$cwd_out" >&2 || true
   fi
+  if [[ -n "$new_cwd_out" && -f "$new_cwd_out" ]]; then
+    echo "---- new command output ----" >&2
+    cat "$new_cwd_out" >&2 || true
+  fi
   if [[ -n "$daemon_log" && -f "$daemon_log" ]]; then
     echo "---- agent-forkd log ----" >&2
     cat "$daemon_log" >&2 || true
@@ -100,7 +105,19 @@ env_id="mac-smoke-$$"
 net_host_id="mac-smoke-net-host-$$"
 net_none_id="mac-smoke-net-none-$$"
 
-"$agentctl" --agentfs "$agentfs" new -t "$env_id" --from "$source_dir" -- /bin/zsh -fc 'true'
+new_cwd_out="$tmp/new-cwd.out"
+(
+  cd "$source_dir/nested"
+  "$agentctl" --agentfs "$agentfs" new -t "$env_id" --from "$source_dir" -- /bin/zsh -fc '
+    set -e
+    printf "new-pwd=%s\n" "$PWD"
+    cat source.txt
+  '
+) | tee "$new_cwd_out"
+
+grep -F "new-pwd=$source_dir/nested" "$new_cwd_out" >/dev/null
+grep -F "source-ok" "$new_cwd_out" >/dev/null
+echo "verified new command preserved cwd and source visibility"
 
 cwd_out="$tmp/cwd.out"
 (
