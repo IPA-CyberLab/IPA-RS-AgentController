@@ -89,6 +89,10 @@ if [[ ! -d /Library/Filesystems/macfuse.fs && ! -x /usr/local/bin/macfuse ]]; th
   echo "macFUSE is not installed; install macFUSE before running this smoke test" >&2
   exit 2
 fi
+if ! ls /dev/fuse /dev/macfuse* /dev/osxfuse* >/dev/null 2>&1; then
+  echo "macFUSE device is not available; load and approve the macFUSE kernel extension before running this smoke test" >&2
+  exit 2
+fi
 
 viewd_owner="$(stat -L -f %u "$viewd")"
 viewd_mode="$(stat -L -f %Sp "$viewd")"

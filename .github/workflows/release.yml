@@ -91,6 +91,10 @@ jobs:
             done
             ls -ld /Library/Filesystems/macfuse.fs/Contents/Extensions || true
             ls -l /dev/fuse /dev/macfuse* /dev/osxfuse* 2>/dev/null || true
+            if ! ls /dev/fuse /dev/macfuse* /dev/osxfuse* >/dev/null 2>&1; then
+              echo "macFUSE device is not available; the macFUSE kernel extension is not loaded or not approved on this runner." >&2
+              exit 2
+            fi
           fi
 
       - name: Build
