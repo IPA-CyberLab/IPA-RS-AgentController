@@ -42,7 +42,10 @@ run_with_timeout() {
   "$@" >"$stdout_file" 2>"$stderr_file" &
   local pid="$!"
   (
-    sleep "$seconds"
+    trap 'kill "$sleep_pid" >/dev/null 2>&1 || true; exit 0' TERM INT
+    sleep "$seconds" &
+    local sleep_pid="$!"
+    wait "$sleep_pid"
     if kill -0 "$pid" >/dev/null 2>&1; then
       echo "command timed out after ${seconds}s: $*" >&2
       kill "$pid" >/dev/null 2>&1 || true

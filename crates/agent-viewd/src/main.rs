@@ -2,8 +2,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
-#[cfg(target_os = "macos")]
-use std::io::Read;
 #[cfg(any(target_os = "macos", test))]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "macos")]
@@ -379,6 +377,26 @@ fn ensure_overlay_mounted(
         return Ok(());
     }
 
+    let stderr_path = overlay_stderr_path(view_root)?;
+    if let Some(parent) = stderr_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create agent-overlayfs stderr log dir {}",
+                parent.display()
+            )
+        })?;
+    }
+    let stderr_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&stderr_path)
+        .with_context(|| {
+            format!(
+                "failed to open agent-overlayfs stderr log {}",
+                stderr_path.display()
+            )
+        })?;
     let mut child_command = Command::new(overlayfs_program());
     child_command
         .arg("mount")
@@ -399,7 +417,7 @@ fn ensure_overlay_mounted(
         .arg("agent-overlayfs")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::from(stderr_file));
     unsafe {
         child_command.pre_exec(|| {
             if libc::setpgid(0, 0) != 0 {
@@ -421,7 +439,7 @@ fn ensure_overlay_mounted(
             .try_wait()
             .with_context(|| "failed to poll agent-overlayfs mount helper")?
         {
-            let stderr = child_stderr(&mut child)?;
+            let stderr = read_and_remove_file(&stderr_path);
             bail!(
                 "agent-overlayfs exited before {} became ready: {}{}",
                 view_root.display(),
@@ -431,7 +449,8 @@ fn ensure_overlay_mounted(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let diagnostics = overlay_readiness_diagnostics(view_root, child.id());
+    let stderr = read_and_remove_file(&stderr_path);
+    let diagnostics = overlay_readiness_diagnostics(view_root, child.id(), &stderr);
     kill_process_group(child.id());
     let _ = child.kill();
     bail!(
@@ -452,7 +471,15 @@ fn kill_process_group(pid: u32) {
 }
 
 #[cfg(target_os = "macos")]
-fn overlay_readiness_diagnostics(view_root: &Path, child_pid: u32) -> String {
+fn overlay_stderr_path(view_root: &Path) -> Result<PathBuf> {
+    let env_dir = view_root
+        .parent()
+        .ok_or_else(|| anyhow!("view-root must be inside an env directory"))?;
+    Ok(env_dir.join("logs").join("agent-overlayfs-mount.stderr"))
+}
+
+#[cfg(target_os = "macos")]
+fn overlay_readiness_diagnostics(view_root: &Path, child_pid: u32, stderr: &str) -> String {
     let ready_path = view_root.join(".agent-overlayfs-ready");
     let ready_probe = match std::fs::metadata(&ready_path) {
         Ok(metadata) => format!("ready_marker=file:{}", metadata.is_file()),
@@ -482,7 +509,20 @@ fn overlay_readiness_diagnostics(view_root: &Path, child_pid: u32) -> String {
     )
     .map(|stdout| format!("helper_ps={}", stdout.trim()))
     .unwrap_or_else(|error| format!("helper_ps_error={error}"));
-    format!("\nreadiness diagnostics: {ready_probe}; {mount_lines}; {ps_output}")
+    format!(
+        "\nreadiness diagnostics: {ready_probe}; {mount_lines}; {}; {ps_output}",
+        stderr_diagnostic(stderr)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn stderr_diagnostic(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        "helper_stderr=<empty>".to_string()
+    } else {
+        format!("helper_stderr={trimmed}")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -503,13 +543,10 @@ fn command_stdout(program: &str, args: &[&str]) -> Result<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn child_stderr(child: &mut std::process::Child) -> Result<String> {
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_string(&mut stderr)
-            .with_context(|| "failed to read agent-overlayfs stderr")?;
-    }
-    Ok(stderr)
+fn read_and_remove_file(path: &Path) -> String {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let _ = std::fs::remove_file(path);
+    content
 }
 
 #[cfg(any(target_os = "macos", test))]
