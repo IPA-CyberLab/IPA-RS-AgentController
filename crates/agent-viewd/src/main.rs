@@ -233,6 +233,7 @@ fn validate_view_runtime(view_root: &Path, cwd: &Path, program: &str, network: &
         validate_view_dir(view_root, path)?;
     }
     validate_view_path_exists(view_root, Path::new("/dev/null"))?;
+    validate_view_path_exists(view_root, Path::new("/usr/lib/dyld"))?;
     validate_view_executable(view_root, Path::new("/usr/bin/env"))?;
     if program.starts_with('/') {
         validate_view_executable(view_root, Path::new(program))?;
@@ -800,6 +801,26 @@ mod tests {
     }
 
     #[test]
+    fn view_runtime_requires_macos_dynamic_loader() {
+        let temp = tempfile::tempdir().unwrap();
+        let view_root = temp.path();
+        seed_required_view_paths(view_root);
+        fs::create_dir_all(view_root.join("Users/me/project")).unwrap();
+        write_executable(view_root.join("bin/zsh"));
+
+        fs::remove_file(view_root.join("usr/lib/dyld")).unwrap();
+        let error = super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "host",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("/usr/lib/dyld"));
+    }
+
+    #[test]
     fn view_runtime_requires_sandbox_exec_for_network_none() {
         let temp = tempfile::tempdir().unwrap();
         let view_root = temp.path();
@@ -869,10 +890,13 @@ mod tests {
     }
 
     fn seed_required_view_paths(view_root: &std::path::Path) {
-        for path in ["bin", "usr/bin", "System", "Library", "private", "dev"] {
+        for path in [
+            "bin", "usr/bin", "usr/lib", "System", "Library", "private", "dev",
+        ] {
             fs::create_dir_all(view_root.join(path)).unwrap();
         }
         fs::write(view_root.join("dev/null"), "").unwrap();
+        fs::write(view_root.join("usr/lib/dyld"), "").unwrap();
         write_executable(view_root.join("usr/bin/env"));
     }
 

@@ -86,6 +86,7 @@ cwd_out="$tmp/cwd.out"
     printf "pwd=%s\n" "$PWD"
     /usr/bin/env true
     test -x /bin/zsh
+    test -e /usr/lib/dyld
     test -d /System/Library
     cat source.txt
   '
