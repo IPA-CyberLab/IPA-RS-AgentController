@@ -326,6 +326,7 @@ mod platform {
         for path in [
             "/Library/Filesystems/macfuse.fs",
             "/usr/local/bin/macfuse",
+            "/dev/fuse",
             "/dev/macfuse0",
             "/dev/osxfuse0",
         ] {

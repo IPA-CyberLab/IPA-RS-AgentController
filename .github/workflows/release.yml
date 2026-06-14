@@ -80,6 +80,18 @@ jobs:
           fi
           echo "PKG_CONFIG_PATH=$pkg_config_path" >> "$GITHUB_ENV"
           PKG_CONFIG_PATH="$pkg_config_path" pkg-config --modversion fuse
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.macos_native_smoke }}" == "true" ]]; then
+            if [[ -x /Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse ]]; then
+              sudo /Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse || true
+            fi
+            for kext in /Library/Filesystems/macfuse.fs/Contents/Extensions/*/macfuse.kext /Library/Filesystems/macfuse.fs/Contents/Extensions/macfuse.kext; do
+              if [[ -d "$kext" ]]; then
+                sudo /usr/bin/kmutil load -p "$kext" || true
+              fi
+            done
+            ls -ld /Library/Filesystems/macfuse.fs/Contents/Extensions || true
+            ls -l /dev/fuse /dev/macfuse* /dev/osxfuse* 2>/dev/null || true
+          fi
 
       - name: Build
         shell: bash
