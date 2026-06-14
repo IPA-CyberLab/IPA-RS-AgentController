@@ -180,6 +180,14 @@ if [[ -e /usr/local ]]; then
   echo "verified broad /usr/local host tree is not visible"
 fi
 
+if [[ -e "/Library/Application Support" ]]; then
+  (
+    cd "$source_dir/nested"
+    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "/Library/Application Support"'
+  )
+  echo "verified broad /Library application data is not visible"
+fi
+
 port="${AGENT_SMOKE_PORT:-38476}"
 while true; do
   printf 'ok\n' | /usr/bin/nc -l 127.0.0.1 "$port" >/dev/null 2>&1 || true

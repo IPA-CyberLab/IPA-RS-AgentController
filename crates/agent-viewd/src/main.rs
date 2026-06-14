@@ -516,7 +516,7 @@ fn system_fallback_root_candidates() -> &'static [&'static str] {
         "/usr/lib",
         "/usr/share",
         "/System",
-        "/Library",
+        "/Library/Filesystems",
         "/dev/null",
         "/dev/random",
         "/dev/tty",
@@ -788,12 +788,15 @@ mod tests {
         assert!(!roots.contains(&"/private"));
         assert!(!roots.contains(&"/usr"));
         assert!(!roots.contains(&"/usr/local"));
+        assert!(!roots.contains(&"/Library"));
+        assert!(!roots.contains(&"/Library/Application Support"));
         assert!(!roots.contains(&"/var"));
         assert!(roots.contains(&"/dev/null"));
         assert!(roots.contains(&"/dev/random"));
         assert!(roots.contains(&"/dev/urandom"));
         assert!(roots.contains(&"/usr/bin"));
         assert!(roots.contains(&"/usr/lib"));
+        assert!(roots.contains(&"/Library/Filesystems"));
         assert!(roots.contains(&"/private/etc"));
         assert!(roots.contains(&"/private/tmp"));
         assert!(roots.contains(&"/private/var/tmp"));

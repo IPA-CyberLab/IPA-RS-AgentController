@@ -144,9 +144,10 @@ export. macOS exec and shell enter a chroot mounted by `agent-overlayfs`; writes
 are copied into the env upper layer while lower and whiteout layers preserve the
 host-visible path. The mounted view exposes only the env lower/upper/whiteout
 layers plus a fixed read-only set of macOS system fallback roots needed to run
-`/bin`, `/usr/bin`, `/usr/lib`, `/System`, `/Library`, and related system
-paths. Broad user-controlled host trees such as `/usr/local`, `/opt`,
-`/private`, `/var`, and `/dev` are not fallback roots. macOS
+`/bin`, `/usr/bin`, `/usr/lib`, `/System`, and the macFUSE filesystem
+registration under `/Library/Filesystems`. Broad user-controlled host trees
+such as `/usr/local`, `/opt`, `/Library/Application Support`, `/private`,
+`/var`, and `/dev` are not fallback roots. macOS
 path-preserving views support `network=host` and `network=none`; `bridge` is a
 Linux nspawn mode and is rejected instead of silently running with host
 networking. `network=none` wraps the entered command in the macOS sandbox
@@ -167,9 +168,9 @@ scripts/macos-native-smoke.sh
 The smoke test requires the installed `agent-viewd` to resolve to a root-owned
 setuid helper, checks that `agent-overlayfs` is callable, starts `agent-forkd`,
 verifies `/bin/zsh`, `/usr/bin/env`, `/System`, preserved cwd, and confirms
-that broad host fallback siblings like `/private/var/db` and `/usr/local` are
-not visible. It also checks that `network=none` cannot reach a local TCP
-listener while `network=host` can.
+that broad host fallback siblings like `/private/var/db`, `/usr/local`, and
+`/Library/Application Support` are not visible. It also checks that
+`network=none` cannot reach a local TCP listener while `network=host` can.
 
 ## Requirements
 
