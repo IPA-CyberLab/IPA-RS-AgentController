@@ -322,11 +322,42 @@ mod platform {
     const READY_FILE: &str = ".agent-overlayfs-ready";
 
     pub fn check() -> Result<()> {
+        eprintln!("agent-overlayfs: checking macOS FUSE environment");
+        for path in [
+            "/Library/Filesystems/macfuse.fs",
+            "/usr/local/bin/macfuse",
+            "/dev/macfuse0",
+            "/dev/osxfuse0",
+        ] {
+            let status = match fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.is_dir() => "dir",
+                Ok(metadata) if metadata.is_file() => "file",
+                Ok(_) => "other",
+                Err(error) => {
+                    eprintln!("agent-overlayfs: check {path}: {error}");
+                    continue;
+                }
+            };
+            eprintln!("agent-overlayfs: check {path}: {status}");
+        }
         Ok(())
     }
 
     pub fn mount(args: MountArgs) -> Result<()> {
+        eprintln!(
+            "agent-overlayfs: validating mount-point={} lower={} upper={} whiteouts={} fallback-roots={}",
+            args.mount_point.display(),
+            args.lower.display(),
+            args.upper.display(),
+            args.whiteouts.display(),
+            args.fallback_roots.len()
+        );
         validate_mount_args(&args)?;
+        eprintln!(
+            "agent-overlayfs: starting fuser mount2 mount-point={} fs-name={}",
+            args.mount_point.display(),
+            args.fs_name
+        );
         let fs = OverlayFs::new(args.lower, args.upper, args.whiteouts, args.fallback_roots);
         let mut config = Config::default();
         config.mount_options = vec![
@@ -336,7 +367,14 @@ mod platform {
             MountOption::NoSuid,
         ];
         config.acl = SessionACL::All;
-        fuser::mount2(fs, args.mount_point, &config).context("failed to mount agent-overlayfs")
+        let result = fuser::mount2(fs, &args.mount_point, &config)
+            .context("failed to mount agent-overlayfs");
+        eprintln!(
+            "agent-overlayfs: fuser mount2 returned mount-point={} result={:?}",
+            args.mount_point.display(),
+            result.as_ref().map(|_| ())
+        );
+        result
     }
 
     fn validate_mount_args(args: &MountArgs) -> Result<()> {
