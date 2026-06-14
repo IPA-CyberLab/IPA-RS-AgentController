@@ -180,6 +180,7 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
     ensure_overlay_mounted(&args.view_root, &args.lower, &args.upper, &args.whiteouts)?;
     validate_view_runtime(&args.view_root, &args.cwd, program, &args.network)?;
     validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
+    validate_session_log_path(&args.view_root, &args.log_path)?;
     if let Some(parent) = args.log_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create log dir {}", parent.display()))?;
@@ -677,6 +678,31 @@ fn validate_overlay_paths(
 }
 
 #[cfg(any(target_os = "macos", test))]
+fn validate_session_log_path(view_root: &Path, log_path: &Path) -> Result<()> {
+    if !log_path.is_absolute() {
+        bail!("log-path must be absolute: {}", log_path.display());
+    }
+    reject_dot_components("log-path", log_path)?;
+    reject_existing_symlink_components("log-path", log_path)?;
+
+    let env_dir = view_root
+        .parent()
+        .ok_or_else(|| anyhow!("view-root must be inside an env directory"))?;
+    let expected_parent = env_dir.join("logs").join("sessions");
+    if log_path.parent() != Some(expected_parent.as_path()) {
+        bail!(
+            "log-path must be inside {}, got {}",
+            expected_parent.display(),
+            log_path.display()
+        );
+    }
+    if log_path.file_name().is_none() {
+        bail!("log-path must name a session log file: {}", log_path.display());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn reject_dot_components(name: &str, path: &Path) -> Result<()> {
     for component in path.components() {
         match component {
@@ -1089,6 +1115,46 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
+        assert!(error.contains("symlink component"));
+    }
+
+    #[test]
+    fn session_log_path_must_stay_inside_env_session_logs() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let view_root = env_dir.join("view-root");
+        let log_path = env_dir.join("logs/sessions/dev.log");
+
+        super::validate_session_log_path(&view_root, &log_path).unwrap();
+
+        let error = super::validate_session_log_path(&view_root, &env_dir.join("logs/dev.log"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("log-path must be inside"));
+
+        let error = super::validate_session_log_path(
+            &view_root,
+            &env_dir.join("logs/sessions/../dev.log"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("must not contain . or .."));
+    }
+
+    #[test]
+    fn session_log_path_rejects_symlink_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let view_root = env_dir.join("view-root");
+        let real_logs = temp.path().join("real-logs");
+        fs::create_dir_all(&real_logs).unwrap();
+        fs::create_dir_all(env_dir.join("logs")).unwrap();
+        std::os::unix::fs::symlink(&real_logs, env_dir.join("logs/sessions")).unwrap();
+
+        let error =
+            super::validate_session_log_path(&view_root, &env_dir.join("logs/sessions/dev.log"))
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("symlink component"));
     }
 
