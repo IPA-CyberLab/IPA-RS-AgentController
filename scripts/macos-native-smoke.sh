@@ -102,6 +102,16 @@ if [[ -e "$HOME/.ssh" && "$HOME/.ssh" != "$source_dir"* ]]; then
   )
 fi
 
+if [[ -e /private/var/db ]]; then
+  (
+    cd "$source_dir/nested"
+    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc '
+      test -d /private/var/tmp
+      test ! -e /private/var/db
+    '
+  )
+fi
+
 port="${AGENT_SMOKE_PORT:-38476}"
 while true; do
   printf 'ok\n' | /usr/bin/nc -l 127.0.0.1 "$port" >/dev/null 2>&1 || true
