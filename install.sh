@@ -6,6 +6,7 @@ VERSION="${AGENT_VERSION:-latest}"
 INSTALL_DIR="${AGENT_INSTALL_DIR:-$HOME/.local/bin}"
 INSTALL_SERVICE="${AGENT_INSTALL_SERVICE:-0}"
 DRY_RUN="${AGENT_INSTALL_DRY_RUN:-0}"
+ARCHIVE_PATH="${AGENT_ARCHIVE:-}"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -255,6 +256,9 @@ echo "Target: $target"
 echo "Release: $VERSION"
 echo "Install dir: $INSTALL_DIR"
 echo "Install service: $INSTALL_SERVICE"
+if [ -n "$ARCHIVE_PATH" ]; then
+  echo "Archive: $ARCHIVE_PATH"
+fi
 
 if [ "$DRY_RUN" = "1" ]; then
   echo "Download URL: $url"
@@ -266,7 +270,15 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
 archive="$tmp_dir/$asset"
-download "$url" "$archive"
+if [ -n "$ARCHIVE_PATH" ]; then
+  if [ ! -f "$ARCHIVE_PATH" ]; then
+    echo "error: AGENT_ARCHIVE does not exist: $ARCHIVE_PATH" >&2
+    exit 1
+  fi
+  cp "$ARCHIVE_PATH" "$archive"
+else
+  download "$url" "$archive"
+fi
 tar -xzf "$archive" -C "$tmp_dir"
 
 payload_dir="$tmp_dir/ipa-rs-isolated-agent-$target"

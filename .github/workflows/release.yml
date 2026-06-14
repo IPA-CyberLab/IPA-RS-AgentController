@@ -109,6 +109,30 @@ jobs:
             grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-overlayfs" "$contents"
           fi
 
+      - name: Smoke install macOS helpers
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/agent-bin-${{ matrix.target }}"
+          helper_dir="$RUNNER_TEMP/agent-helpers-${{ matrix.target }}"
+          rm -rf "$install_dir" "$helper_dir"
+          AGENT_ARCHIVE="$PWD/dist/${{ matrix.archive }}" \
+            AGENT_INSTALL_DIR="$install_dir" \
+            AGENT_PRIVILEGED_HELPER_DIR="$helper_dir" \
+            sh install.sh
+          test -x "$install_dir/agentctl"
+          test -x "$install_dir/agent-forkd"
+          test -L "$install_dir/agent-viewd"
+          test -L "$install_dir/agent-overlayfs"
+          test "$(readlink "$install_dir/agent-viewd")" = "$helper_dir/agent-viewd"
+          test "$(readlink "$install_dir/agent-overlayfs")" = "$helper_dir/agent-overlayfs"
+          test "$(stat -f '%u' "$helper_dir/agent-viewd")" = "0"
+          case "$(stat -f '%Sp' "$helper_dir/agent-viewd")" in
+            ???s*) ;;
+            *) echo "agent-viewd is not setuid root" >&2; exit 1 ;;
+          esac
+
       - name: Smoke test native desktop daemon
         if: runner.os == 'Windows'
         shell: bash
