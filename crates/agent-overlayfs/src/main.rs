@@ -1,5 +1,9 @@
+#[cfg(any(target_os = "macos", test))]
+use anyhow::bail;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+#[cfg(any(target_os = "macos", test))]
+use std::path::Component;
 #[cfg(any(target_os = "macos", test))]
 use std::path::Path;
 use std::path::PathBuf;
@@ -138,6 +142,154 @@ impl FallbackRoots {
 }
 
 #[cfg(any(target_os = "macos", test))]
+fn validate_mount_layout(
+    mount_point: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+) -> Result<()> {
+    for (name, path) in [
+        ("mount-point", mount_point),
+        ("lower", lower),
+        ("upper", upper),
+        ("whiteouts", whiteouts),
+    ] {
+        if !path.is_absolute() {
+            bail!("{name} must be absolute: {}", path.display());
+        }
+        reject_dot_components(name, path)?;
+        reject_existing_symlink_components(name, path)?;
+    }
+
+    let env_dir = mount_point
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("mount-point must be inside an env directory"))?;
+    let envs_dir = env_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("mount-point env directory must be inside envs"))?;
+    if envs_dir.file_name().and_then(|name| name.to_str()) != Some("envs") {
+        bail!(
+            "mount-point must be under an agentfs envs directory: {}",
+            mount_point.display()
+        );
+    }
+    for (name, path, expected_basename) in [
+        ("mount-point", mount_point, "view-root"),
+        ("lower", lower, "lower"),
+        ("upper", upper, "upper"),
+        ("whiteouts", whiteouts, "whiteouts"),
+    ] {
+        if path.parent() != Some(env_dir) {
+            bail!(
+                "{name} must be a sibling inside {}, got {}",
+                env_dir.display(),
+                path.display()
+            );
+        }
+        if path.file_name().and_then(|name| name.to_str()) != Some(expected_basename) {
+            bail!(
+                "{name} must be named {expected_basename}, got {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_fallback_roots(fallback_roots: &[PathBuf]) -> Result<()> {
+    for path in fallback_roots {
+        if !path.is_absolute() {
+            bail!("fallback-root must be absolute: {}", path.display());
+        }
+        reject_dot_components("fallback-root", path)?;
+        if !allowed_fallback_root(path) {
+            bail!(
+                "fallback-root is outside the macOS system allowlist: {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn allowed_fallback_root(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|path| FALLBACK_ROOT_ALLOWLIST.contains(&path))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn reject_dot_components(name: &str, path: &Path) -> Result<()> {
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {}
+            Component::CurDir | Component::ParentDir => {
+                bail!(
+                    "{name} must not contain . or .. components: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn reject_existing_symlink_components(name: &str, path: &Path) -> Result<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "{name} must not pass through symlink component {}",
+                current.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+const FALLBACK_ROOT_ALLOWLIST: &[&str] = &[
+    "/bin",
+    "/sbin",
+    "/usr/bin",
+    "/usr/lib",
+    "/usr/share",
+    "/System",
+    "/Library/Filesystems",
+    "/dev/null",
+    "/dev/random",
+    "/dev/tty",
+    "/dev/urandom",
+    "/dev/zero",
+    "/etc/hosts",
+    "/etc/protocols",
+    "/etc/resolv.conf",
+    "/etc/services",
+    "/etc/shells",
+    "/etc/zprofile",
+    "/etc/zshenv",
+    "/etc/zshrc",
+    "/var/tmp",
+    "/tmp",
+    "/private/etc/hosts",
+    "/private/etc/protocols",
+    "/private/etc/resolv.conf",
+    "/private/etc/services",
+    "/private/etc/shells",
+    "/private/etc/zprofile",
+    "/private/etc/zshenv",
+    "/private/etc/zshrc",
+    "/private/tmp",
+    "/private/var/tmp",
+];
+
+#[cfg(any(target_os = "macos", test))]
 fn fallback_is_special_file(path: &Path) -> std::io::Result<bool> {
     let file_type = std::fs::symlink_metadata(path)?.file_type();
     Ok(!file_type.is_file() && !file_type.is_dir() && !file_type.is_symlink())
@@ -188,21 +340,8 @@ mod platform {
     }
 
     fn validate_mount_args(args: &MountArgs) -> Result<()> {
-        for (name, path) in [
-            ("mount-point", &args.mount_point),
-            ("lower", &args.lower),
-            ("upper", &args.upper),
-            ("whiteouts", &args.whiteouts),
-        ] {
-            if !path.is_absolute() {
-                bail!("{name} must be absolute: {}", path.display());
-            }
-        }
-        for path in &args.fallback_roots {
-            if !path.is_absolute() {
-                bail!("fallback-root must be absolute: {}", path.display());
-            }
-        }
+        super::validate_mount_layout(&args.mount_point, &args.lower, &args.upper, &args.whiteouts)?;
+        super::validate_fallback_roots(&args.fallback_roots)?;
         if !args.mount_point.is_dir() {
             bail!("mount-point {} does not exist", args.mount_point.display());
         }
@@ -971,11 +1110,109 @@ mod platform {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{fallback_is_special_file, FallbackRoots};
+    use super::{
+        fallback_is_special_file, validate_fallback_roots, validate_mount_layout, FallbackRoots,
+    };
     use std::ffi::CString;
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
+
+    #[test]
+    fn mount_layout_accepts_agentfs_env_siblings() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        fs::create_dir_all(&env_dir).unwrap();
+
+        validate_mount_layout(
+            &env_dir.join("view-root"),
+            &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mount_layout_rejects_unexpected_names_and_siblings() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let other_env_dir = temp.path().join("agentfs/envs/codex-2");
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::create_dir_all(&other_env_dir).unwrap();
+
+        assert!(validate_mount_layout(
+            &env_dir.join("mount"),
+            &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .is_err());
+        assert!(validate_mount_layout(
+            &env_dir.join("view-root"),
+            &other_env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .is_err());
+        assert!(validate_mount_layout(
+            &temp.path().join("agentfs/codex-1/view-root"),
+            &temp.path().join("agentfs/codex-1/lower"),
+            &temp.path().join("agentfs/codex-1/upper"),
+            &temp.path().join("agentfs/codex-1/whiteouts"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mount_layout_rejects_dot_components_and_existing_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        fs::create_dir_all(&env_dir).unwrap();
+
+        assert!(validate_mount_layout(
+            &env_dir.join("../codex-1/view-root"),
+            &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .is_err());
+
+        let link = temp.path().join("agent-link");
+        std::os::unix::fs::symlink(temp.path().join("agentfs"), &link).unwrap();
+        assert!(validate_mount_layout(
+            &link.join("envs/codex-1/view-root"),
+            &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fallback_root_validation_accepts_only_system_allowlist() {
+        validate_fallback_roots(&[
+            "/bin".into(),
+            "/usr/bin".into(),
+            "/private/etc/hosts".into(),
+            "/private/var/tmp".into(),
+        ])
+        .unwrap();
+
+        for path in [
+            "relative",
+            "/Users/alice",
+            "/private/etc/ssh",
+            "/etc",
+            "/usr/local",
+            "/private/etc/../var/db",
+        ] {
+            assert!(
+                validate_fallback_roots(&[path.into()]).is_err(),
+                "{path} should be rejected"
+            );
+        }
+    }
 
     #[test]
     fn fallback_path_allows_files_inside_canonical_root() {
