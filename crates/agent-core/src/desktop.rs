@@ -64,9 +64,18 @@ impl DesktopService {
                 profile,
                 limits,
                 command,
+                cwd,
             } => {
-                self.new_target(&target, &base, &from, &profile, limits, &command)
-                    .await
+                self.new_target(
+                    &target,
+                    &base,
+                    &from,
+                    &profile,
+                    limits,
+                    &command,
+                    cwd.as_deref(),
+                )
+                .await
             }
             Request::BaseFreeze { name, from } => {
                 self.base_freeze(&name, &from).await?;
@@ -175,6 +184,7 @@ impl DesktopService {
         profile_name: &str,
         limit_overrides: LimitOverrides,
         command: &[String],
+        cwd: Option<&Path>,
     ) -> Result<Response> {
         self.init().await?;
         self.ensure_base(base_id, from).await?;
@@ -189,13 +199,13 @@ impl DesktopService {
                     &env.rootfs_path,
                     env.backend.clone(),
                     &env.id,
-                    Some(&base.source),
+                    cwd.and_then(Path::to_str).or(Some(&base.source)),
                     &env.limits,
                 ),
                 rootfs_path: env.rootfs_path,
             })
         } else {
-            let output = self.exec(target, command, None).await?;
+            let output = self.exec(target, command, cwd).await?;
             Ok(Response::Exec {
                 status: output.status,
                 stdout: output.stdout,

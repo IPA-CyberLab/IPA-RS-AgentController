@@ -233,6 +233,7 @@ fn validate_view_runtime(view_root: &Path, cwd: &Path, program: &str, network: &
         validate_view_dir(view_root, path)?;
     }
     validate_view_path_exists(view_root, Path::new("/dev/null"))?;
+    validate_view_path_exists(view_root, Path::new("/usr/lib/dyld"))?;
     validate_view_executable(view_root, Path::new("/usr/bin/env"))?;
     if program.starts_with('/') {
         validate_view_executable(view_root, Path::new(program))?;
@@ -498,7 +499,17 @@ fn overlayfs_program() -> PathBuf {
 
 #[cfg(target_os = "macos")]
 fn system_fallback_roots() -> Vec<PathBuf> {
-    [
+    system_fallback_root_candidates()
+        .iter()
+        .copied()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn system_fallback_root_candidates() -> &'static [&'static str] {
+    &[
         "/bin",
         "/sbin",
         "/usr",
@@ -512,15 +523,10 @@ fn system_fallback_roots() -> Vec<PathBuf> {
         "/etc",
         "/var/tmp",
         "/tmp",
-        "/opt",
         "/private/etc",
         "/private/tmp",
         "/private/var/tmp",
     ]
-    .into_iter()
-    .map(PathBuf::from)
-    .filter(|path| path.exists())
-    .collect()
 }
 
 fn command_for_network(program: &str, args: &[String], network: &str) -> Command {
@@ -772,6 +778,22 @@ mod tests {
     }
 
     #[test]
+    fn macos_system_fallback_roots_do_not_include_broad_user_tool_trees() {
+        let roots = super::system_fallback_root_candidates();
+
+        assert!(!roots.contains(&"/dev"));
+        assert!(!roots.contains(&"/opt"));
+        assert!(!roots.contains(&"/private"));
+        assert!(!roots.contains(&"/var"));
+        assert!(roots.contains(&"/dev/null"));
+        assert!(roots.contains(&"/dev/random"));
+        assert!(roots.contains(&"/dev/urandom"));
+        assert!(roots.contains(&"/private/etc"));
+        assert!(roots.contains(&"/private/tmp"));
+        assert!(roots.contains(&"/private/var/tmp"));
+    }
+
+    #[test]
     fn view_runtime_requires_macos_system_paths_and_requested_program() {
         let temp = tempfile::tempdir().unwrap();
         let view_root = temp.path();
@@ -797,6 +819,26 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("/usr/bin/env"));
+    }
+
+    #[test]
+    fn view_runtime_requires_macos_dynamic_loader() {
+        let temp = tempfile::tempdir().unwrap();
+        let view_root = temp.path();
+        seed_required_view_paths(view_root);
+        fs::create_dir_all(view_root.join("Users/me/project")).unwrap();
+        write_executable(view_root.join("bin/zsh"));
+
+        fs::remove_file(view_root.join("usr/lib/dyld")).unwrap();
+        let error = super::validate_view_runtime(
+            view_root,
+            &PathBuf::from("/Users/me/project"),
+            "/bin/zsh",
+            "host",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("/usr/lib/dyld"));
     }
 
     #[test]
@@ -869,10 +911,13 @@ mod tests {
     }
 
     fn seed_required_view_paths(view_root: &std::path::Path) {
-        for path in ["bin", "usr/bin", "System", "Library", "private", "dev"] {
+        for path in [
+            "bin", "usr/bin", "usr/lib", "System", "Library", "private", "dev",
+        ] {
             fs::create_dir_all(view_root.join(path)).unwrap();
         }
         fs::write(view_root.join("dev/null"), "").unwrap();
+        fs::write(view_root.join("usr/lib/dyld"), "").unwrap();
         write_executable(view_root.join("usr/bin/env"));
     }
 
