@@ -147,7 +147,9 @@ layers plus a fixed read-only set of macOS system fallback roots needed to run
 `/bin`, `/usr/bin`, `/usr/lib`, `/System`, and the macFUSE filesystem
 registration under `/Library/Filesystems`. Broad user-controlled host trees
 such as `/usr/local`, `/opt`, `/Library/Application Support`, `/private`,
-`/var`, and `/dev` are not fallback roots. macOS
+`/private/etc`, `/var`, and `/dev` are not fallback roots; only selected
+shell and network configuration files under `/etc` and `/private/etc` are
+exposed. macOS
 path-preserving views support `network=host` and `network=none`; `bridge` is a
 Linux nspawn mode and is rejected instead of silently running with host
 networking. `network=none` wraps the entered command in the macOS sandbox
@@ -169,8 +171,9 @@ The smoke test requires the installed `agent-viewd` to resolve to a root-owned
 setuid helper, checks that `agent-overlayfs` is callable, starts `agent-forkd`,
 verifies `/bin/zsh`, `/usr/bin/env`, `/System`, preserved cwd, and confirms
 that broad host fallback siblings like `/private/var/db`, `/usr/local`, and
-`/Library/Application Support` are not visible. It also checks that
-`network=none` cannot reach a local TCP listener while `network=host` can.
+`/Library/Application Support` are not visible. It also checks that the broad
+`/private/etc` config tree is not visible and that `network=none` cannot reach
+a local TCP listener while `network=host` can.
 
 ## Requirements
 

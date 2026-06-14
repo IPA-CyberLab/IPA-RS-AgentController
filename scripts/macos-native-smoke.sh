@@ -188,6 +188,14 @@ if [[ -e "/Library/Application Support" ]]; then
   echo "verified broad /Library application data is not visible"
 fi
 
+if [[ -e /private/etc/ssh ]]; then
+  (
+    cd "$source_dir/nested"
+    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e /private/etc/ssh'
+  )
+  echo "verified broad /private/etc config tree is not visible"
+fi
+
 port="${AGENT_SMOKE_PORT:-38476}"
 while true; do
   printf 'ok\n' | /usr/bin/nc -l 127.0.0.1 "$port" >/dev/null 2>&1 || true
