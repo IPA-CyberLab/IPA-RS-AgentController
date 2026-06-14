@@ -499,7 +499,17 @@ fn overlayfs_program() -> PathBuf {
 
 #[cfg(target_os = "macos")]
 fn system_fallback_roots() -> Vec<PathBuf> {
-    [
+    system_fallback_root_candidates()
+        .iter()
+        .copied()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn system_fallback_root_candidates() -> &'static [&'static str] {
+    &[
         "/bin",
         "/sbin",
         "/usr",
@@ -513,15 +523,10 @@ fn system_fallback_roots() -> Vec<PathBuf> {
         "/etc",
         "/var/tmp",
         "/tmp",
-        "/opt",
         "/private/etc",
         "/private/tmp",
         "/private/var/tmp",
     ]
-    .into_iter()
-    .map(PathBuf::from)
-    .filter(|path| path.exists())
-    .collect()
 }
 
 fn command_for_network(program: &str, args: &[String], network: &str) -> Command {
@@ -770,6 +775,22 @@ mod tests {
         assert_eq!(super::status_display(None), "terminated by signal");
         assert_eq!(super::stderr_suffix(""), "");
         assert_eq!(super::stderr_suffix("  mount failed\n"), ": mount failed");
+    }
+
+    #[test]
+    fn macos_system_fallback_roots_do_not_include_broad_user_tool_trees() {
+        let roots = super::system_fallback_root_candidates();
+
+        assert!(!roots.contains(&"/dev"));
+        assert!(!roots.contains(&"/opt"));
+        assert!(!roots.contains(&"/private"));
+        assert!(!roots.contains(&"/var"));
+        assert!(roots.contains(&"/dev/null"));
+        assert!(roots.contains(&"/dev/random"));
+        assert!(roots.contains(&"/dev/urandom"));
+        assert!(roots.contains(&"/private/etc"));
+        assert!(roots.contains(&"/private/tmp"));
+        assert!(roots.contains(&"/private/var/tmp"));
     }
 
     #[test]
