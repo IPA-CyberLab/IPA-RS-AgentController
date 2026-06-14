@@ -422,11 +422,9 @@ fn ensure_overlay_mounted(
         std::thread::sleep(Duration::from_millis(50));
     }
     let _ = child.kill();
-    let stderr = child_stderr(&mut child).unwrap_or_default();
     bail!(
-        "agent-overlayfs did not become ready at {} within 10s{}",
-        view_root.display(),
-        stderr_suffix(&stderr)
+        "agent-overlayfs did not become ready at {} within 10s; mount helper was terminated",
+        view_root.display()
     )
 }
 
