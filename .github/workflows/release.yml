@@ -161,6 +161,10 @@ jobs:
             ???s*) ;;
             *) echo "agent-viewd is not setuid root" >&2; exit 1 ;;
           esac
+          PATH="$install_dir:$PATH" \
+            AGENT_BIN_DIR="$install_dir" \
+            AGENTFS="$RUNNER_TEMP/agentfs-native-${{ matrix.target }}" \
+            scripts/macos-native-smoke.sh
 
       - name: Smoke test native desktop daemon
         if: runner.os == 'Windows'
