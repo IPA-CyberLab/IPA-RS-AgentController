@@ -8,9 +8,9 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", test))]
 use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
@@ -379,7 +379,8 @@ fn ensure_overlay_mounted(
         return Ok(());
     }
 
-    let mut child = Command::new(overlayfs_program())
+    let mut child_command = Command::new(overlayfs_program());
+    child_command
         .arg("mount")
         .arg("--mount-point")
         .arg(view_root)
@@ -398,7 +399,16 @@ fn ensure_overlay_mounted(
         .arg("agent-overlayfs")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    unsafe {
+        child_command.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = child_command
         .spawn()
         .with_context(|| "failed to spawn agent-overlayfs mount helper")?;
 
@@ -421,11 +431,22 @@ fn ensure_overlay_mounted(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    kill_process_group(child.id());
     let _ = child.kill();
     bail!(
         "agent-overlayfs did not become ready at {} within 10s; mount helper was terminated",
         view_root.display()
     )
+}
+
+#[cfg(target_os = "macos")]
+fn kill_process_group(pid: u32) {
+    if pid > i32::MAX as u32 {
+        return;
+    }
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -695,7 +716,10 @@ fn validate_session_log_path(view_root: &Path, log_path: &Path) -> Result<()> {
         );
     }
     if log_path.file_name().is_none() {
-        bail!("log-path must name a session log file: {}", log_path.display());
+        bail!(
+            "log-path must name a session log file: {}",
+            log_path.display()
+        );
     }
     Ok(())
 }
@@ -706,7 +730,10 @@ fn reject_dot_components(name: &str, path: &Path) -> Result<()> {
         match component {
             Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {}
             Component::CurDir | Component::ParentDir => {
-                bail!("{name} must not contain . or .. components: {}", path.display());
+                bail!(
+                    "{name} must not contain . or .. components: {}",
+                    path.display()
+                );
             }
         }
     }
@@ -1130,12 +1157,10 @@ mod tests {
             .to_string();
         assert!(error.contains("log-path must be inside"));
 
-        let error = super::validate_session_log_path(
-            &view_root,
-            &env_dir.join("logs/sessions/../dev.log"),
-        )
-        .unwrap_err()
-        .to_string();
+        let error =
+            super::validate_session_log_path(&view_root, &env_dir.join("logs/sessions/../dev.log"))
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("must not contain . or .."));
     }
 
