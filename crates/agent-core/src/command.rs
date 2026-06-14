@@ -6,6 +6,8 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::process::Stdio;
+#[cfg(target_os = "macos")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,15 +192,9 @@ async fn run_macos_path_preserving_overlay(
         .arg("--")
         .arg(program)
         .args(args);
-    let output = command
-        .output()
+    run_macos_viewd_command(command)
         .await
-        .with_context(|| "failed to execute agent-viewd for macOS path-preserving overlay")?;
-    Ok(CmdOutput {
-        status: output.status.code().unwrap_or(128),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    })
+        .with_context(|| "failed to execute agent-viewd for macOS path-preserving overlay")
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -229,7 +225,8 @@ fn spawn_macos_path_preserving_overlay_session(
     log_path: &Path,
     limits: &Limits,
 ) -> Result<u32> {
-    let output = std::process::Command::new(macos_agent_viewd_program())
+    let mut command = std::process::Command::new(macos_agent_viewd_program());
+    command
         .arg("session")
         .arg("--view-root")
         .arg(view_root)
@@ -247,24 +244,24 @@ fn spawn_macos_path_preserving_overlay_session(
         .arg(log_path)
         .arg("--")
         .arg(program)
-        .args(args)
-        .output()
-        .with_context(|| {
-            "failed to execute agent-viewd session for macOS path-preserving overlay"
-        })?;
-    if !output.status.success() {
+        .args(args);
+    let output = run_macos_viewd_command_blocking(&mut command).with_context(|| {
+        "failed to execute agent-viewd session for macOS path-preserving overlay"
+    })?;
+    if output.status != 0 {
         return Err(anyhow!(
             "agent-viewd session exited with {}: {}{}",
-            output.status.code().unwrap_or(128),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            output.status,
+            output.stdout,
+            output.stderr
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .trim()
-        .parse::<u32>()
-        .with_context(|| format!("agent-viewd session returned invalid pid: {stdout:?}"))
+    output.stdout.trim().parse::<u32>().with_context(|| {
+        format!(
+            "agent-viewd session returned invalid pid: {:?}",
+            output.stdout
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -272,6 +269,102 @@ fn macos_agent_viewd_program() -> PathBuf {
     std::env::var_os("AGENT_VIEWD")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("agent-viewd"))
+}
+
+#[cfg(target_os = "macos")]
+async fn run_macos_viewd_command(mut command: Command) -> Result<CmdOutput> {
+    let capture = CaptureFiles::create("agent-viewd")?;
+    command
+        .stdout(Stdio::from(capture.stdout_file.try_clone()?))
+        .stderr(Stdio::from(capture.stderr_file.try_clone()?));
+    let status = command.spawn()?.wait().await?;
+    capture.output(status.code().unwrap_or(128))
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_viewd_command_blocking(command: &mut std::process::Command) -> Result<CmdOutput> {
+    let capture = CaptureFiles::create("agent-viewd-session")?;
+    command
+        .stdout(Stdio::from(capture.stdout_file.try_clone()?))
+        .stderr(Stdio::from(capture.stderr_file.try_clone()?));
+    let status = command.spawn()?.wait()?;
+    capture.output(status.code().unwrap_or(128))
+}
+
+#[cfg(target_os = "macos")]
+struct CaptureFiles {
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+    stdout_file: std::fs::File,
+    stderr_file: std::fs::File,
+}
+
+#[cfg(target_os = "macos")]
+impl CaptureFiles {
+    fn create(label: &str) -> Result<Self> {
+        let mut last_error = None;
+        for attempt in 0..32 {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            let base = std::env::temp_dir().join(format!(
+                "ipa-rs-{label}-{}-{nonce}-{attempt}",
+                std::process::id()
+            ));
+            let stdout_path = base.with_extension("stdout");
+            let stderr_path = base.with_extension("stderr");
+            match (
+                create_capture_file(&stdout_path),
+                create_capture_file(&stderr_path),
+            ) {
+                (Ok(stdout_file), Ok(stderr_file)) => {
+                    return Ok(Self {
+                        stdout_path,
+                        stderr_path,
+                        stdout_file,
+                        stderr_file,
+                    });
+                }
+                (stdout_result, stderr_result) => {
+                    let _ = std::fs::remove_file(&stdout_path);
+                    let _ = std::fs::remove_file(&stderr_path);
+                    last_error = stdout_result.err().or_else(|| stderr_result.err());
+                }
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| anyhow!("failed to create temporary capture files for {label}")))
+    }
+
+    fn output(self, status: i32) -> Result<CmdOutput> {
+        let stdout = std::fs::read_to_string(&self.stdout_path).unwrap_or_default();
+        let stderr = std::fs::read_to_string(&self.stderr_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&self.stdout_path);
+        let _ = std::fs::remove_file(&self.stderr_path);
+        Ok(CmdOutput {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for CaptureFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.stdout_path);
+        let _ = std::fs::remove_file(&self.stderr_path);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn create_capture_file(path: &Path) -> Result<std::fs::File> {
+    Ok(std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(path)?)
 }
 
 #[cfg(not(target_os = "macos"))]
