@@ -36,7 +36,10 @@ run_with_timeout() {
   local seconds="$1"
   shift
   echo "running (${seconds}s timeout): $*" >&2
-  "$@" &
+  local stdout_file stderr_file
+  stdout_file="$(mktemp "${TMPDIR:-/tmp}/ipa-rs-smoke-stdout.XXXXXX")"
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/ipa-rs-smoke-stderr.XXXXXX")"
+  "$@" >"$stdout_file" 2>"$stderr_file" &
   local pid="$!"
   (
     sleep "$seconds"
@@ -52,6 +55,9 @@ run_with_timeout() {
   wait "$pid" || status="$?"
   kill "$timer_pid" >/dev/null 2>&1 || true
   wait "$timer_pid" >/dev/null 2>&1 || true
+  cat "$stdout_file" || true
+  cat "$stderr_file" >&2 || true
+  rm -f "$stdout_file" "$stderr_file"
   return "$status"
 }
 

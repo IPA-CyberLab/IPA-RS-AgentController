@@ -431,11 +431,13 @@ fn ensure_overlay_mounted(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    let diagnostics = overlay_readiness_diagnostics(view_root, child.id());
     kill_process_group(child.id());
     let _ = child.kill();
     bail!(
-        "agent-overlayfs did not become ready at {} within 10s; mount helper was terminated",
-        view_root.display()
+        "agent-overlayfs did not become ready at {} within 10s; mount helper was terminated{}",
+        view_root.display(),
+        diagnostics
     )
 }
 
@@ -447,6 +449,57 @@ fn kill_process_group(pid: u32) {
     unsafe {
         libc::killpg(pid as libc::pid_t, libc::SIGKILL);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn overlay_readiness_diagnostics(view_root: &Path, child_pid: u32) -> String {
+    let ready_path = view_root.join(".agent-overlayfs-ready");
+    let ready_probe = match std::fs::metadata(&ready_path) {
+        Ok(metadata) => format!("ready_marker=file:{}", metadata.is_file()),
+        Err(error) => format!("ready_marker_error={error}"),
+    };
+    let mount_lines = command_stdout("/sbin/mount", &[])
+        .map(|stdout| {
+            let matches = stdout
+                .lines()
+                .filter(|line| line.contains(&view_root.display().to_string()))
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                "mount_lines=<none>".to_string()
+            } else {
+                format!("mount_lines={}", matches.join(" | "))
+            }
+        })
+        .unwrap_or_else(|error| format!("mount_error={error}"));
+    let ps_output = command_stdout(
+        "/bin/ps",
+        &[
+            "-o",
+            "pid,ppid,pgid,stat,command",
+            "-p",
+            &child_pid.to_string(),
+        ],
+    )
+    .map(|stdout| format!("helper_ps={}", stdout.trim()))
+    .unwrap_or_else(|error| format!("helper_ps_error={error}"));
+    format!("\nreadiness diagnostics: {ready_probe}; {mount_lines}; {ps_output}")
+}
+
+#[cfg(target_os = "macos")]
+fn command_stdout(program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run {program}"))?;
+    if !output.status.success() {
+        bail!(
+            "{program} exited with {}: {}{}",
+            status_display(output.status.code()),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[cfg(target_os = "macos")]
