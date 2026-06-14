@@ -25,6 +25,21 @@ pub struct DesktopService {
     runner: CommandRunner,
 }
 
+fn path_preserving_cwd_for_backend(
+    backend: RootfsBackend,
+    base_source: &str,
+    cwd: Option<&Path>,
+) -> PathBuf {
+    let base_source_path = Path::new(base_source);
+    match backend {
+        RootfsBackend::PathPreservingOverlay => cwd
+            .filter(|cwd| cwd.starts_with(base_source_path))
+            .unwrap_or(base_source_path)
+            .to_path_buf(),
+        _ => cwd.unwrap_or(base_source_path).to_path_buf(),
+    }
+}
+
 impl DesktopService {
     pub fn new(config: AgentConfig) -> Self {
         let layout = Layout::new(config.agentfs.clone());
@@ -119,16 +134,18 @@ impl DesktopService {
             Request::Shell { id, cwd } => {
                 let env = self.shell_target(&id).await?;
                 let base = self.layout.read_base(&env.base_id).await?;
-                let preserved_cwd = cwd
-                    .as_ref()
-                    .and_then(|cwd| cwd.to_str())
-                    .unwrap_or(&base.source);
+                let preserved_cwd = path_preserving_cwd_for_backend(
+                    env.backend.clone(),
+                    &base.source,
+                    cwd.as_deref(),
+                );
+                let preserved_cwd = preserved_cwd.to_string_lossy();
                 Ok(Response::DesktopShell {
                     command: desktop_shell_command(
                         &env.rootfs_path,
                         env.backend.clone(),
                         &env.id,
-                        Some(preserved_cwd),
+                        Some(&preserved_cwd),
                         &env.limits,
                     ),
                     rootfs_path: env.rootfs_path,
@@ -194,12 +211,15 @@ impl DesktopService {
         if command.is_empty() {
             let env = self.shell_target(target).await?;
             let base = self.layout.read_base(&env.base_id).await?;
+            let preserved_cwd =
+                path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
+            let preserved_cwd = preserved_cwd.to_string_lossy();
             Ok(Response::DesktopShell {
                 command: desktop_shell_command(
                     &env.rootfs_path,
                     env.backend.clone(),
                     &env.id,
-                    cwd.and_then(Path::to_str).or(Some(&base.source)),
+                    Some(&preserved_cwd),
                     &env.limits,
                 ),
                 rootfs_path: env.rootfs_path,
@@ -644,7 +664,8 @@ impl DesktopService {
     ) -> Result<CmdOutput> {
         if env.backend == RootfsBackend::PathPreservingOverlay {
             let base = self.layout.read_base(&env.base_id).await?;
-            let preserved_cwd = cwd.unwrap_or_else(|| Path::new(&base.source));
+            let preserved_cwd =
+                path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
             return self
                 .runner
                 .run_macos_path_preserving_overlay(
@@ -652,7 +673,7 @@ impl DesktopService {
                     &self.layout.env_lower(&env.id),
                     &self.layout.env_upper(&env.id),
                     &self.layout.env_whiteouts(&env.id),
-                    preserved_cwd,
+                    &preserved_cwd,
                     program,
                     args,
                     &env.limits,
@@ -674,13 +695,14 @@ impl DesktopService {
     ) -> Result<u32> {
         if env.backend == RootfsBackend::PathPreservingOverlay {
             let base = self.layout.read_base(&env.base_id).await?;
-            let preserved_cwd = cwd.unwrap_or_else(|| Path::new(&base.source));
+            let preserved_cwd =
+                path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
             return self.runner.spawn_macos_path_preserving_overlay_session(
                 &env.rootfs_path,
                 &self.layout.env_lower(&env.id),
                 &self.layout.env_upper(&env.id),
                 &self.layout.env_whiteouts(&env.id),
-                preserved_cwd,
+                &preserved_cwd,
                 program,
                 args,
                 log_path,
@@ -1162,6 +1184,39 @@ mod tests {
             .unwrap(),
             rootfs.join(rel)
         );
+    }
+
+    #[test]
+    fn path_preserving_cwd_outside_source_falls_back_to_source() {
+        let cwd = super::path_preserving_cwd_for_backend(
+            RootfsBackend::PathPreservingOverlay,
+            "/Users/me/project",
+            Some(Path::new("/Users/me/other")),
+        );
+
+        assert_eq!(cwd, Path::new("/Users/me/project"));
+    }
+
+    #[test]
+    fn path_preserving_cwd_inside_source_is_preserved() {
+        let cwd = super::path_preserving_cwd_for_backend(
+            RootfsBackend::PathPreservingOverlay,
+            "/Users/me/project",
+            Some(Path::new("/Users/me/project/crates/agent-core")),
+        );
+
+        assert_eq!(cwd, Path::new("/Users/me/project/crates/agent-core"));
+    }
+
+    #[test]
+    fn non_path_preserving_cwd_outside_source_is_preserved() {
+        let cwd = super::path_preserving_cwd_for_backend(
+            RootfsBackend::ApfsClone,
+            "/Users/me/project",
+            Some(Path::new("/Users/me/other")),
+        );
+
+        assert_eq!(cwd, Path::new("/Users/me/other"));
     }
 
     #[tokio::test]
