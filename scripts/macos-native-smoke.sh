@@ -12,6 +12,8 @@ agentctl="${AGENTCTL:-${bin_dir:+$bin_dir/}agentctl}"
 forkd="${AGENT_FORKD:-${bin_dir:+$bin_dir/}agent-forkd}"
 viewd="${AGENT_VIEWD:-$(command -v agent-viewd || true)}"
 overlayfs="${AGENT_OVERLAYFS:-$(command -v agent-overlayfs || true)}"
+daemon_log=""
+cwd_out=""
 
 require_executable() {
   local name="$1"
@@ -28,6 +30,11 @@ require_executable AGENT_VIEWD "$viewd"
 require_executable AGENT_OVERLAYFS "$overlayfs"
 require_executable NC /usr/bin/nc
 
+echo "agentctl=$agentctl"
+echo "agent-forkd=$forkd"
+echo "agent-viewd=$viewd"
+echo "agent-overlayfs=$overlayfs"
+
 if [[ ! -d /Library/Filesystems/macfuse.fs && ! -x /usr/local/bin/macfuse ]]; then
   echo "macFUSE is not installed; install macFUSE before running this smoke test" >&2
   exit 2
@@ -39,8 +46,10 @@ if [[ "$viewd_owner" != "0" || "${viewd_mode:3:1}" != "s" ]]; then
   echo "agent-viewd must resolve to a root-owned setuid helper; got owner=$viewd_owner mode=$viewd_mode path=$viewd" >&2
   exit 2
 fi
+echo "verified agent-viewd owner=$viewd_owner mode=$viewd_mode"
 
 "$overlayfs" check
+echo "verified agent-overlayfs check"
 
 tmp="${TMPDIR:-/tmp}/ipa-rs-native-smoke.$$"
 source_dir="$tmp/source"
@@ -53,6 +62,20 @@ AGENT_VIEWD="$viewd" "$forkd" --agentfs "$agentfs" >"$daemon_log" 2>&1 &
 daemon_pid=$!
 
 server_pid=""
+dump_failure() {
+  status="$?"
+  echo "macOS native smoke test failed with status $status" >&2
+  if [[ -n "$cwd_out" && -f "$cwd_out" ]]; then
+    echo "---- cwd command output ----" >&2
+    cat "$cwd_out" >&2 || true
+  fi
+  if [[ -n "$daemon_log" && -f "$daemon_log" ]]; then
+    echo "---- agent-forkd log ----" >&2
+    cat "$daemon_log" >&2 || true
+  fi
+  exit "$status"
+}
+
 cleanup() {
   if [[ -n "$server_pid" ]]; then
     kill "$server_pid" >/dev/null 2>&1 || true
@@ -62,6 +85,7 @@ cleanup() {
   wait "$daemon_pid" >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
+trap dump_failure ERR
 trap cleanup EXIT
 
 for _ in {1..80}; do
@@ -94,12 +118,14 @@ cwd_out="$tmp/cwd.out"
 
 grep -F "pwd=$source_dir/nested" "$cwd_out" >/dev/null
 grep -F "source-ok" "$cwd_out" >/dev/null
+echo "verified preserved cwd, macOS runtime paths, and source visibility"
 
 if [[ -e "$HOME/.ssh" && "$HOME/.ssh" != "$source_dir"* ]]; then
   (
     cd "$source_dir/nested"
     "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "$HOME/.ssh"'
   )
+  echo "verified host home secrets are not visible"
 fi
 
 if [[ -e /private/var/db ]]; then
@@ -110,6 +136,7 @@ if [[ -e /private/var/db ]]; then
       test ! -e /private/var/db
     '
   )
+  echo "verified macOS fallback sibling isolation"
 fi
 
 port="${AGENT_SMOKE_PORT:-38476}"
@@ -121,11 +148,13 @@ sleep 0.5
 
 "$agentctl" --agentfs "$agentfs" new -t "$net_host_id" --network host --from "$source_dir" -- \
   /usr/bin/nc -G 2 -z 127.0.0.1 "$port"
+echo "verified network=host reaches 127.0.0.1:$port"
 
 if "$agentctl" --agentfs "$agentfs" new -t "$net_none_id" --network none --from "$source_dir" -- \
   /usr/bin/nc -G 2 -z 127.0.0.1 "$port"; then
   echo "network=none unexpectedly reached 127.0.0.1:$port" >&2
   exit 1
 fi
+echo "verified network=none cannot reach 127.0.0.1:$port"
 
 echo "macOS native smoke test passed"
