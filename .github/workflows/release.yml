@@ -46,6 +46,35 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install macFUSE build dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! pkg-config --exists fuse; then
+            brew install --cask macfuse
+          fi
+          pkg_config_dirs=(
+            /usr/local/lib/pkgconfig
+            /opt/homebrew/lib/pkgconfig
+            /Library/Filesystems/macfuse.fs/Contents/Resources/lib/pkgconfig
+          )
+          pkg_config_path=""
+          for dir in "${pkg_config_dirs[@]}"; do
+            if [[ -d "$dir" ]]; then
+              if [[ -n "$pkg_config_path" ]]; then
+                pkg_config_path="$pkg_config_path:$dir"
+              else
+                pkg_config_path="$dir"
+              fi
+            fi
+          done
+          if [[ -n "${PKG_CONFIG_PATH:-}" ]]; then
+            pkg_config_path="$pkg_config_path:$PKG_CONFIG_PATH"
+          fi
+          echo "PKG_CONFIG_PATH=$pkg_config_path" >> "$GITHUB_ENV"
+          PKG_CONFIG_PATH="$pkg_config_path" pkg-config --modversion fuse
+
       - name: Build
         shell: bash
         run: |
