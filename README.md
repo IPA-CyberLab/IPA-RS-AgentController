@@ -290,7 +290,10 @@ snapshot, upper layer, whiteouts, and hidden `view-root`; commands enter that
 view through `agent-viewd` so the visible cwd can remain the original
 `/Users/...` path while writes are directed to the env upper layer. `agent-viewd`
 is a privileged helper, `agent-overlayfs` performs the macFUSE mount, and
-neither helper must fall back to running directly in the host workspace. Windows
+`agent-viewd` only accepts the fixed path-preserving env layout
+`<agentfs>/envs/<id>/{lower,upper,whiteouts,view-root}` without `..` or symlink
+components before it creates or mounts privileged paths. Neither helper must
+fall back to running directly in the host workspace. Windows
 exec uses a Job Object for process lifetime and
 process-count containment, but it does not yet provide filesystem or network
 isolation equivalent to Linux namespaces. Windows interactive shells run in a

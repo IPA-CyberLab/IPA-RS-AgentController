@@ -9,6 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", test))]
+use std::path::Component;
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
@@ -352,6 +354,7 @@ fn ensure_overlay_mounted(
     upper: &Path,
     whiteouts: &Path,
 ) -> Result<()> {
+    validate_overlay_paths(view_root, lower, upper, whiteouts)?;
     for (name, path) in [
         ("view-root", view_root),
         ("lower", lower),
@@ -612,6 +615,93 @@ fn enter_view_for_child(view_root: &Path, cwd: &Path) -> Result<()> {
                 return Err(std::io::Error::last_os_error())
                     .with_context(|| format!("failed to drop uid to {uid}"));
             }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_overlay_paths(
+    view_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+) -> Result<()> {
+    for (name, path) in [
+        ("view-root", view_root),
+        ("lower", lower),
+        ("upper", upper),
+        ("whiteouts", whiteouts),
+    ] {
+        if !path.is_absolute() {
+            bail!("{name} must be absolute: {}", path.display());
+        }
+        reject_dot_components(name, path)?;
+        reject_existing_symlink_components(name, path)?;
+    }
+
+    let env_dir = view_root
+        .parent()
+        .ok_or_else(|| anyhow!("view-root must be inside an env directory"))?;
+    let envs_dir = env_dir
+        .parent()
+        .ok_or_else(|| anyhow!("view-root env directory must be inside an envs directory"))?;
+    if envs_dir.file_name().and_then(|name| name.to_str()) != Some("envs") {
+        bail!(
+            "path-preserving view-root must be under an agentfs envs directory: {}",
+            view_root.display()
+        );
+    }
+
+    for (name, path, expected_basename) in [
+        ("view-root", view_root, "view-root"),
+        ("lower", lower, "lower"),
+        ("upper", upper, "upper"),
+        ("whiteouts", whiteouts, "whiteouts"),
+    ] {
+        if path.parent() != Some(env_dir) {
+            bail!(
+                "{name} must be a sibling inside {}, got {}",
+                env_dir.display(),
+                path.display()
+            );
+        }
+        if path.file_name().and_then(|name| name.to_str()) != Some(expected_basename) {
+            bail!(
+                "{name} must be named {expected_basename}, got {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn reject_dot_components(name: &str, path: &Path) -> Result<()> {
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {}
+            Component::CurDir | Component::ParentDir => {
+                bail!("{name} must not contain . or .. components: {}", path.display());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn reject_existing_symlink_components(name: &str, path: &Path) -> Result<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "{name} must not pass through symlink component {}",
+                current.display()
+            );
         }
     }
     Ok(())
@@ -937,6 +1027,69 @@ mod tests {
         .to_string();
         assert!(error.contains("required chroot directory"));
         assert!(error.contains("/Users/me/project"));
+    }
+
+    #[test]
+    fn overlay_paths_must_match_agentfs_env_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let view_root = env_dir.join("view-root");
+        let lower = env_dir.join("lower");
+        let upper = env_dir.join("upper");
+        let whiteouts = env_dir.join("whiteouts");
+
+        super::validate_overlay_paths(&view_root, &lower, &upper, &whiteouts).unwrap();
+
+        let error = super::validate_overlay_paths(
+            &view_root,
+            &temp.path().join("other/lower"),
+            &upper,
+            &whiteouts,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("lower must be a sibling"));
+
+        let error =
+            super::validate_overlay_paths(&env_dir.join("rootfs"), &lower, &upper, &whiteouts)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("view-root must be named view-root"));
+    }
+
+    #[test]
+    fn overlay_paths_reject_dot_components_and_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        fs::create_dir_all(&env_dir).unwrap();
+        let lower = env_dir.join("lower");
+        let upper = env_dir.join("upper");
+        let whiteouts = env_dir.join("whiteouts");
+
+        let error = super::validate_overlay_paths(
+            &env_dir.join("../codex-1/view-root"),
+            &lower,
+            &upper,
+            &whiteouts,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("must not contain . or .."));
+
+        let real_envs = temp.path().join("real-envs");
+        fs::create_dir_all(&real_envs).unwrap();
+        let linked_envs = temp.path().join("agentfs/envs-link");
+        std::os::unix::fs::symlink(&real_envs, &linked_envs).unwrap();
+        let linked_env_dir = linked_envs.join("codex-1");
+        let error = super::validate_overlay_paths(
+            &linked_env_dir.join("view-root"),
+            &linked_env_dir.join("lower"),
+            &linked_env_dir.join("upper"),
+            &linked_env_dir.join("whiteouts"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("symlink component"));
     }
 
     fn seed_required_view_paths(view_root: &std::path::Path) {
