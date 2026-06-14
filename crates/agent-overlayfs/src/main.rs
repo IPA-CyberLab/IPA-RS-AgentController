@@ -137,9 +137,15 @@ impl FallbackRoots {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn fallback_is_special_file(path: &Path) -> std::io::Result<bool> {
+    let file_type = std::fs::symlink_metadata(path)?.file_type();
+    Ok(!file_type.is_file() && !file_type.is_dir() && !file_type.is_symlink())
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{FallbackRoots, MountArgs};
+    use super::{fallback_is_special_file, FallbackRoots, MountArgs};
     use agent_core::path_overlay::{OverlayLookup, PathOverlay};
     use anyhow::{bail, Context, Result};
     use fuser::{
@@ -316,6 +322,18 @@ mod platform {
                 }
             }
             Ok(upper)
+        }
+
+        fn storage_path_for_open(&self, visible: &Path, write: bool) -> Result<PathBuf, Errno> {
+            if !write {
+                return self.storage_path_for_read(visible);
+            }
+            if let Some(fallback) = self.fallback_path(visible) {
+                if fallback_is_special_file(&fallback).map_err(|_| Errno::EIO)? {
+                    return Ok(fallback);
+                }
+            }
+            self.ensure_upper_for_write(visible)
         }
 
         fn merged_dir_entries(&self, visible: &Path) -> Result<Vec<(OsString, FileType)>, Errno> {
@@ -570,11 +588,7 @@ mod platform {
             let result = (|| {
                 let visible = self.path_for_ino(ino)?;
                 let write = open_flags_write(flags.0);
-                let storage = if write {
-                    self.ensure_upper_for_write(&visible)?
-                } else {
-                    self.storage_path_for_read(&visible)?
-                };
+                let storage = self.storage_path_for_open(&visible, write)?;
                 let file = open_file(&storage, flags.0, write).map_err(|_| Errno::EIO)?;
                 let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
                 self.files.lock().map_err(|_| Errno::EIO)?.insert(fh, file);
@@ -955,8 +969,10 @@ mod platform {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::FallbackRoots;
+    use super::{fallback_is_special_file, FallbackRoots};
+    use std::ffi::CString;
     use std::fs;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     #[test]
@@ -1013,16 +1029,29 @@ mod tests {
         let var = temp.path().join("var");
         let var_tmp = var.join("tmp");
         let var_secret = var.join("db");
+        let dev = temp.path().join("dev");
+        let dev_null = dev.join("null");
+        let dev_zero = dev.join("zero");
+        let dev_disk = dev.join("disk0");
         fs::create_dir_all(&etc).unwrap();
         fs::create_dir_all(&secret).unwrap();
         fs::create_dir_all(&var_tmp).unwrap();
         fs::create_dir_all(&var_secret).unwrap();
+        fs::create_dir_all(&dev).unwrap();
         fs::write(etc.join("zshrc"), "ok").unwrap();
         fs::write(secret.join("secret.txt"), "secret").unwrap();
         fs::write(var_tmp.join("scratch.txt"), "ok").unwrap();
         fs::write(var_secret.join("secret.txt"), "secret").unwrap();
+        fs::write(&dev_null, "").unwrap();
+        fs::write(&dev_zero, "").unwrap();
+        fs::write(&dev_disk, "secret").unwrap();
 
-        let roots = FallbackRoots::new(vec![etc.clone(), var_tmp.clone()]);
+        let roots = FallbackRoots::new(vec![
+            etc.clone(),
+            var_tmp.clone(),
+            dev_null.clone(),
+            dev_zero.clone(),
+        ]);
 
         assert!(roots.is_virtual_dir(&private));
         assert_eq!(
@@ -1039,9 +1068,41 @@ mod tests {
             roots.path(&var_tmp.join("scratch.txt")),
             Some(var_tmp.join("scratch.txt"))
         );
+        assert!(roots.is_virtual_dir(&dev));
+        assert_eq!(
+            roots.child_names(&dev),
+            vec![
+                std::ffi::OsString::from("null"),
+                std::ffi::OsString::from("zero")
+            ]
+        );
+        assert_eq!(roots.path(&dev_null), Some(dev_null));
+        assert_eq!(roots.path(&dev_zero), Some(dev_zero));
         assert!(roots.path(&secret.join("secret.txt")).is_none());
         assert!(roots.path(&var_secret.join("secret.txt")).is_none());
+        assert!(roots.path(&dev_disk).is_none());
         assert!(!roots.is_virtual_dir(&secret));
         assert!(!roots.is_virtual_dir(&var_secret));
+        assert!(!roots.is_virtual_dir(&dev_disk));
+    }
+
+    #[test]
+    fn fallback_special_file_detection_distinguishes_fifo_from_regular_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let regular = temp.path().join("regular");
+        let dir = temp.path().join("dir");
+        let symlink = temp.path().join("symlink");
+        let fifo = temp.path().join("fifo");
+        fs::write(&regular, "").unwrap();
+        fs::create_dir(&dir).unwrap();
+        std::os::unix::fs::symlink(&regular, &symlink).unwrap();
+        let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        let rc = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) };
+        assert_eq!(rc, 0);
+
+        assert!(!fallback_is_special_file(&regular).unwrap());
+        assert!(!fallback_is_special_file(&dir).unwrap());
+        assert!(!fallback_is_special_file(&symlink).unwrap());
+        assert!(fallback_is_special_file(&fifo).unwrap());
     }
 }

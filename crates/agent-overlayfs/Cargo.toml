@@ -19,4 +19,5 @@ fuser = { version = "0.17.0", features = ["macfuse-4-compat", "macos-no-mount"] 
 libc.workspace = true
 
 [dev-dependencies]
+libc.workspace = true
 tempfile = "3.10"

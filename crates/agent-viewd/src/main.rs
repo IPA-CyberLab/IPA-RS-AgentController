@@ -232,6 +232,7 @@ fn validate_view_runtime(view_root: &Path, cwd: &Path, program: &str, network: &
     ] {
         validate_view_dir(view_root, path)?;
     }
+    validate_view_path_exists(view_root, Path::new("/dev/null"))?;
     validate_view_executable(view_root, Path::new("/usr/bin/env"))?;
     if program.starts_with('/') {
         validate_view_executable(view_root, Path::new(program))?;
@@ -269,6 +270,19 @@ fn validate_view_dir(view_root: &Path, path: &Path) -> Result<()> {
     if !host_path.is_dir() {
         bail!(
             "path-preserving view at {} is missing required chroot directory {}; macOS system fallback roots are not mounted correctly",
+            view_root.display(),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_view_path_exists(view_root: &Path, path: &Path) -> Result<()> {
+    let host_path = path_in_view_root(view_root, path)?;
+    if !host_path.exists() {
+        bail!(
+            "path-preserving view at {} is missing required chroot path {}; macOS system fallback roots are not mounted correctly",
             view_root.display(),
             path.display()
         );
@@ -490,7 +504,11 @@ fn system_fallback_roots() -> Vec<PathBuf> {
         "/usr",
         "/System",
         "/Library",
-        "/dev",
+        "/dev/null",
+        "/dev/random",
+        "/dev/tty",
+        "/dev/urandom",
+        "/dev/zero",
         "/etc",
         "/var/tmp",
         "/tmp",
@@ -854,6 +872,7 @@ mod tests {
         for path in ["bin", "usr/bin", "System", "Library", "private", "dev"] {
             fs::create_dir_all(view_root.join(path)).unwrap();
         }
+        fs::write(view_root.join("dev/null"), "").unwrap();
         write_executable(view_root.join("usr/bin/env"));
     }
 
