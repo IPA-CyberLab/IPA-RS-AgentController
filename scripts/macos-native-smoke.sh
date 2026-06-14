@@ -15,6 +15,7 @@ overlayfs="${AGENT_OVERLAYFS:-$(command -v agent-overlayfs || true)}"
 daemon_log=""
 cwd_out=""
 new_cwd_out=""
+command_timeout="${AGENT_SMOKE_COMMAND_TIMEOUT:-90}"
 
 require_executable() {
   local name="$1"
@@ -30,6 +31,29 @@ require_executable AGENT_FORKD "$forkd"
 require_executable AGENT_VIEWD "$viewd"
 require_executable AGENT_OVERLAYFS "$overlayfs"
 require_executable NC /usr/bin/nc
+
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  echo "running (${seconds}s timeout): $*" >&2
+  "$@" &
+  local pid="$!"
+  (
+    sleep "$seconds"
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      echo "command timed out after ${seconds}s: $*" >&2
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 2
+      kill -KILL "$pid" >/dev/null 2>&1 || true
+    fi
+  ) &
+  local timer_pid="$!"
+  local status=0
+  wait "$pid" || status="$?"
+  kill "$timer_pid" >/dev/null 2>&1 || true
+  wait "$timer_pid" >/dev/null 2>&1 || true
+  return "$status"
+}
 
 echo "agentctl=$agentctl"
 echo "agent-forkd=$forkd"
@@ -124,7 +148,7 @@ net_none_id="mac-smoke-net-none-$$"
 new_cwd_out="$tmp/new-cwd.out"
 (
   cd "$source_dir/nested"
-  "$agentctl" --agentfs "$agentfs" new -t "$env_id" --from "$source_dir" -- /bin/zsh -fc '
+  run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" new -t "$env_id" --from "$source_dir" -- /bin/zsh -fc '
     set -e
     printf "new-pwd=%s\n" "$PWD"
     cat source.txt
@@ -138,7 +162,7 @@ echo "verified new command preserved cwd and source visibility"
 cwd_out="$tmp/cwd.out"
 (
   cd "$source_dir/nested"
-  "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc '
+  run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc '
     set -e
     printf "pwd=%s\n" "$PWD"
     /usr/bin/env true
@@ -156,7 +180,7 @@ echo "verified preserved cwd, macOS runtime paths, and source visibility"
 if [[ -e "$HOME/.ssh" && "$HOME/.ssh" != "$source_dir"* ]]; then
   (
     cd "$source_dir/nested"
-    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "$HOME/.ssh"'
+    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "$HOME/.ssh"'
   )
   echo "verified host home secrets are not visible"
 fi
@@ -164,7 +188,7 @@ fi
 if [[ -e /private/var/db ]]; then
   (
     cd "$source_dir/nested"
-    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc '
+    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc '
       test -d /private/var/tmp
       test ! -e /private/var/db
     '
@@ -175,7 +199,7 @@ fi
 if [[ -e /usr/local ]]; then
   (
     cd "$source_dir/nested"
-    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e /usr/local'
+    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e /usr/local'
   )
   echo "verified broad /usr/local host tree is not visible"
 fi
@@ -183,7 +207,7 @@ fi
 if [[ -e "/Library/Application Support" ]]; then
   (
     cd "$source_dir/nested"
-    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "/Library/Application Support"'
+    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "/Library/Application Support"'
   )
   echo "verified broad /Library application data is not visible"
 fi
@@ -191,7 +215,7 @@ fi
 if [[ -e /private/etc/ssh ]]; then
   (
     cd "$source_dir/nested"
-    "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e /private/etc/ssh'
+    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e /private/etc/ssh'
   )
   echo "verified broad /private/etc config tree is not visible"
 fi
@@ -203,11 +227,11 @@ done &
 server_pid=$!
 sleep 0.5
 
-"$agentctl" --agentfs "$agentfs" new -t "$net_host_id" --network host --from "$source_dir" -- \
+run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" new -t "$net_host_id" --network host --from "$source_dir" -- \
   /usr/bin/nc -G 2 -z 127.0.0.1 "$port"
 echo "verified network=host reaches 127.0.0.1:$port"
 
-if "$agentctl" --agentfs "$agentfs" new -t "$net_none_id" --network none --from "$source_dir" -- \
+if run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" new -t "$net_none_id" --network none --from "$source_dir" -- \
   /usr/bin/nc -G 2 -z 127.0.0.1 "$port"; then
   echo "network=none unexpectedly reached 127.0.0.1:$port" >&2
   exit 1

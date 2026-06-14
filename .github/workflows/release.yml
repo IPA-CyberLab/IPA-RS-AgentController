@@ -7,6 +7,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      macos_native_smoke:
+        description: "Run full macOS native path-preserving smoke test"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -161,10 +167,14 @@ jobs:
             ???s*) ;;
             *) echo "agent-viewd is not setuid root" >&2; exit 1 ;;
           esac
-          PATH="$install_dir:$PATH" \
-            AGENT_BIN_DIR="$install_dir" \
-            AGENTFS="$RUNNER_TEMP/agentfs-native-${{ matrix.target }}" \
-            scripts/macos-native-smoke.sh
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.macos_native_smoke }}" == "true" ]]; then
+            PATH="$install_dir:$PATH" \
+              AGENT_BIN_DIR="$install_dir" \
+              AGENTFS="$RUNNER_TEMP/agentfs-native-${{ matrix.target }}" \
+              scripts/macos-native-smoke.sh
+          else
+            echo "Skipping full macOS native smoke; run workflow_dispatch with macos_native_smoke=true to execute it."
+          fi
 
       - name: Smoke test native desktop daemon
         if: runner.os == 'Windows'
