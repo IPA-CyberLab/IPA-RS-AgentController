@@ -37,6 +37,8 @@ struct EnterArgs {
     #[arg(long)]
     view_root: PathBuf,
     #[arg(long)]
+    source_root: Option<PathBuf>,
+    #[arg(long)]
     lower: PathBuf,
     #[arg(long)]
     upper: PathBuf,
@@ -54,6 +56,8 @@ struct EnterArgs {
 struct ShellArgs {
     #[arg(long)]
     view_root: PathBuf,
+    #[arg(long)]
+    source_root: Option<PathBuf>,
     #[arg(long)]
     lower: PathBuf,
     #[arg(long)]
@@ -74,6 +78,8 @@ struct ShellArgs {
 struct SessionArgs {
     #[arg(long)]
     view_root: PathBuf,
+    #[arg(long)]
+    source_root: Option<PathBuf>,
     #[arg(long)]
     lower: PathBuf,
     #[arg(long)]
@@ -102,6 +108,7 @@ fn run() -> Result<()> {
         CommandKind::Exec(args) => {
             let status = enter_and_run(
                 args.view_root,
+                args.source_root,
                 args.lower,
                 args.upper,
                 args.whiteouts,
@@ -116,6 +123,7 @@ fn run() -> Result<()> {
             apply_prompt_env(&mut command, &args.env_id);
             let status = enter_and_run(
                 args.view_root,
+                args.source_root,
                 args.lower,
                 args.upper,
                 args.whiteouts,
@@ -153,6 +161,7 @@ fn apply_prompt_env(command: &mut [String], env_id: &str) {
 
 fn enter_and_run(
     view_root: PathBuf,
+    source_root: Option<PathBuf>,
     lower: PathBuf,
     upper: PathBuf,
     whiteouts: PathBuf,
@@ -162,10 +171,24 @@ fn enter_and_run(
 ) -> Result<i32> {
     let (program, args) = split_command(&command)?;
     validate_network_mode(&network)?;
+    if let Some(source_root) = source_root {
+        let mount = ensure_source_overlay_mounted(&source_root, &lower, &upper, &whiteouts)?;
+        validate_direct_runtime(&source_root, &cwd, program)?;
+        let mut command = command_for_direct_mount(program, args, &network, &source_root);
+        prepare_direct_child(&mut command, &cwd);
+        let status = command.env("PWD", &cwd).status().with_context(|| {
+            format!(
+                "failed to execute {program} inside path-preserving source {}",
+                source_root.display()
+            )
+        })?;
+        drop(mount);
+        return Ok(status.code().unwrap_or(128));
+    }
     ensure_overlay_mounted(&view_root, &lower, &upper, &whiteouts)?;
     validate_view_runtime(&view_root, &cwd, program, &network)?;
     enter_view(&view_root, &cwd, &network)?;
-    let status = command_for_network(program, args, &network)
+    let status = command_for_chroot_network(program, args, &network)
         .status()
         .with_context(|| format!("failed to execute {program} inside {}", view_root.display()))?;
     Ok(status.code().unwrap_or(128))
@@ -175,23 +198,37 @@ fn enter_and_run(
 fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
     validate_network_mode(&args.network)?;
+    if let Some(source_root) = args.source_root.as_ref() {
+        let _mount =
+            ensure_source_overlay_mounted(source_root, &args.lower, &args.upper, &args.whiteouts)?;
+        validate_direct_runtime(source_root, &args.cwd, program)?;
+        let stdout = open_session_log(&args.log_path)?;
+        let stderr = stdout
+            .try_clone()
+            .with_context(|| format!("failed to clone log {}", args.log_path.display()))?;
+        let mut command =
+            command_for_direct_mount(program, command_args, &args.network, source_root);
+        prepare_direct_child(&mut command, &args.cwd);
+        command
+            .env("PWD", &args.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr));
+        let child = command
+            .spawn()
+            .with_context(|| format!("failed to spawn {program} inside path-preserving source"))?;
+        std::mem::forget(_mount);
+        return Ok(child.id());
+    }
     ensure_overlay_mounted(&args.view_root, &args.lower, &args.upper, &args.whiteouts)?;
     validate_view_runtime(&args.view_root, &args.cwd, program, &args.network)?;
     validate_enter_args(&args.view_root, &args.cwd, &args.network)?;
     validate_session_log_path(&args.view_root, &args.log_path)?;
-    if let Some(parent) = args.log_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create log dir {}", parent.display()))?;
-    }
-    let stdout = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&args.log_path)
-        .with_context(|| format!("failed to open log {}", args.log_path.display()))?;
+    let stdout = open_session_log(&args.log_path)?;
     let stderr = stdout
         .try_clone()
         .with_context(|| format!("failed to clone log {}", args.log_path.display()))?;
-    let mut command = command_for_network(program, command_args, &args.network);
+    let mut command = command_for_chroot_network(program, command_args, &args.network);
     command
         .env("AGENT_NETWORK", &args.network)
         .stdin(Stdio::null())
@@ -354,8 +391,38 @@ fn ensure_overlay_mounted(
     whiteouts: &Path,
 ) -> Result<()> {
     validate_overlay_paths(view_root, lower, upper, whiteouts)?;
+    let _mount = ensure_overlay_mounted_at(view_root, None, lower, upper, whiteouts)?;
+    std::mem::forget(_mount);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_source_overlay_mounted(
+    source_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+) -> Result<MountedOverlay> {
+    validate_source_overlay_paths(source_root, lower, upper, whiteouts)?;
+    std::fs::create_dir_all(source_root.join(".tmp")).with_context(|| {
+        format!(
+            "failed to create path-preserving tmpdir {}",
+            source_root.join(".tmp").display()
+        )
+    })?;
+    ensure_overlay_mounted_at(source_root, Some(source_root), lower, upper, whiteouts)
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_overlay_mounted_at(
+    mount_point: &Path,
+    visible_root: Option<&Path>,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+) -> Result<MountedOverlay> {
     for (name, path) in [
-        ("view-root", view_root),
+        ("mount-point", mount_point),
         ("lower", lower),
         ("upper", upper),
         ("whiteouts", whiteouts),
@@ -364,8 +431,13 @@ fn ensure_overlay_mounted(
             bail!("{name} must be absolute: {}", path.display());
         }
     }
-    std::fs::create_dir_all(view_root)
-        .with_context(|| format!("failed to create view-root {}", view_root.display()))?;
+    if let Some(visible_root) = visible_root {
+        if !visible_root.is_absolute() {
+            bail!("visible-root must be absolute: {}", visible_root.display());
+        }
+    }
+    std::fs::create_dir_all(mount_point)
+        .with_context(|| format!("failed to create mount-point {}", mount_point.display()))?;
     std::fs::create_dir_all(lower)
         .with_context(|| format!("failed to create lower {}", lower.display()))?;
     std::fs::create_dir_all(upper)
@@ -373,11 +445,11 @@ fn ensure_overlay_mounted(
     std::fs::create_dir_all(whiteouts)
         .with_context(|| format!("failed to create whiteouts {}", whiteouts.display()))?;
 
-    if overlay_is_ready(view_root) {
-        return Ok(());
+    if overlay_is_ready(mount_point) {
+        return Ok(MountedOverlay::borrowed(mount_point));
     }
 
-    let stderr_path = overlay_stderr_path(view_root)?;
+    let stderr_path = overlay_stderr_path(mount_point, visible_root, lower)?;
     if let Some(parent) = stderr_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -401,7 +473,11 @@ fn ensure_overlay_mounted(
     child_command
         .arg("mount")
         .arg("--mount-point")
-        .arg(view_root)
+        .arg(mount_point);
+    if let Some(visible_root) = visible_root {
+        child_command.arg("--visible-root").arg(visible_root);
+    }
+    child_command
         .arg("--lower")
         .arg(lower)
         .arg("--upper")
@@ -423,7 +499,7 @@ fn ensure_overlay_mounted(
             if libc::setpgid(0, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            Ok(())
+            drop_to_target_user().map_err(std::io::Error::other)
         });
     }
     let mut child = child_command
@@ -432,8 +508,8 @@ fn ensure_overlay_mounted(
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if overlay_is_ready(view_root) {
-            return Ok(());
+        if overlay_is_ready(mount_point) {
+            return Ok(MountedOverlay::owned(mount_point));
         }
         if let Some(status) = child
             .try_wait()
@@ -442,7 +518,7 @@ fn ensure_overlay_mounted(
             let stderr = read_and_remove_file(&stderr_path);
             bail!(
                 "agent-overlayfs exited before {} became ready: {}{}",
-                view_root.display(),
+                mount_point.display(),
                 status_display(status.code()),
                 stderr_suffix(&stderr)
             );
@@ -450,14 +526,61 @@ fn ensure_overlay_mounted(
         std::thread::sleep(Duration::from_millis(50));
     }
     let stderr = read_and_remove_file(&stderr_path);
-    let diagnostics = overlay_readiness_diagnostics(view_root, child.id(), &stderr);
+    let diagnostics = overlay_readiness_diagnostics(mount_point, child.id(), &stderr);
     kill_process_group(child.id());
     let _ = child.kill();
     bail!(
         "agent-overlayfs did not become ready at {} within 10s; mount helper was terminated{}",
-        view_root.display(),
+        mount_point.display(),
         diagnostics
     )
+}
+
+#[cfg(target_os = "macos")]
+struct MountedOverlay {
+    mount_point: PathBuf,
+    owned: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl MountedOverlay {
+    fn owned(mount_point: &Path) -> Self {
+        Self {
+            mount_point: mount_point.to_path_buf(),
+            owned: true,
+        }
+    }
+
+    fn borrowed(mount_point: &Path) -> Self {
+        Self {
+            mount_point: mount_point.to_path_buf(),
+            owned: false,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MountedOverlay {
+    fn drop(&mut self) {
+        if self.owned {
+            unmount_path(&self.mount_point);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn unmount_path(mount_point: &Path) {
+    if !overlay_mount_is_active(mount_point) {
+        return;
+    }
+    let _ = Command::new("/sbin/umount").arg(mount_point).status();
+    if overlay_mount_is_active(mount_point) {
+        let _ = Command::new("diskutil")
+            .arg("unmount")
+            .arg("force")
+            .arg(mount_point)
+            .status();
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -471,20 +594,25 @@ fn kill_process_group(pid: u32) {
 }
 
 #[cfg(target_os = "macos")]
-fn overlay_stderr_path(view_root: &Path) -> Result<PathBuf> {
-    let env_dir = view_root
-        .parent()
-        .ok_or_else(|| anyhow!("view-root must be inside an env directory"))?;
+fn overlay_stderr_path(
+    mount_point: &Path,
+    visible_root: Option<&Path>,
+    lower: &Path,
+) -> Result<PathBuf> {
+    let env_dir = if visible_root.is_some() {
+        lower
+            .parent()
+            .ok_or_else(|| anyhow!("lower must be inside an env directory"))?
+    } else {
+        mount_point
+            .parent()
+            .ok_or_else(|| anyhow!("view-root must be inside an env directory"))?
+    };
     Ok(env_dir.join("logs").join("agent-overlayfs-mount.stderr"))
 }
 
 #[cfg(target_os = "macos")]
 fn overlay_readiness_diagnostics(view_root: &Path, child_pid: u32, stderr: &str) -> String {
-    let ready_path = view_root.join(".agent-overlayfs-ready");
-    let ready_probe = match std::fs::metadata(&ready_path) {
-        Ok(metadata) => format!("ready_marker=file:{}", metadata.is_file()),
-        Err(error) => format!("ready_marker_error={error}"),
-    };
     let mount_lines = command_stdout("/sbin/mount", &[])
         .map(|stdout| {
             let matches = stdout
@@ -510,7 +638,7 @@ fn overlay_readiness_diagnostics(view_root: &Path, child_pid: u32, stderr: &str)
     .map(|stdout| format!("helper_ps={}", stdout.trim()))
     .unwrap_or_else(|error| format!("helper_ps_error={error}"));
     format!(
-        "\nreadiness diagnostics: {ready_probe}; {mount_lines}; {}; {ps_output}",
+        "\nreadiness diagnostics: {mount_lines}; {}; {ps_output}",
         stderr_diagnostic(stderr)
     )
 }
@@ -567,7 +695,7 @@ fn stderr_suffix(stderr: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn overlay_is_ready(view_root: &Path) -> bool {
-    view_root.join(".agent-overlayfs-ready").is_file() && overlay_mount_is_active(view_root)
+    overlay_mount_is_active(view_root)
 }
 
 #[cfg(target_os = "macos")]
@@ -658,7 +786,7 @@ fn system_fallback_root_candidates() -> &'static [&'static str] {
     ]
 }
 
-fn command_for_network(program: &str, args: &[String], network: &str) -> Command {
+fn command_for_chroot_network(program: &str, args: &[String], network: &str) -> Command {
     let mut command = if network == "none" {
         let mut command = Command::new("/usr/bin/sandbox-exec");
         command
@@ -680,6 +808,66 @@ fn command_for_network(program: &str, args: &[String], network: &str) -> Command
     command
 }
 
+fn command_for_direct_mount(
+    program: &str,
+    args: &[String],
+    network: &str,
+    source_root: &Path,
+) -> Command {
+    let mut command = Command::new("/usr/bin/sandbox-exec");
+    command
+        .arg("-p")
+        .arg(direct_mount_sandbox_profile(source_root, network))
+        .arg(program)
+        .args(args)
+        .env("AGENT_NETWORK", network)
+        .env("HOME", source_root)
+        .env("ZDOTDIR", source_root)
+        .env("TMPDIR", source_root.join(".tmp"))
+        .env("TMP", source_root.join(".tmp"))
+        .env("TEMP", source_root.join(".tmp"));
+    if let Ok(host_home) = std::env::var("HOME") {
+        command.env("HOST_HOME", host_home);
+    }
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn direct_mount_sandbox_profile(source_root: &Path, network: &str) -> String {
+    let source_root = scheme_string(&source_root.display().to_string());
+    let network_rule = if network == "none" {
+        "(deny network*)"
+    } else {
+        "(allow network*)"
+    };
+    format!(
+        r#"(version 1)
+(deny default)
+(allow process*)
+(allow sysctl-read)
+(allow file-read*)
+(allow file-ioctl)
+(allow file-write* (subpath "{source_root}"))
+{network_rule}
+"#
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn direct_mount_sandbox_profile(_source_root: &Path, _network: &str) -> String {
+    String::new()
+}
+
+#[cfg(target_os = "macos")]
+fn scheme_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn scheme_string(value: &str) -> String {
+    value.to_string()
+}
+
 #[cfg(not(target_os = "macos"))]
 fn ensure_overlay_mounted(
     _view_root: &Path,
@@ -690,14 +878,28 @@ fn ensure_overlay_mounted(
     bail!("agent-overlayfs is supported only on macOS")
 }
 
+#[cfg(not(target_os = "macos"))]
+struct MountedOverlay;
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_source_overlay_mounted(
+    _source_root: &Path,
+    _lower: &Path,
+    _upper: &Path,
+    _whiteouts: &Path,
+) -> Result<MountedOverlay> {
+    bail!("agent-overlayfs is supported only on macOS")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prepare_direct_child(_command: &mut Command, _cwd: &Path) {}
+
 #[cfg(target_os = "macos")]
 fn enter_view_for_child(view_root: &Path, cwd: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
 
     let view_root_c = CString::new(view_root.as_os_str().as_bytes())?;
     let cwd_c = CString::new(cwd.as_os_str().as_bytes())?;
-    let uid = target_uid();
-    let gid = target_gid();
     unsafe {
         if geteuid() != 0 {
             bail!("agent-viewd must run as root for chroot setup; install the macOS privileged helper");
@@ -710,6 +912,32 @@ fn enter_view_for_child(view_root: &Path, cwd: &Path) -> Result<()> {
             return Err(std::io::Error::last_os_error())
                 .with_context(|| format!("failed to chdir preserved cwd {}", cwd.display()));
         }
+    }
+    drop_to_target_user()
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_direct_child(command: &mut Command, cwd: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+
+    let cwd = cwd.as_os_str().as_bytes().to_vec();
+    unsafe {
+        command.pre_exec(move || {
+            drop_to_target_user().map_err(std::io::Error::other)?;
+            let cwd = CString::new(cwd.as_slice()).map_err(std::io::Error::other)?;
+            if chdir(cwd.as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn drop_to_target_user() -> Result<()> {
+    let uid = target_uid();
+    let gid = target_gid();
+    unsafe {
         if let Some(gid) = gid {
             if setgroups(0, std::ptr::null()) != 0 {
                 return Err(std::io::Error::last_os_error())
@@ -784,6 +1012,104 @@ fn validate_overlay_paths(
         }
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_source_overlay_paths(
+    source_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+) -> Result<()> {
+    if !source_root.is_absolute() {
+        bail!("source-root must be absolute: {}", source_root.display());
+    }
+    reject_dot_components("source-root", source_root)?;
+    reject_existing_symlink_components("source-root", source_root)?;
+    if !source_root.is_dir() {
+        bail!("source-root {} does not exist", source_root.display());
+    }
+    if source_root == Path::new("/") {
+        bail!("source-root must not be /");
+    }
+
+    for (name, path) in [("lower", lower), ("upper", upper), ("whiteouts", whiteouts)] {
+        if !path.is_absolute() {
+            bail!("{name} must be absolute: {}", path.display());
+        }
+        reject_dot_components(name, path)?;
+        reject_existing_symlink_components(name, path)?;
+    }
+
+    let env_dir = lower
+        .parent()
+        .ok_or_else(|| anyhow!("lower must be inside an env directory"))?;
+    let envs_dir = env_dir
+        .parent()
+        .ok_or_else(|| anyhow!("lower env directory must be inside an envs directory"))?;
+    if envs_dir.file_name().and_then(|name| name.to_str()) != Some("envs") {
+        bail!(
+            "path-preserving storage must be under an agentfs envs directory: {}",
+            lower.display()
+        );
+    }
+    for (name, path, expected_basename) in [
+        ("lower", lower, "lower"),
+        ("upper", upper, "upper"),
+        ("whiteouts", whiteouts, "whiteouts"),
+    ] {
+        if path.parent() != Some(env_dir) {
+            bail!(
+                "{name} must be a sibling inside {}, got {}",
+                env_dir.display(),
+                path.display()
+            );
+        }
+        if path.file_name().and_then(|name| name.to_str()) != Some(expected_basename) {
+            bail!(
+                "{name} must be named {expected_basename}, got {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn validate_direct_runtime(source_root: &Path, cwd: &Path, program: &str) -> Result<()> {
+    if !cwd.starts_with(source_root) {
+        bail!(
+            "preserved cwd {} must be inside source-root {}",
+            cwd.display(),
+            source_root.display()
+        );
+    }
+    if program.starts_with('/') {
+        let metadata = std::fs::metadata(program)
+            .with_context(|| format!("direct path-preserving command {program} is missing"))?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            bail!("direct path-preserving command {program} is not executable");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", test)))]
+fn validate_direct_runtime(_source_root: &Path, _cwd: &Path, _program: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_session_log(log_path: &Path) -> Result<std::fs::File> {
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create log dir {}", parent.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| format!("failed to open log {}", log_path.display()))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -946,7 +1272,7 @@ mod tests {
 
     #[test]
     fn network_none_wraps_command_with_sandbox_exec() {
-        let command = super::command_for_network("/bin/echo", &["ok".to_string()], "none");
+        let command = super::command_for_chroot_network("/bin/echo", &["ok".to_string()], "none");
 
         assert_eq!(command.get_program(), "/usr/bin/sandbox-exec");
         let args = command
@@ -960,7 +1286,7 @@ mod tests {
 
     #[test]
     fn host_network_runs_command_directly() {
-        let command = super::command_for_network("/bin/echo", &["ok".to_string()], "host");
+        let command = super::command_for_chroot_network("/bin/echo", &["ok".to_string()], "host");
 
         assert_eq!(command.get_program(), "/bin/echo");
         assert_eq!(
@@ -974,7 +1300,7 @@ mod tests {
 
     #[test]
     fn commands_use_chroot_local_runtime_env() {
-        let command = super::command_for_network("/bin/echo", &["ok".to_string()], "host");
+        let command = super::command_for_chroot_network("/bin/echo", &["ok".to_string()], "host");
         let envs = command
             .get_envs()
             .map(|(key, value)| {

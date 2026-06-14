@@ -97,6 +97,7 @@ impl CommandRunner {
     pub async fn run_macos_path_preserving_overlay(
         &self,
         view_root: &Path,
+        source_root: &Path,
         lower: &Path,
         upper: &Path,
         whiteouts: &Path,
@@ -107,6 +108,7 @@ impl CommandRunner {
     ) -> Result<CmdOutput> {
         run_macos_path_preserving_overlay(
             view_root,
+            source_root,
             lower,
             upper,
             whiteouts,
@@ -121,6 +123,7 @@ impl CommandRunner {
     pub fn spawn_macos_path_preserving_overlay_session(
         &self,
         view_root: &Path,
+        source_root: &Path,
         lower: &Path,
         upper: &Path,
         whiteouts: &Path,
@@ -132,6 +135,7 @@ impl CommandRunner {
     ) -> Result<u32> {
         spawn_macos_path_preserving_overlay_session(
             view_root,
+            source_root,
             lower,
             upper,
             whiteouts,
@@ -166,6 +170,7 @@ impl CommandRunner {
 #[cfg(target_os = "macos")]
 async fn run_macos_path_preserving_overlay(
     view_root: &Path,
+    source_root: &Path,
     lower: &Path,
     upper: &Path,
     whiteouts: &Path,
@@ -179,6 +184,8 @@ async fn run_macos_path_preserving_overlay(
         .arg("exec")
         .arg("--view-root")
         .arg(view_root)
+        .arg("--source-root")
+        .arg(source_root)
         .arg("--lower")
         .arg(lower)
         .arg("--upper")
@@ -200,6 +207,7 @@ async fn run_macos_path_preserving_overlay(
 #[cfg(not(target_os = "macos"))]
 async fn run_macos_path_preserving_overlay(
     _view_root: &Path,
+    _source_root: &Path,
     _lower: &Path,
     _upper: &Path,
     _whiteouts: &Path,
@@ -216,6 +224,7 @@ async fn run_macos_path_preserving_overlay(
 #[cfg(target_os = "macos")]
 fn spawn_macos_path_preserving_overlay_session(
     view_root: &Path,
+    source_root: &Path,
     lower: &Path,
     upper: &Path,
     whiteouts: &Path,
@@ -230,6 +239,8 @@ fn spawn_macos_path_preserving_overlay_session(
         .arg("session")
         .arg("--view-root")
         .arg(view_root)
+        .arg("--source-root")
+        .arg(source_root)
         .arg("--lower")
         .arg(lower)
         .arg("--upper")
@@ -370,6 +381,7 @@ fn create_capture_file(path: &Path) -> Result<std::fs::File> {
 #[cfg(not(target_os = "macos"))]
 fn spawn_macos_path_preserving_overlay_session(
     _view_root: &Path,
+    _source_root: &Path,
     _lower: &Path,
     _upper: &Path,
     _whiteouts: &Path,

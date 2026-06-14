@@ -143,6 +143,7 @@ impl DesktopService {
                 Ok(Response::DesktopShell {
                     command: desktop_shell_command(
                         &env.rootfs_path,
+                        Path::new(&base.source),
                         env.backend.clone(),
                         &env.id,
                         Some(&preserved_cwd),
@@ -217,6 +218,7 @@ impl DesktopService {
             Ok(Response::DesktopShell {
                 command: desktop_shell_command(
                     &env.rootfs_path,
+                    Path::new(&base.source),
                     env.backend.clone(),
                     &env.id,
                     Some(&preserved_cwd),
@@ -670,6 +672,7 @@ impl DesktopService {
                 .runner
                 .run_macos_path_preserving_overlay(
                     &env.rootfs_path,
+                    Path::new(&base.source),
                     &self.layout.env_lower(&env.id),
                     &self.layout.env_upper(&env.id),
                     &self.layout.env_whiteouts(&env.id),
@@ -699,6 +702,7 @@ impl DesktopService {
                 path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
             return self.runner.spawn_macos_path_preserving_overlay_session(
                 &env.rootfs_path,
+                Path::new(&base.source),
                 &self.layout.env_lower(&env.id),
                 &self.layout.env_upper(&env.id),
                 &self.layout.env_whiteouts(&env.id),
@@ -981,24 +985,39 @@ fn collect_path_preserving_overlay_entries(
 
 fn desktop_shell_command(
     rootfs_path: &Path,
+    source_root: &Path,
     backend: RootfsBackend,
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
 ) -> Vec<String> {
-    platform_desktop_shell_command(rootfs_path, backend, env_id, host_workspace, limits)
+    platform_desktop_shell_command(
+        rootfs_path,
+        source_root,
+        backend,
+        env_id,
+        host_workspace,
+        limits,
+    )
 }
 
 #[cfg(target_os = "macos")]
 fn platform_desktop_shell_command(
     rootfs_path: &Path,
+    source_root: &Path,
     backend: RootfsBackend,
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
 ) -> Vec<String> {
     if backend == RootfsBackend::PathPreservingOverlay {
-        return macos_path_preserving_shell_command(rootfs_path, env_id, host_workspace, limits);
+        return macos_path_preserving_shell_command(
+            rootfs_path,
+            source_root,
+            env_id,
+            host_workspace,
+            limits,
+        );
     }
     let tmpdir = rootfs_path.join(".tmp");
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -1027,6 +1046,7 @@ fn platform_desktop_shell_command(
 #[cfg(target_os = "macos")]
 fn macos_path_preserving_shell_command(
     view_root: &Path,
+    source_root: &Path,
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
@@ -1042,6 +1062,8 @@ fn macos_path_preserving_shell_command(
         "shell".to_string(),
         "--view-root".to_string(),
         view_root.display().to_string(),
+        "--source-root".to_string(),
+        source_root.display().to_string(),
         "--lower".to_string(),
         lower.display().to_string(),
         "--upper".to_string(),
@@ -1116,6 +1138,7 @@ fn desktop_base_clone_target(
 #[cfg(not(target_os = "macos"))]
 fn platform_desktop_shell_command(
     _rootfs_path: &Path,
+    _source_root: &Path,
     _backend: RootfsBackend,
     _env_id: &str,
     _host_workspace: Option<&str>,
@@ -1301,6 +1324,7 @@ mod tests {
     fn non_macos_desktop_shell_uses_client_default_shell() {
         let command = super::desktop_shell_command(
             Path::new("/agentfs/envs/codex-1/rootfs"),
+            Path::new("/Users/mizuame/Desktop/project"),
             RootfsBackend::ApfsClone,
             "codex-1",
             None,
@@ -1316,6 +1340,7 @@ mod tests {
         let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
         let command = super::desktop_shell_command(
             rootfs,
+            Path::new("/Users/mizuame/Desktop/project"),
             RootfsBackend::ApfsClone,
             "codex-1",
             Some("/Users/mizuame/Desktop/project"),
@@ -1348,6 +1373,7 @@ mod tests {
         limits.network = "none".to_string();
         let command = super::desktop_shell_command(
             rootfs,
+            Path::new("/Users/mizuame/Desktop/project"),
             RootfsBackend::ApfsClone,
             "codex-1",
             None,
@@ -1363,6 +1389,7 @@ mod tests {
         let view_root = Path::new("/Users/mizuame/.agentfs/envs/codex-1/view-root");
         let command = super::desktop_shell_command(
             view_root,
+            Path::new("/Users/mizuame/Desktop/script/example"),
             RootfsBackend::PathPreservingOverlay,
             "codex-1",
             Some("/Users/mizuame/Desktop/script/example"),
@@ -1373,6 +1400,8 @@ mod tests {
         assert!(command.contains(&"shell".to_string()));
         assert!(command.contains(&"--view-root".to_string()));
         assert!(command.contains(&view_root.display().to_string()));
+        assert!(command.contains(&"--source-root".to_string()));
+        assert!(command.contains(&"/Users/mizuame/Desktop/script/example".to_string()));
         assert!(command.contains(&"--cwd".to_string()));
         assert!(command.contains(&"/Users/mizuame/Desktop/script/example".to_string()));
         assert!(!command.contains(&"sandbox-exec".to_string()));

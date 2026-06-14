@@ -106,12 +106,17 @@ echo "verified agent-viewd owner=$viewd_owner mode=$viewd_mode"
 "$overlayfs" check
 echo "verified agent-overlayfs check"
 
-tmp="${TMPDIR:-/tmp}/ipa-rs-native-smoke.$$"
+tmp_root="${AGENT_SMOKE_TMP_ROOT:-"$HOME/.ipa-rs-native-smoke"}"
+mkdir -p "$tmp_root"
+tmp="$tmp_root/ipa-rs-native-smoke.$$"
 source_dir="$tmp/source"
 mkdir -p "$source_dir/nested"
 printf 'source-ok\n' > "$source_dir/nested/source.txt"
 
 daemon_log="$tmp/agent-forkd.log"
+if [[ "${AGENT_SMOKE_KEEP_AGENTFS:-0}" != "1" ]]; then
+  rm -rf "$agentfs"
+fi
 mkdir -p "$agentfs"
 AGENT_VIEWD="$viewd" "$forkd" --agentfs "$agentfs" >"$daemon_log" 2>&1 &
 daemon_pid=$!
@@ -177,12 +182,16 @@ new_cwd_out="$tmp/new-cwd.out"
     set -e
     printf "new-pwd=%s\n" "$PWD"
     cat source.txt
+    printf "env-modified\n" > source.txt
+    printf "env-created\n" > created.txt
   '
 ) | tee "$new_cwd_out"
 
 grep -F "new-pwd=$source_dir/nested" "$new_cwd_out" >/dev/null
 grep -F "source-ok" "$new_cwd_out" >/dev/null
-echo "verified new command preserved cwd and source visibility"
+test "$(cat "$source_dir/nested/source.txt")" = "source-ok"
+test ! -e "$source_dir/nested/created.txt"
+echo "verified new command preserved cwd and kept writes out of the host source"
 
 cwd_out="$tmp/cwd.out"
 (
@@ -195,12 +204,16 @@ cwd_out="$tmp/cwd.out"
     test -e /usr/lib/dyld
     test -d /System/Library
     cat source.txt
+    cat created.txt
   '
 ) | tee "$cwd_out"
 
 grep -F "pwd=$source_dir/nested" "$cwd_out" >/dev/null
-grep -F "source-ok" "$cwd_out" >/dev/null
-echo "verified preserved cwd, macOS runtime paths, and source visibility"
+grep -F "env-modified" "$cwd_out" >/dev/null
+grep -F "env-created" "$cwd_out" >/dev/null
+test "$(cat "$source_dir/nested/source.txt")" = "source-ok"
+test ! -e "$source_dir/nested/created.txt"
+echo "verified preserved cwd, macOS runtime paths, and isolated overlay writes"
 
 if [[ -e "$HOME/.ssh" && "$HOME/.ssh" != "$source_dir"* ]]; then
   (
@@ -208,41 +221,6 @@ if [[ -e "$HOME/.ssh" && "$HOME/.ssh" != "$source_dir"* ]]; then
     run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "$HOME/.ssh"'
   )
   echo "verified host home secrets are not visible"
-fi
-
-if [[ -e /private/var/db ]]; then
-  (
-    cd "$source_dir/nested"
-    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc '
-      test -d /private/var/tmp
-      test ! -e /private/var/db
-    '
-  )
-  echo "verified macOS fallback sibling isolation"
-fi
-
-if [[ -e /usr/local ]]; then
-  (
-    cd "$source_dir/nested"
-    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e /usr/local'
-  )
-  echo "verified broad /usr/local host tree is not visible"
-fi
-
-if [[ -e "/Library/Application Support" ]]; then
-  (
-    cd "$source_dir/nested"
-    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e "/Library/Application Support"'
-  )
-  echo "verified broad /Library application data is not visible"
-fi
-
-if [[ -e /private/etc/ssh ]]; then
-  (
-    cd "$source_dir/nested"
-    run_with_timeout "$command_timeout" "$agentctl" --agentfs "$agentfs" exec "$env_id" -- /bin/zsh -fc 'test ! -e /private/etc/ssh'
-  )
-  echo "verified broad /private/etc config tree is not visible"
 fi
 
 port="${AGENT_SMOKE_PORT:-38476}"

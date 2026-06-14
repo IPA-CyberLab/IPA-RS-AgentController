@@ -29,6 +29,8 @@ struct MountArgs {
     #[arg(long)]
     mount_point: PathBuf,
     #[arg(long)]
+    visible_root: Option<PathBuf>,
+    #[arg(long)]
     lower: PathBuf,
     #[arg(long)]
     upper: PathBuf,
@@ -144,6 +146,7 @@ impl FallbackRoots {
 #[cfg(any(target_os = "macos", test))]
 fn validate_mount_layout(
     mount_point: &Path,
+    visible_root: Option<&Path>,
     lower: &Path,
     upper: &Path,
     whiteouts: &Path,
@@ -160,10 +163,30 @@ fn validate_mount_layout(
         reject_dot_components(name, path)?;
         reject_existing_symlink_components(name, path)?;
     }
+    if let Some(visible_root) = visible_root {
+        if !visible_root.is_absolute() {
+            bail!("visible-root must be absolute: {}", visible_root.display());
+        }
+        reject_dot_components("visible-root", visible_root)?;
+        reject_existing_symlink_components("visible-root", visible_root)?;
+        if visible_root != mount_point {
+            bail!(
+                "visible-root must match mount-point for host path mounts: {} != {}",
+                visible_root.display(),
+                mount_point.display()
+            );
+        }
+    }
 
-    let env_dir = mount_point
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("mount-point must be inside an env directory"))?;
+    let env_dir = if visible_root.is_some() {
+        lower
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("lower must be inside an env directory"))?
+    } else {
+        mount_point
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("mount-point must be inside an env directory"))?
+    };
     let envs_dir = env_dir
         .parent()
         .ok_or_else(|| anyhow::anyhow!("mount-point env directory must be inside envs"))?;
@@ -174,7 +197,6 @@ fn validate_mount_layout(
         );
     }
     for (name, path, expected_basename) in [
-        ("mount-point", mount_point, "view-root"),
         ("lower", lower, "lower"),
         ("upper", upper, "upper"),
         ("whiteouts", whiteouts, "whiteouts"),
@@ -190,6 +212,21 @@ fn validate_mount_layout(
             bail!(
                 "{name} must be named {expected_basename}, got {}",
                 path.display()
+            );
+        }
+    }
+    if visible_root.is_none() {
+        if mount_point.parent() != Some(env_dir) {
+            bail!(
+                "mount-point must be a sibling inside {}, got {}",
+                env_dir.display(),
+                mount_point.display()
+            );
+        }
+        if mount_point.file_name().and_then(|name| name.to_str()) != Some("view-root") {
+            bail!(
+                "mount-point must be named view-root, got {}",
+                mount_point.display()
             );
         }
     }
@@ -301,10 +338,10 @@ mod platform {
     use agent_core::path_overlay::{OverlayLookup, PathOverlay};
     use anyhow::{bail, Context, Result};
     use fuser::{
-        BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
-        Generation, INodeNo, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
-        ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, SessionACL,
-        TimeOrNow,
+        AccessFlags, BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem,
+        FopenFlags, Generation, INodeNo, KernelConfig, MountOption, ReplyAttr, ReplyCreate,
+        ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr,
+        Request, SessionACL, TimeOrNow,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::ffi::{OsStr, OsString};
@@ -359,15 +396,23 @@ mod platform {
             args.mount_point.display(),
             args.fs_name
         );
-        let fs = OverlayFs::new(args.lower, args.upper, args.whiteouts, args.fallback_roots);
+        let fs = OverlayFs::new(
+            args.lower,
+            args.upper,
+            args.whiteouts,
+            args.fallback_roots,
+            args.visible_root.unwrap_or_else(|| PathBuf::from("/")),
+        );
         let mut config = Config::default();
         config.mount_options = vec![
             MountOption::FSName(args.fs_name),
             MountOption::Subtype("agent-overlayfs".to_string()),
             MountOption::RW,
             MountOption::NoSuid,
+            MountOption::CUSTOM("defer_permissions".to_string()),
+            MountOption::CUSTOM("local".to_string()),
         ];
-        config.acl = SessionACL::All;
+        config.acl = SessionACL::Owner;
         let result = fuser::mount2(fs, &args.mount_point, &config)
             .context("failed to mount agent-overlayfs");
         eprintln!(
@@ -379,7 +424,13 @@ mod platform {
     }
 
     fn validate_mount_args(args: &MountArgs) -> Result<()> {
-        super::validate_mount_layout(&args.mount_point, &args.lower, &args.upper, &args.whiteouts)?;
+        super::validate_mount_layout(
+            &args.mount_point,
+            args.visible_root.as_deref(),
+            &args.lower,
+            &args.upper,
+            &args.whiteouts,
+        )?;
         super::validate_fallback_roots(&args.fallback_roots)?;
         if !args.mount_point.is_dir() {
             bail!("mount-point {} does not exist", args.mount_point.display());
@@ -393,6 +444,7 @@ mod platform {
     struct OverlayFs {
         overlay: PathOverlay,
         fallback_roots: FallbackRoots,
+        visible_root: PathBuf,
         paths: Mutex<InodeTable>,
         files: Mutex<HashMap<u64, File>>,
         next_fh: AtomicU64,
@@ -404,12 +456,14 @@ mod platform {
             upper: PathBuf,
             whiteouts: PathBuf,
             fallback_roots: Vec<PathBuf>,
+            visible_root: PathBuf,
         ) -> Self {
             let mut table = InodeTable::default();
             table.intern(PathBuf::from("/"));
             Self {
                 overlay: PathOverlay::new(lower, upper, whiteouts),
                 fallback_roots: FallbackRoots::new(fallback_roots),
+                visible_root,
                 paths: Mutex::new(table),
                 files: Mutex::new(HashMap::new()),
                 next_fh: AtomicU64::new(2),
@@ -444,27 +498,41 @@ mod platform {
             })
         }
 
-        fn lookup_path(&self, visible: &Path) -> Result<(INodeNo, FileAttr), Errno> {
-            if visible == Path::new("/") {
+        fn overlay_visible_path(&self, mount_path: &Path) -> PathBuf {
+            if self.visible_root == Path::new("/") {
+                return mount_path.to_path_buf();
+            }
+            if mount_path == Path::new("/") {
+                return self.visible_root.clone();
+            }
+            match mount_path.strip_prefix("/") {
+                Ok(relative) => self.visible_root.join(relative),
+                Err(_) => self.visible_root.join(mount_path),
+            }
+        }
+
+        fn lookup_path(&self, mount_path: &Path) -> Result<(INodeNo, FileAttr), Errno> {
+            if mount_path == Path::new("/") {
                 return Ok((INodeNo(ROOT_INO), root_attr()));
             }
-            if visible == Path::new("/").join(READY_FILE) {
-                let ino = self.ino_for_path(visible)?;
+            if mount_path == Path::new("/").join(READY_FILE) {
+                let ino = self.ino_for_path(mount_path)?;
                 return Ok((ino, virtual_ready_attr(ino)));
             }
-            match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
+            let visible = self.overlay_visible_path(mount_path);
+            match self.overlay.resolve(&visible).map_err(|_| Errno::EIO)? {
                 OverlayLookup::Found(found) => {
-                    let ino = self.ino_for_path(visible)?;
+                    let ino = self.ino_for_path(mount_path)?;
                     let attr = file_attr(ino, &found.storage_path).map_err(|_| Errno::EIO)?;
                     Ok((ino, attr))
                 }
                 OverlayLookup::Whiteout(_) => Err(Errno::ENOENT),
                 OverlayLookup::Missing => {
-                    let ino = self.ino_for_path(visible)?;
-                    if let Some(fallback) = self.fallback_path(visible) {
+                    let ino = self.ino_for_path(mount_path)?;
+                    if let Some(fallback) = self.fallback_path(&visible) {
                         let attr = file_attr(ino, &fallback).map_err(|_| Errno::EIO)?;
                         Ok((ino, attr))
-                    } else if self.fallback_roots.is_virtual_dir(visible) {
+                    } else if self.fallback_roots.is_virtual_dir(&visible) {
                         Ok((ino, virtual_dir_attr(ino)))
                     } else {
                         Err(Errno::ENOENT)
@@ -473,28 +541,30 @@ mod platform {
             }
         }
 
-        fn storage_path_for_read(&self, visible: &Path) -> Result<PathBuf, Errno> {
-            match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
+        fn storage_path_for_read(&self, mount_path: &Path) -> Result<PathBuf, Errno> {
+            let visible = self.overlay_visible_path(mount_path);
+            match self.overlay.resolve(&visible).map_err(|_| Errno::EIO)? {
                 OverlayLookup::Found(found) => Ok(found.storage_path),
                 OverlayLookup::Whiteout(_) => Err(Errno::ENOENT),
-                OverlayLookup::Missing => self.fallback_path(visible).ok_or(Errno::ENOENT),
+                OverlayLookup::Missing => self.fallback_path(&visible).ok_or(Errno::ENOENT),
             }
         }
 
-        fn ensure_upper_for_write(&self, visible: &Path) -> Result<PathBuf, Errno> {
-            let upper = self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?;
+        fn ensure_upper_for_write(&self, mount_path: &Path) -> Result<PathBuf, Errno> {
+            let visible = self.overlay_visible_path(mount_path);
+            let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
             if upper.exists() {
                 return Ok(upper);
             }
             if let Some(parent) = upper.parent() {
                 fs::create_dir_all(parent).map_err(|_| Errno::EIO)?;
             }
-            match self.overlay.resolve(visible).map_err(|_| Errno::EIO)? {
+            match self.overlay.resolve(&visible).map_err(|_| Errno::EIO)? {
                 OverlayLookup::Found(found) => {
                     copy_up(&found.storage_path, &upper).map_err(|_| Errno::EIO)?
                 }
-                OverlayLookup::Missing if self.fallback_path(visible).is_some() => {
-                    let fallback = self.fallback_path(visible).ok_or(Errno::ENOENT)?;
+                OverlayLookup::Missing if self.fallback_path(&visible).is_some() => {
+                    let fallback = self.fallback_path(&visible).ok_or(Errno::ENOENT)?;
                     copy_up(&fallback, &upper).map_err(|_| Errno::EIO)?
                 }
                 OverlayLookup::Whiteout(_) | OverlayLookup::Missing => {
@@ -504,23 +574,28 @@ mod platform {
             Ok(upper)
         }
 
-        fn storage_path_for_open(&self, visible: &Path, write: bool) -> Result<PathBuf, Errno> {
+        fn storage_path_for_open(&self, mount_path: &Path, write: bool) -> Result<PathBuf, Errno> {
             if !write {
-                return self.storage_path_for_read(visible);
+                return self.storage_path_for_read(mount_path);
             }
-            if let Some(fallback) = self.fallback_path(visible) {
+            let visible = self.overlay_visible_path(mount_path);
+            if let Some(fallback) = self.fallback_path(&visible) {
                 if fallback_is_special_file(&fallback).map_err(|_| Errno::EIO)? {
                     return Ok(fallback);
                 }
             }
-            self.ensure_upper_for_write(visible)
+            self.ensure_upper_for_write(mount_path)
         }
 
-        fn merged_dir_entries(&self, visible: &Path) -> Result<Vec<(OsString, FileType)>, Errno> {
+        fn merged_dir_entries(
+            &self,
+            mount_path: &Path,
+        ) -> Result<Vec<(OsString, FileType)>, Errno> {
             let mut entries = BTreeMap::new();
-            for root in self.fallback_entries_root(visible).into_iter().chain([
-                self.overlay.lower_path(visible).map_err(|_| Errno::EIO)?,
-                self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?,
+            let visible = self.overlay_visible_path(mount_path);
+            for root in self.fallback_entries_root(&visible).into_iter().chain([
+                self.overlay.lower_path(&visible).map_err(|_| Errno::EIO)?,
+                self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?,
             ]) {
                 if !root.exists() {
                     continue;
@@ -548,10 +623,10 @@ mod platform {
                     entries.insert(name, kind);
                 }
             }
-            if visible == Path::new("/") {
+            if mount_path == Path::new("/") {
                 entries.insert(OsString::from(READY_FILE), FileType::RegularFile);
             }
-            for name in self.fallback_roots.child_names(visible) {
+            for name in self.fallback_roots.child_names(&visible) {
                 let child_visible = if visible == Path::new("/") {
                     PathBuf::from("/").join(&name)
                 } else {
@@ -593,20 +668,33 @@ mod platform {
 
     impl Filesystem for OverlayFs {
         fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> std::io::Result<()> {
+            debug_request("init");
             Ok(())
         }
 
         fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+            debug_request(&format!("lookup parent={} name={:?}", parent.0, name));
             let result = self
                 .child_path(parent, name)
                 .and_then(|path| self.lookup_path(&path));
+            debug_request(&format!(
+                "lookup result={}",
+                if result.is_ok() { "ok" } else { "err" }
+            ));
             match result {
-                Ok((_ino, attr)) => reply.entry(&TTL, &attr, Generation(0)),
+                Ok((_ino, attr)) => {
+                    debug_request(&format!(
+                        "lookup attr ino={} kind={:?} uid={} gid={} perm={:o}",
+                        attr.ino, attr.kind, attr.uid, attr.gid, attr.perm
+                    ));
+                    reply.entry(&TTL, &attr, Generation(0))
+                }
                 Err(errno) => reply.error(errno),
             }
         }
 
         fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+            debug_request(&format!("getattr ino={}", ino.0));
             let result = self
                 .path_for_ino(ino)
                 .and_then(|path| self.lookup_path(&path).map(|(_, attr)| attr));
@@ -678,7 +766,8 @@ mod platform {
         ) {
             let result = (|| {
                 let path = self.child_path(parent, name)?;
-                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                let visible = self.overlay_visible_path(&path);
+                let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
                 if upper.exists() {
                     return Err(Errno::EEXIST);
                 }
@@ -698,11 +787,14 @@ mod platform {
         fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
             let result = (|| {
                 let path = self.child_path(parent, name)?;
-                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                let visible = self.overlay_visible_path(&path);
+                let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
                 if upper.exists() {
                     fs::remove_file(&upper).map_err(|_| Errno::EIO)?;
                 }
-                self.overlay.create_whiteout(&path).map_err(|_| Errno::EIO)
+                self.overlay
+                    .create_whiteout(&visible)
+                    .map_err(|_| Errno::EIO)
             })();
             reply_result(result, reply);
         }
@@ -713,11 +805,14 @@ mod platform {
                 if !self.merged_dir_entries(&path)?.is_empty() {
                     return Err(Errno::ENOTEMPTY);
                 }
-                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                let visible = self.overlay_visible_path(&path);
+                let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
                 if upper.exists() {
                     fs::remove_dir(&upper).map_err(|_| Errno::EIO)?;
                 }
-                self.overlay.create_whiteout(&path).map_err(|_| Errno::EIO)
+                self.overlay
+                    .create_whiteout(&visible)
+                    .map_err(|_| Errno::EIO)
             })();
             reply_result(result, reply);
         }
@@ -732,7 +827,8 @@ mod platform {
         ) {
             let result = (|| {
                 let path = self.child_path(parent, link_name)?;
-                let upper = self.overlay.upper_path(&path).map_err(|_| Errno::EIO)?;
+                let visible = self.overlay_visible_path(&path);
+                let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
                 if let Some(parent) = upper.parent() {
                     fs::create_dir_all(parent).map_err(|_| Errno::EIO)?;
                 }
@@ -759,12 +855,17 @@ mod platform {
             let result = (|| {
                 let from = self.child_path(parent, name)?;
                 let to = self.child_path(newparent, newname)?;
-                self.overlay.rename(&from, &to).map_err(|_| Errno::EIO)
+                let visible_from = self.overlay_visible_path(&from);
+                let visible_to = self.overlay_visible_path(&to);
+                self.overlay
+                    .rename(&visible_from, &visible_to)
+                    .map_err(|_| Errno::EIO)
             })();
             reply_result(result, reply);
         }
 
         fn open(&self, _req: &Request, ino: INodeNo, flags: fuser::OpenFlags, reply: ReplyOpen) {
+            debug_request(&format!("open ino={} flags={}", ino.0, flags.0));
             let result = (|| {
                 let visible = self.path_for_ino(ino)?;
                 let write = open_flags_write(flags.0);
@@ -780,6 +881,54 @@ mod platform {
             }
         }
 
+        fn access(&self, _req: &Request, ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
+            debug_request(&format!("access ino={}", ino.0));
+            let result = self
+                .path_for_ino(ino)
+                .and_then(|path| self.lookup_path(&path).map(|_| ()));
+            debug_request(&format!(
+                "access result={}",
+                if result.is_ok() { "ok" } else { "err" }
+            ));
+            reply_result(result, reply);
+        }
+
+        fn getxattr(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            _name: &OsStr,
+            _size: u32,
+            reply: ReplyXattr,
+        ) {
+            reply.error(Errno::NO_XATTR);
+        }
+
+        fn listxattr(&self, _req: &Request, _ino: INodeNo, size: u32, reply: ReplyXattr) {
+            if size == 0 {
+                reply.size(0);
+            } else {
+                reply.data(&[]);
+            }
+        }
+
+        fn setxattr(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            _name: &OsStr,
+            _value: &[u8],
+            _flags: i32,
+            _position: u32,
+            reply: ReplyEmpty,
+        ) {
+            reply.ok();
+        }
+
+        fn removexattr(&self, _req: &Request, _ino: INodeNo, _name: &OsStr, reply: ReplyEmpty) {
+            reply.ok();
+        }
+
         fn create(
             &self,
             _req: &Request,
@@ -791,7 +940,8 @@ mod platform {
             reply: ReplyCreate,
         ) {
             let result = (|| {
-                let visible = self.child_path(parent, name)?;
+                let mount_path = self.child_path(parent, name)?;
+                let visible = self.overlay_visible_path(&mount_path);
                 let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
                 if let Some(parent) = upper.parent() {
                     fs::create_dir_all(parent).map_err(|_| Errno::EIO)?;
@@ -804,7 +954,7 @@ mod platform {
                     .mode(mode & 0o7777)
                     .open(&upper)
                     .map_err(|_| Errno::EIO)?;
-                let ino = self.ino_for_path(&visible)?;
+                let ino = self.ino_for_path(&mount_path)?;
                 let attr = file_attr(ino, &upper).map_err(|_| Errno::EIO)?;
                 let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
                 self.files.lock().map_err(|_| Errno::EIO)?.insert(fh, file);
@@ -920,6 +1070,7 @@ mod platform {
             offset: u64,
             mut reply: ReplyDirectory,
         ) {
+            debug_request(&format!("readdir ino={} offset={offset}", ino.0));
             let result = (|| {
                 let visible = self.path_for_ino(ino)?;
                 let mut entries = vec![
@@ -1131,6 +1282,12 @@ mod platform {
             Err(errno) => reply.error(errno),
         }
     }
+
+    fn debug_request(message: &str) {
+        if std::env::var_os("AGENT_OVERLAYFS_DEBUG").is_some() {
+            eprintln!("agent-overlayfs: request {message}");
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1170,6 +1327,7 @@ mod tests {
 
         validate_mount_layout(
             &env_dir.join("view-root"),
+            None,
             &env_dir.join("lower"),
             &env_dir.join("upper"),
             &env_dir.join("whiteouts"),
@@ -1188,6 +1346,7 @@ mod tests {
 
         assert!(validate_mount_layout(
             &env_dir.join("mount"),
+            None,
             &env_dir.join("lower"),
             &env_dir.join("upper"),
             &env_dir.join("whiteouts"),
@@ -1195,6 +1354,7 @@ mod tests {
         .is_err());
         assert!(validate_mount_layout(
             &env_dir.join("view-root"),
+            None,
             &other_env_dir.join("lower"),
             &env_dir.join("upper"),
             &env_dir.join("whiteouts"),
@@ -1202,6 +1362,7 @@ mod tests {
         .is_err());
         assert!(validate_mount_layout(
             &root.join("agentfs/codex-1/view-root"),
+            None,
             &root.join("agentfs/codex-1/lower"),
             &root.join("agentfs/codex-1/upper"),
             &root.join("agentfs/codex-1/whiteouts"),
@@ -1218,6 +1379,7 @@ mod tests {
 
         assert!(validate_mount_layout(
             &env_dir.join("../codex-1/view-root"),
+            None,
             &env_dir.join("lower"),
             &env_dir.join("upper"),
             &env_dir.join("whiteouts"),
@@ -1228,7 +1390,44 @@ mod tests {
         std::os::unix::fs::symlink(root.join("agentfs"), &link).unwrap();
         assert!(validate_mount_layout(
             &link.join("envs/codex-1/view-root"),
+            None,
             &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mount_layout_accepts_visible_root_host_mount_with_env_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+
+        validate_mount_layout(
+            &workspace,
+            Some(&workspace),
+            &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .unwrap();
+
+        assert!(validate_mount_layout(
+            &workspace,
+            Some(&root.join("different")),
+            &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .is_err());
+        assert!(validate_mount_layout(
+            &workspace,
+            Some(&workspace),
+            &root.join("not-agentfs/lower"),
             &env_dir.join("upper"),
             &env_dir.join("whiteouts"),
         )
