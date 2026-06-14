@@ -895,6 +895,10 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
+    fn canonical_temp_root(temp: &tempfile::TempDir) -> PathBuf {
+        fs::canonicalize(temp.path()).unwrap()
+    }
+
     #[test]
     fn parses_exec_with_view_root_and_preserved_cwd() {
         let cli = Cli::parse_from([
@@ -1173,7 +1177,8 @@ mod tests {
     #[test]
     fn overlay_paths_must_match_agentfs_env_layout() {
         let temp = tempfile::tempdir().unwrap();
-        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
         let view_root = env_dir.join("view-root");
         let lower = env_dir.join("lower");
         let upper = env_dir.join("upper");
@@ -1183,7 +1188,7 @@ mod tests {
 
         let error = super::validate_overlay_paths(
             &view_root,
-            &temp.path().join("other/lower"),
+            &root.join("other/lower"),
             &upper,
             &whiteouts,
         )
@@ -1201,7 +1206,8 @@ mod tests {
     #[test]
     fn overlay_paths_reject_dot_components_and_symlinks() {
         let temp = tempfile::tempdir().unwrap();
-        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
         fs::create_dir_all(&env_dir).unwrap();
         let lower = env_dir.join("lower");
         let upper = env_dir.join("upper");
@@ -1217,9 +1223,9 @@ mod tests {
         .to_string();
         assert!(error.contains("must not contain . or .."));
 
-        let real_envs = temp.path().join("real-envs");
+        let real_envs = root.join("real-envs");
         fs::create_dir_all(&real_envs).unwrap();
-        let linked_envs = temp.path().join("agentfs/envs-link");
+        let linked_envs = root.join("agentfs/envs-link");
         std::os::unix::fs::symlink(&real_envs, &linked_envs).unwrap();
         let linked_env_dir = linked_envs.join("codex-1");
         let error = super::validate_overlay_paths(
@@ -1236,7 +1242,8 @@ mod tests {
     #[test]
     fn session_log_path_must_stay_inside_env_session_logs() {
         let temp = tempfile::tempdir().unwrap();
-        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
         let view_root = env_dir.join("view-root");
         let log_path = env_dir.join("logs/sessions/dev.log");
 
@@ -1257,9 +1264,10 @@ mod tests {
     #[test]
     fn session_log_path_rejects_symlink_components() {
         let temp = tempfile::tempdir().unwrap();
-        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
         let view_root = env_dir.join("view-root");
-        let real_logs = temp.path().join("real-logs");
+        let real_logs = root.join("real-logs");
         fs::create_dir_all(&real_logs).unwrap();
         fs::create_dir_all(env_dir.join("logs")).unwrap();
         std::os::unix::fs::symlink(&real_logs, env_dir.join("logs/sessions")).unwrap();

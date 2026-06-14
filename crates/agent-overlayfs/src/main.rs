@@ -1155,12 +1155,17 @@ mod tests {
     use std::ffi::CString;
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    fn canonical_temp_root(temp: &tempfile::TempDir) -> PathBuf {
+        fs::canonicalize(temp.path()).unwrap()
+    }
 
     #[test]
     fn mount_layout_accepts_agentfs_env_siblings() {
         let temp = tempfile::tempdir().unwrap();
-        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
         fs::create_dir_all(&env_dir).unwrap();
 
         validate_mount_layout(
@@ -1175,8 +1180,9 @@ mod tests {
     #[test]
     fn mount_layout_rejects_unexpected_names_and_siblings() {
         let temp = tempfile::tempdir().unwrap();
-        let env_dir = temp.path().join("agentfs/envs/codex-1");
-        let other_env_dir = temp.path().join("agentfs/envs/codex-2");
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
+        let other_env_dir = root.join("agentfs/envs/codex-2");
         fs::create_dir_all(&env_dir).unwrap();
         fs::create_dir_all(&other_env_dir).unwrap();
 
@@ -1195,10 +1201,10 @@ mod tests {
         )
         .is_err());
         assert!(validate_mount_layout(
-            &temp.path().join("agentfs/codex-1/view-root"),
-            &temp.path().join("agentfs/codex-1/lower"),
-            &temp.path().join("agentfs/codex-1/upper"),
-            &temp.path().join("agentfs/codex-1/whiteouts"),
+            &root.join("agentfs/codex-1/view-root"),
+            &root.join("agentfs/codex-1/lower"),
+            &root.join("agentfs/codex-1/upper"),
+            &root.join("agentfs/codex-1/whiteouts"),
         )
         .is_err());
     }
@@ -1206,7 +1212,8 @@ mod tests {
     #[test]
     fn mount_layout_rejects_dot_components_and_existing_symlinks() {
         let temp = tempfile::tempdir().unwrap();
-        let env_dir = temp.path().join("agentfs/envs/codex-1");
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
         fs::create_dir_all(&env_dir).unwrap();
 
         assert!(validate_mount_layout(
@@ -1217,8 +1224,8 @@ mod tests {
         )
         .is_err());
 
-        let link = temp.path().join("agent-link");
-        std::os::unix::fs::symlink(temp.path().join("agentfs"), &link).unwrap();
+        let link = root.join("agent-link");
+        std::os::unix::fs::symlink(root.join("agentfs"), &link).unwrap();
         assert!(validate_mount_layout(
             &link.join("envs/codex-1/view-root"),
             &env_dir.join("lower"),
