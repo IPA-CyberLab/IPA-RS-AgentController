@@ -63,6 +63,8 @@ jobs:
           set -euo pipefail
           sh -n install.sh
           bash -n scripts/macos-native-smoke.sh
+          AGENT_INSTALL_DRY_RUN=1 AGENT_VERSION=v0.0.0 sh install.sh | tee "$RUNNER_TEMP/install-dry-run.out"
+          grep -F "ipa-rs-isolated-agent-${{ matrix.target }}.tar.gz" "$RUNNER_TEMP/install-dry-run.out"
 
       - name: Package
         shell: bash
@@ -86,6 +88,26 @@ jobs:
           cp -R scripts "$staging/"
           cp README.md LICENSE install.sh install.ps1 "$staging/"
           tar -czf "dist/${{ matrix.archive }}" -C dist "ipa-rs-isolated-agent-${{ matrix.target }}"
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          contents="package-contents-${{ matrix.target }}.txt"
+          tar -tzf "dist/${{ matrix.archive }}" | tee "$contents"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agentctl.exe" "$contents"
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-forkd.exe" "$contents"
+          else
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agentctl" "$contents"
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-forkd" "$contents"
+          fi
+          grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/install.sh" "$contents"
+          grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/scripts/macos-native-smoke.sh" "$contents"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-viewd" "$contents"
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-overlayfs" "$contents"
+          fi
 
       - name: Smoke test native desktop daemon
         if: runner.os == 'Windows'
