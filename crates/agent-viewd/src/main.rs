@@ -512,18 +512,34 @@ fn system_fallback_root_candidates() -> &'static [&'static str] {
     &[
         "/bin",
         "/sbin",
-        "/usr",
+        "/usr/bin",
+        "/usr/lib",
+        "/usr/share",
         "/System",
-        "/Library",
+        "/Library/Filesystems",
         "/dev/null",
         "/dev/random",
         "/dev/tty",
         "/dev/urandom",
         "/dev/zero",
-        "/etc",
+        "/etc/hosts",
+        "/etc/protocols",
+        "/etc/resolv.conf",
+        "/etc/services",
+        "/etc/shells",
+        "/etc/zprofile",
+        "/etc/zshenv",
+        "/etc/zshrc",
         "/var/tmp",
         "/tmp",
-        "/private/etc",
+        "/private/etc/hosts",
+        "/private/etc/protocols",
+        "/private/etc/resolv.conf",
+        "/private/etc/services",
+        "/private/etc/shells",
+        "/private/etc/zprofile",
+        "/private/etc/zshenv",
+        "/private/etc/zshrc",
         "/private/tmp",
         "/private/var/tmp",
     ]
@@ -784,11 +800,24 @@ mod tests {
         assert!(!roots.contains(&"/dev"));
         assert!(!roots.contains(&"/opt"));
         assert!(!roots.contains(&"/private"));
+        assert!(!roots.contains(&"/usr"));
+        assert!(!roots.contains(&"/usr/local"));
+        assert!(!roots.contains(&"/Library"));
+        assert!(!roots.contains(&"/Library/Application Support"));
+        assert!(!roots.contains(&"/etc"));
+        assert!(!roots.contains(&"/private/etc"));
+        assert!(!roots.contains(&"/private/etc/ssh"));
         assert!(!roots.contains(&"/var"));
         assert!(roots.contains(&"/dev/null"));
         assert!(roots.contains(&"/dev/random"));
         assert!(roots.contains(&"/dev/urandom"));
-        assert!(roots.contains(&"/private/etc"));
+        assert!(roots.contains(&"/usr/bin"));
+        assert!(roots.contains(&"/usr/lib"));
+        assert!(roots.contains(&"/Library/Filesystems"));
+        assert!(roots.contains(&"/etc/hosts"));
+        assert!(roots.contains(&"/etc/zshrc"));
+        assert!(roots.contains(&"/private/etc/hosts"));
+        assert!(roots.contains(&"/private/etc/zshrc"));
         assert!(roots.contains(&"/private/tmp"));
         assert!(roots.contains(&"/private/var/tmp"));
     }
