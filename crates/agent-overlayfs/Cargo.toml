@@ -15,7 +15,7 @@ clap.workspace = true
 agent-core = { path = "../agent-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fuser = { version = "0.17.0", features = ["macfuse-4-compat", "macos-no-mount"] }
+fuser = { version = "0.17.0", features = ["macfuse-4-compat"] }
 libc.workspace = true
 
 [dev-dependencies]

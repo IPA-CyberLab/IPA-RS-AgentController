@@ -151,7 +151,8 @@ mod platform {
     use fuser::{
         BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
         Generation, INodeNo, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
-        ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
+        ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, SessionACL,
+        TimeOrNow,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::ffi::{OsStr, OsString};
@@ -182,6 +183,7 @@ mod platform {
             MountOption::RW,
             MountOption::NoSuid,
         ];
+        config.acl = SessionACL::All;
         fuser::mount2(fs, args.mount_point, &config).context("failed to mount agent-overlayfs")
     }
 
