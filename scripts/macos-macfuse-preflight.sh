@@ -23,7 +23,10 @@ if [[ "${AGENT_MACFUSE_TRY_LOAD:-1}" != "0" ]]; then
 fi
 
 shopt -s nullglob
-macfuse_devices=(/dev/fuse /dev/macfuse* /dev/osxfuse*)
+macfuse_devices=()
+for candidate in /dev/fuse /dev/macfuse* /dev/osxfuse*; do
+  [[ -e "$candidate" ]] && macfuse_devices+=("$candidate")
+done
 shopt -u nullglob
 if (( ${#macfuse_devices[@]} == 0 )); then
   echo "macFUSE device is not available; approve and load the macFUSE kernel extension before running the macOS native backend" >&2

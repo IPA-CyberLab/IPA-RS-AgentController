@@ -16,6 +16,9 @@ daemon_log=""
 cwd_out=""
 new_cwd_out=""
 command_timeout="${AGENT_SMOKE_COMMAND_TIMEOUT:-90}"
+env_id=""
+net_host_id=""
+net_none_id=""
 
 require_executable() {
   local name="$1"
@@ -137,6 +140,17 @@ cleanup() {
     kill "$server_pid" >/dev/null 2>&1 || true
     wait "$server_pid" >/dev/null 2>&1 || true
   fi
+  for cleanup_env_id in "$net_none_id" "$net_host_id" "$env_id"; do
+    if [[ -n "$cleanup_env_id" ]]; then
+      "$agentctl" --agentfs "$agentfs" rm "$cleanup_env_id" >/dev/null 2>&1 || true
+      cleanup_view_root="$agentfs/envs/$cleanup_env_id/view-root"
+      if mount | grep -F " on $cleanup_view_root " >/dev/null 2>&1; then
+        /sbin/umount "$cleanup_view_root" >/dev/null 2>&1 || \
+          diskutil unmount force "$cleanup_view_root" >/dev/null 2>&1 || true
+      fi
+      rm -rf "$agentfs/envs/$cleanup_env_id"
+    fi
+  done
   kill "$daemon_pid" >/dev/null 2>&1 || true
   wait "$daemon_pid" >/dev/null 2>&1 || true
   rm -rf "$tmp"
