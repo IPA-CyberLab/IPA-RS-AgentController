@@ -20,26 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -d /Library/Filesystems/macfuse.fs && ! -x /usr/local/bin/macfuse ]]; then
-            echo "macFUSE is not installed on this self-hosted runner." >&2
-            exit 2
-          fi
-          if [[ -x /Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse ]]; then
-            sudo /Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse || true
-          fi
-          for kext in /Library/Filesystems/macfuse.fs/Contents/Extensions/*/macfuse.kext /Library/Filesystems/macfuse.fs/Contents/Extensions/macfuse.kext; do
-            if [[ -d "$kext" ]]; then
-              sudo /usr/bin/kmutil load -p "$kext" || true
-            fi
-          done
-          shopt -s nullglob
-          macfuse_devices=(/dev/fuse /dev/macfuse* /dev/osxfuse*)
-          shopt -u nullglob
-          if (( ${#macfuse_devices[@]} == 0 )); then
-            echo "macFUSE device is not available; approve and load macFUSE on this self-hosted runner." >&2
-            exit 2
-          fi
-          ls -l "${macfuse_devices[@]}"
+          scripts/macos-macfuse-preflight.sh
 
       - name: Build native helpers
         shell: bash

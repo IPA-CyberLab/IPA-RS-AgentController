@@ -89,14 +89,8 @@ if [[ ! -d /Library/Filesystems/macfuse.fs && ! -x /usr/local/bin/macfuse ]]; th
   echo "macFUSE is not installed; install macFUSE before running this smoke test" >&2
   exit 2
 fi
-shopt -s nullglob
-macfuse_devices=(/dev/fuse /dev/macfuse* /dev/osxfuse*)
-shopt -u nullglob
-if (( ${#macfuse_devices[@]} == 0 )); then
-  echo "macFUSE device is not available; load and approve the macFUSE kernel extension before running this smoke test" >&2
-  exit 2
-fi
-ls -l "${macfuse_devices[@]}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENT_MACFUSE_TRY_LOAD="${AGENT_MACFUSE_TRY_LOAD:-0}" "$script_dir/macos-macfuse-preflight.sh"
 
 viewd_owner="$(stat -L -f %u "$viewd")"
 viewd_mode="$(stat -L -f %Sp "$viewd")"

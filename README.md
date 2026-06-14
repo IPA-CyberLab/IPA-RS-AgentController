@@ -175,9 +175,7 @@ rerun the smoke test. On a host where approval is already possible, these
 commands are useful diagnostics:
 
 ```bash
-ls -l /dev/fuse /dev/macfuse* /dev/osxfuse* 2>/dev/null
-/Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse
-sudo /usr/bin/kmutil load -p /Library/Filesystems/macfuse.fs/Contents/Extensions/*/macfuse.kext
+scripts/macos-macfuse-preflight.sh
 ```
 
 GitHub-hosted macOS runners can build the helper binaries and verify the
