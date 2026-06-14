@@ -167,13 +167,33 @@ test to verify the privileged helper and runtime path view end to end:
 scripts/macos-native-smoke.sh
 ```
 
+macFUSE must be installed and its kernel extension must be approved and loaded
+before the smoke test can mount a view. A successful setup exposes a FUSE device
+such as `/dev/fuse`, `/dev/macfuse0`, or `/dev/osxfuse0`. If macFUSE has just
+been installed, approve it in macOS System Settings -> Privacy & Security, then
+rerun the smoke test. On a host where approval is already possible, these
+commands are useful diagnostics:
+
+```bash
+ls -l /dev/fuse /dev/macfuse* /dev/osxfuse* 2>/dev/null
+/Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse
+sudo /usr/bin/kmutil load -p /Library/Filesystems/macfuse.fs/Contents/Extensions/*/macfuse.kext
+```
+
+GitHub-hosted macOS runners can build the helper binaries and verify the
+installer, but they cannot approve third-party kernel extensions interactively.
+For that reason the full native macOS smoke test must run on a real macOS host
+or a self-hosted runner where macFUSE is pre-approved and the FUSE device is
+available.
+
 The smoke test requires the installed `agent-viewd` to resolve to a root-owned
-setuid helper, checks that `agent-overlayfs` is callable, starts `agent-forkd`,
-verifies `/bin/zsh`, `/usr/bin/env`, `/System`, preserved cwd, and confirms
-that broad host fallback siblings like `/private/var/db`, `/usr/local`, and
-`/Library/Application Support` are not visible. It also checks that the broad
-`/private/etc` config tree is not visible and that `network=none` cannot reach
-a local TCP listener while `network=host` can.
+setuid helper, verifies that a macFUSE device is available, checks that
+`agent-overlayfs` is callable, starts `agent-forkd`, verifies `/bin/zsh`,
+`/usr/bin/env`, `/System`, preserved cwd, and confirms that broad host fallback
+siblings like `/private/var/db`, `/usr/local`, and `/Library/Application
+Support` are not visible. It also checks that the broad `/private/etc` config
+tree is not visible and that `network=none` cannot reach a local TCP listener
+while `network=host` can.
 
 ## Requirements
 
