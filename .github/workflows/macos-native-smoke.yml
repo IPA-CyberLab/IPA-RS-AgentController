@@ -1,0 +1,88 @@
+name: macOS native smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: native path-preserving smoke
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify macFUSE device
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d /Library/Filesystems/macfuse.fs && ! -x /usr/local/bin/macfuse ]]; then
+            echo "macFUSE is not installed on this self-hosted runner." >&2
+            exit 2
+          fi
+          if [[ -x /Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse ]]; then
+            sudo /Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse || true
+          fi
+          for kext in /Library/Filesystems/macfuse.fs/Contents/Extensions/*/macfuse.kext /Library/Filesystems/macfuse.fs/Contents/Extensions/macfuse.kext; do
+            if [[ -d "$kext" ]]; then
+              sudo /usr/bin/kmutil load -p "$kext" || true
+            fi
+          done
+          shopt -s nullglob
+          macfuse_devices=(/dev/fuse /dev/macfuse* /dev/osxfuse*)
+          shopt -u nullglob
+          if (( ${#macfuse_devices[@]} == 0 )); then
+            echo "macFUSE device is not available; approve and load macFUSE on this self-hosted runner." >&2
+            exit 2
+          fi
+          ls -l "${macfuse_devices[@]}"
+
+      - name: Build native helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p agentctl -p agent-forkd -p agent-viewd -p agent-overlayfs
+
+      - name: Package local archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$(rustc -vV | awk '/^host:/ {print $2}')"
+          staging="dist/ipa-rs-isolated-agent-$target"
+          mkdir -p "$staging/bin" "$staging/packaging"
+          cp target/release/agentctl "$staging/bin/"
+          cp target/release/agent-forkd "$staging/bin/"
+          cp target/release/agent-viewd "$staging/bin/"
+          cp target/release/agent-overlayfs "$staging/bin/"
+          cp -R packaging/agent-forkd "$staging/packaging/"
+          cp -R packaging/systemd "$staging/packaging/"
+          cp -R scripts "$staging/"
+          cp README.md LICENSE install.sh install.ps1 "$staging/"
+          tar -czf "dist/ipa-rs-isolated-agent-$target.tar.gz" -C dist "ipa-rs-isolated-agent-$target"
+          echo "AGENT_SMOKE_ARCHIVE=$PWD/dist/ipa-rs-isolated-agent-$target.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Install local archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/agent-bin-native-smoke"
+          helper_dir="$RUNNER_TEMP/agent-helpers-native-smoke"
+          rm -rf "$install_dir" "$helper_dir"
+          AGENT_ARCHIVE="$AGENT_SMOKE_ARCHIVE" \
+            AGENT_INSTALL_DIR="$install_dir" \
+            AGENT_PRIVILEGED_HELPER_DIR="$helper_dir" \
+            sh install.sh
+          echo "AGENT_SMOKE_INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+
+      - name: Run native smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATH="$AGENT_SMOKE_INSTALL_DIR:$PATH" \
+            AGENT_BIN_DIR="$AGENT_SMOKE_INSTALL_DIR" \
+            AGENTFS="$RUNNER_TEMP/agentfs-native-smoke" \
+            scripts/macos-native-smoke.sh

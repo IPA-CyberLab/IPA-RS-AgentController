@@ -184,7 +184,10 @@ GitHub-hosted macOS runners can build the helper binaries and verify the
 installer, but they cannot approve third-party kernel extensions interactively.
 For that reason the full native macOS smoke test must run on a real macOS host
 or a self-hosted runner where macFUSE is pre-approved and the FUSE device is
-available.
+available. The repository includes a manual `macOS native smoke` workflow for
+that purpose; attach a self-hosted runner with the `self-hosted` and `macOS`
+labels, approve/load macFUSE on that host, then dispatch the workflow from
+GitHub Actions.
 
 The smoke test requires the installed `agent-viewd` to resolve to a root-owned
 setuid helper, verifies that a macFUSE device is available, checks that
