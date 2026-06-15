@@ -1811,8 +1811,12 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreFileSystemControl(
 {
     UNREFERENCED_PARAMETER(CompletionContext);
     UNREFERENCED_PARAMETER(FltObjects);
-    if (Data->Iopb->MinorFunction != IRP_MN_USER_FS_REQUEST ||
-        Data->Iopb->Parameters.FileSystemControl.Common.FsControlCode != FSCTL_SET_REPARSE_POINT) {
+    if (Data->Iopb->MinorFunction != IRP_MN_USER_FS_REQUEST) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    ULONG fsControlCode = Data->Iopb->Parameters.FileSystemControl.Common.FsControlCode;
+    if (fsControlCode != FSCTL_SET_REPARSE_POINT &&
+        fsControlCode != FSCTL_DELETE_REPARSE_POINT) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
