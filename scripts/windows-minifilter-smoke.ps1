@@ -210,6 +210,7 @@ try {
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     Set-Content -Path (Join-Path $source "recreate-me.txt") -Value "recreate-original"
+    Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
     Set-Content -Path (Join-Path $source "mixed-lower\upper-changed.txt") -Value "mixed-lower-original"
@@ -276,11 +277,12 @@ Rename-Item move-lower moved-lower
 Remove-Item delete-me.txt
 Remove-Item recreate-me.txt
 Set-Content recreate-me.txt 'recreated-in-env'
-Rename-Item created.txt renamed.txt
+Remove-Item rename-target.txt
+Rename-Item created.txt rename-target.txt
 `$names = Get-ChildItem -Name | Sort-Object
 if (`$names -notcontains 'host.txt') { throw 'directory listing lost lower file' }
 if (`$names -notcontains 'mixed-renamed') { throw 'directory listing lost renamed mixed directory' }
-if (`$names -notcontains 'renamed.txt') { throw 'directory listing lost upper renamed file' }
+if (`$names -notcontains 'rename-target.txt') { throw 'directory listing lost upper file renamed onto deleted target' }
 if (`$names -notcontains 'moved-lower') { throw 'directory listing lost renamed lower directory' }
 if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
@@ -297,6 +299,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $source "recreate-me.txt")) -ne "recreate-original") {
         throw "host recreate-me.txt was modified"
+    }
+    if ((Get-Content (Join-Path $source "rename-target.txt")) -ne "rename-target-original") {
+        throw "host rename-target.txt was modified"
     }
     if ((Get-Content (Join-Path $source "move-lower\inside\lower-file.txt")) -ne "lower-tree-original") {
         throw "host move-lower tree was modified"
@@ -332,8 +337,8 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     if ((Get-Content (Join-Path $upperSource "mixed-renamed\lower-only.txt")) -ne "mixed-lower-only") {
         throw "renamed mixed directory lost lower-only file"
     }
-    if (-not (Test-Path (Join-Path $upperSource "renamed.txt"))) {
-        throw "renamed file was not written to upper"
+    if ((Get-Content (Join-Path $upperSource "rename-target.txt")) -ne "env-created") {
+        throw "file renamed onto deleted target was not written to upper"
     }
     if ((Get-Content (Join-Path $upperSource "recreate-me.txt")) -ne "recreated-in-env") {
         throw "recreated file was not written to upper"
@@ -346,6 +351,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "mixed-lower"))) {
         throw "renamed mixed directory source whiteout was not created"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "rename-target.txt")) {
+        throw "rename target still has a whiteout"
     }
     if (Test-Path (Join-Path $whiteoutSource "recreate-me.txt")) {
         throw "recreated file still has a whiteout"

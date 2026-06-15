@@ -1198,8 +1198,10 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
             (PFILE_RENAME_INFORMATION)Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
         UNICODE_STRING targetVisible;
         UNICODE_STRING targetUpper;
+        UNICODE_STRING targetWhiteout;
         RtlZeroMemory(&targetVisible, sizeof(targetVisible));
         RtlZeroMemory(&targetUpper, sizeof(targetUpper));
+        RtlZeroMemory(&targetWhiteout, sizeof(targetWhiteout));
         status = AgentFsSiblingVisiblePath(
             &targetVisible,
             &visible,
@@ -1218,6 +1220,9 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
             status = AgentFsJoinRedirectPath(&targetUpper, &env->UpperRoot, &env->SourceRoot, &targetVisible);
         }
         if (NT_SUCCESS(status)) {
+            status = AgentFsJoinRedirectPath(&targetWhiteout, &env->WhiteoutRoot, &env->SourceRoot, &targetVisible);
+        }
+        if (NT_SUCCESS(status)) {
             if (AgentFsPathExists(FltObjects->Instance, &upper)) {
                 status = AgentFsRenamePath(
                     FltObjects->Instance,
@@ -1234,6 +1239,9 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
             }
         }
         if (NT_SUCCESS(status)) {
+            status = AgentFsDeletePath(&targetWhiteout);
+        }
+        if (NT_SUCCESS(status)) {
             status = AgentFsJoinRedirectPath(&whiteout, &env->WhiteoutRoot, &env->SourceRoot, &visible);
         }
         if (NT_SUCCESS(status)) {
@@ -1241,6 +1249,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         }
         AgentFsFreeUnicode(&targetVisible);
         AgentFsFreeUnicode(&targetUpper);
+        AgentFsFreeUnicode(&targetWhiteout);
         AgentFsFreeUnicode(&upper);
         AgentFsFreeUnicode(&lower);
         AgentFsFreeUnicode(&visible);
