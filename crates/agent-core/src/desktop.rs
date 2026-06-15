@@ -9,7 +9,7 @@ use crate::model::{
     machine_name, Base, Env, EnvState, EnvStatus, LimitOverrides, Limits, RootfsBackend, Session,
     SessionState, SessionType,
 };
-use crate::path_overlay::absolute_path_as_overlay_relative;
+use crate::path_overlay::{absolute_path_as_overlay_relative, visible_path_from_whiteout_storage};
 use crate::protocol::{Request, Response};
 use crate::reflink;
 use crate::storage::{validate_id, write_text_file, Layout};
@@ -816,7 +816,13 @@ impl DesktopService {
         whiteout_entries.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
         let mut applied_whiteouts = Vec::new();
         for whiteout_path in &whiteout_entries {
-            let visible = visible_path_from_overlay_storage(&whiteouts, whiteout_path)?;
+            let Some(metadata) = symlink_metadata_if_exists(whiteout_path)? else {
+                continue;
+            };
+            if metadata.is_dir() {
+                continue;
+            }
+            let visible = visible_path_from_whiteout_storage(&whiteouts, whiteout_path)?;
             if !visible.starts_with(source_root) {
                 continue;
             }
@@ -1092,12 +1098,16 @@ fn collect_path_preserving_overlay_entries(
             collect_path_preserving_overlay_entries(root, &path, deleted, paths)?;
             continue;
         }
-        let rel = path.strip_prefix(root)?;
-        let visible = format!("/{}", rel.display());
+        let visible_path = if deleted {
+            visible_path_from_whiteout_storage(root, &path)?
+        } else {
+            visible_path_from_overlay_storage(root, &path)?
+        };
+        let visible = visible_path.display();
         if deleted {
             paths.push(format!("deleted {visible}"));
         } else {
-            paths.push(visible);
+            paths.push(visible.to_string());
         }
     }
     Ok(())
@@ -1564,6 +1574,7 @@ mod tests {
     use crate::config::AgentConfig;
     use crate::export::ExportType;
     use crate::model::{machine_name, Base, Env, EnvState, Limits, NetworkPolicy, RootfsBackend};
+    use crate::path_overlay::PathOverlay;
     use chrono::Utc;
     use std::fs;
     use std::path::Path;
@@ -1772,6 +1783,67 @@ mod tests {
                 .unwrap(),
             ""
         );
+    }
+
+    #[tokio::test]
+    async fn path_preserving_apply_ignores_whiteout_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        let source = dir.path().join("workspace");
+        create_path_preserving_env_fixture(&service, &source).await;
+        let rel = crate::path_overlay::absolute_path_as_overlay_relative(&source).unwrap();
+        let lower_source = service.layout.env_lower("codex-1").join(&rel);
+        let whiteouts_source = service.layout.env_whiteouts("codex-1").join(&rel);
+        fs::create_dir_all(source.join(".git")).unwrap();
+        fs::write(source.join(".git/config"), "host git\n").unwrap();
+        fs::create_dir_all(lower_source.join(".git")).unwrap();
+        fs::write(lower_source.join(".git/config"), "host git\n").unwrap();
+        fs::create_dir_all(whiteouts_source.join(".git")).unwrap();
+
+        let summary = service.apply("codex-1", false).await.unwrap();
+
+        assert!(summary.contains("applied 2 updated, 1 deleted"));
+        assert_eq!(
+            fs::read_to_string(source.join(".git/config")).unwrap(),
+            "host git\n"
+        );
+        assert_eq!(
+            fs::read_to_string(lower_source.join(".git/config")).unwrap(),
+            "host git\n"
+        );
+        assert!(!whiteouts_source.join(".git").exists());
+    }
+
+    #[tokio::test]
+    async fn path_preserving_apply_honors_directory_whiteout_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        let source = dir.path().join("workspace");
+        create_path_preserving_env_fixture(&service, &source).await;
+        let rel = crate::path_overlay::absolute_path_as_overlay_relative(&source).unwrap();
+        let lower = service.layout.env_lower("codex-1");
+        let upper = service.layout.env_upper("codex-1");
+        let whiteouts = service.layout.env_whiteouts("codex-1");
+        let lower_source = lower.join(&rel);
+        let whiteouts_source = whiteouts.join(&rel);
+        fs::create_dir_all(source.join(".git")).unwrap();
+        fs::write(source.join(".git/config"), "host git\n").unwrap();
+        fs::create_dir_all(lower_source.join(".git")).unwrap();
+        fs::write(lower_source.join(".git/config"), "host git\n").unwrap();
+        let overlay = PathOverlay::new(lower, upper, whiteouts);
+        overlay
+            .create_whiteout(&source.join(".git/index.lock"))
+            .unwrap();
+        overlay.create_whiteout(&source.join(".git")).unwrap();
+
+        let summary = service.apply("codex-1", false).await.unwrap();
+
+        assert!(summary.contains("applied 2 updated, 3 deleted"));
+        assert!(!source.join(".git").exists());
+        assert!(!lower_source.join(".git").exists());
+        assert!(!whiteouts_source.join(".git").exists());
     }
 
     #[tokio::test]

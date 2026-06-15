@@ -1,6 +1,7 @@
 ---
 name: agentctl-overlay-workflow
-description: Use agentctl/agctl native isolated development environments for Codex or Claude Code on macOS, including path-preserving overlay behavior, launching codex or claude inside envs, checking env state, diff/export inspection, applying overlay changes back to the host with agctl apply, handling conflicts, rebuilding/installing helper binaries, and avoiding accidental host writes. Use when the user mentions agctl, agentctl, IPA-RS-IsolatedAgent, path-preserving overlay, view-root, env upper/whiteouts/lower, syncing/applying env changes to host, running Codex or Claude Code inside an agentctl environment, or confusion about whether changes are inside or outside the env.
+description: >-
+  Use agentctl/agctl native isolated development environments for Codex or Claude Code on macOS, including path-preserving overlay behavior, launching codex or claude inside envs, checking env state, diff/export inspection, applying overlay changes back to the host with agctl apply, handling conflicts, rebuilding/installing helper binaries, and avoiding accidental host writes. Use when the user mentions agctl, agentctl, IPA-RS-IsolatedAgent, path-preserving overlay, view-root, env upper/whiteouts/lower, syncing/applying env changes to host, running Codex or Claude Code inside an agentctl environment, or confusion about whether changes are inside or outside the env.
 ---
 
 # Agentctl Overlay Workflow

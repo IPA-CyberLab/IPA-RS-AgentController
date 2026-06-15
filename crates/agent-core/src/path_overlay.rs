@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Component, Path, PathBuf};
 
+const DIRECTORY_WHITEOUT_MARKER: &str = ".agentfs-whiteout-dir";
+const DIRECTORY_WHITEOUT_MARKER_CONTENT: &[u8] = b"dir\n";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlaySource {
     Upper,
@@ -49,9 +52,35 @@ impl PathOverlay {
         self.storage_path(&self.whiteouts, visible_path)
     }
 
-    pub fn resolve(&self, visible_path: &Path) -> Result<OverlayLookup> {
+    pub fn whiteout_marker_path(&self, visible_path: &Path) -> Result<Option<PathBuf>> {
         let whiteout = self.whiteout_path(visible_path)?;
-        if whiteout.exists() {
+        match std::fs::symlink_metadata(&whiteout) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(whiteout)),
+            Ok(metadata) if metadata.is_dir() => {
+                let marker = whiteout.join(DIRECTORY_WHITEOUT_MARKER);
+                is_directory_whiteout_marker(&marker).map(|exists| exists.then_some(marker))
+            }
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error)
+                .with_context(|| format!("failed to stat whiteout marker {}", whiteout.display())),
+        }
+    }
+
+    pub fn whiteout_exists(&self, visible_path: &Path) -> Result<bool> {
+        Ok(self.whiteout_marker_path(visible_path)?.is_some())
+    }
+
+    pub fn remove_whiteout(&self, visible_path: &Path) -> Result<()> {
+        let Some(whiteout) = self.whiteout_marker_path(visible_path)? else {
+            return Ok(());
+        };
+        std::fs::remove_file(&whiteout)
+            .with_context(|| format!("failed to remove whiteout {}", whiteout.display()))
+    }
+
+    pub fn resolve(&self, visible_path: &Path) -> Result<OverlayLookup> {
+        if let Some(whiteout) = self.whiteout_marker_path(visible_path)? {
             return Ok(OverlayLookup::Whiteout(whiteout));
         }
         let upper = self.upper_path(visible_path)?;
@@ -75,12 +104,14 @@ impl PathOverlay {
 
     pub fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let from_upper = self.upper_path(from)?;
+        let from_lower = self.lower_path(from)?;
         let to_upper = self.upper_path(to)?;
         if let Some(parent) = to_upper.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         if from_upper.exists() {
+            let from_lower_exists = from_lower.exists();
             std::fs::rename(&from_upper, &to_upper).with_context(|| {
                 format!(
                     "failed to rename overlay upper {} to {}",
@@ -88,17 +119,24 @@ impl PathOverlay {
                     to_upper.display()
                 )
             })?;
-            self.create_whiteout(from)?;
+            self.remove_whiteout(to)?;
+            if from_lower_exists {
+                self.create_whiteout(from)?;
+            } else {
+                self.remove_whiteout(from)?;
+            }
             return Ok(());
         }
         match self.resolve(from)? {
             OverlayLookup::Found(found) if found.source == OverlaySource::Lower => {
                 copy_tree(&found.storage_path, &to_upper)?;
+                self.remove_whiteout(to)?;
                 self.create_whiteout(from)?;
                 Ok(())
             }
             OverlayLookup::Found(found) => {
                 std::fs::rename(&found.storage_path, &to_upper)?;
+                self.remove_whiteout(to)?;
                 self.create_whiteout(from)?;
                 Ok(())
             }
@@ -111,6 +149,15 @@ impl PathOverlay {
 
     pub fn create_whiteout(&self, visible_path: &Path) -> Result<()> {
         let whiteout = self.whiteout_path(visible_path)?;
+        if std::fs::symlink_metadata(&whiteout)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            let marker = whiteout.join(DIRECTORY_WHITEOUT_MARKER);
+            std::fs::write(&marker, DIRECTORY_WHITEOUT_MARKER_CONTENT)
+                .with_context(|| format!("failed to create whiteout {}", marker.display()))?;
+            return Ok(());
+        }
         if let Some(parent) = whiteout.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -146,6 +193,30 @@ pub fn absolute_path_as_overlay_relative(path: &Path) -> Result<PathBuf> {
     Ok(rel)
 }
 
+pub fn visible_path_from_whiteout_storage(root: &Path, path: &Path) -> Result<PathBuf> {
+    let storage_path = if is_directory_whiteout_marker(path)? {
+        path.parent()
+            .ok_or_else(|| anyhow!("whiteout marker has no parent: {}", path.display()))?
+    } else {
+        path
+    };
+    let rel = storage_path.strip_prefix(root)?;
+    Ok(Path::new("/").join(rel))
+}
+
+fn is_directory_whiteout_marker(path: &Path) -> Result<bool> {
+    if path.file_name().and_then(|name| name.to_str()) != Some(DIRECTORY_WHITEOUT_MARKER) {
+        return Ok(false);
+    }
+    match std::fs::read(path) {
+        Ok(content) => Ok(content == DIRECTORY_WHITEOUT_MARKER_CONTENT),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to read whiteout marker {}", path.display()))
+        }
+    }
+}
+
 fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     let metadata = std::fs::symlink_metadata(src)
         .with_context(|| format!("failed to stat overlay source {}", src.display()))?;
@@ -179,7 +250,10 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OverlayLookup, OverlaySource, PathOverlay};
+    use super::{
+        visible_path_from_whiteout_storage, OverlayLookup, OverlaySource, PathOverlay,
+        DIRECTORY_WHITEOUT_MARKER,
+    };
     use std::fs;
     use std::path::Path;
 
@@ -212,6 +286,53 @@ mod tests {
 
         assert_eq!(found.source, OverlaySource::Upper);
         assert_eq!(fs::read_to_string(found.storage_path).unwrap(), "upper");
+    }
+
+    #[test]
+    fn child_whiteout_directory_does_not_hide_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = fixture_overlay(dir.path());
+        let git = Path::new("/Users/mizuame/project/.git");
+        let index_lock = Path::new("/Users/mizuame/project/.git/index.lock");
+        fs::create_dir_all(overlay.lower_path(git).unwrap()).unwrap();
+
+        overlay.create_whiteout(index_lock).unwrap();
+
+        let OverlayLookup::Found(found) = overlay.resolve(git).unwrap() else {
+            panic!("expected .git directory to remain visible");
+        };
+        assert_eq!(found.source, OverlaySource::Lower);
+        assert!(matches!(
+            overlay.resolve(index_lock).unwrap(),
+            OverlayLookup::Whiteout(_)
+        ));
+    }
+
+    #[test]
+    fn parent_directory_whiteout_can_coexist_with_child_whiteout_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = fixture_overlay(dir.path());
+        let git = Path::new("/Users/mizuame/project/.git");
+        let index_lock = Path::new("/Users/mizuame/project/.git/index.lock");
+        fs::create_dir_all(overlay.lower_path(git).unwrap()).unwrap();
+        overlay.create_whiteout(index_lock).unwrap();
+
+        overlay.create_whiteout(git).unwrap();
+
+        let OverlayLookup::Whiteout(marker) = overlay.resolve(git).unwrap() else {
+            panic!("expected parent directory whiteout");
+        };
+        assert_eq!(marker.file_name().unwrap(), DIRECTORY_WHITEOUT_MARKER);
+        assert_eq!(
+            visible_path_from_whiteout_storage(
+                &dir.path().join("whiteouts"),
+                &dir.path()
+                    .join("whiteouts/Users/mizuame/project/.git")
+                    .join(DIRECTORY_WHITEOUT_MARKER),
+            )
+            .unwrap(),
+            git
+        );
     }
 
     #[test]
@@ -279,7 +400,30 @@ mod tests {
         );
         assert!(matches!(
             overlay.resolve(tmp).unwrap(),
-            OverlayLookup::Whiteout(_)
+            OverlayLookup::Missing
+        ));
+    }
+
+    #[test]
+    fn rename_to_whiteouted_path_reveals_new_upper_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = fixture_overlay(dir.path());
+        let target = Path::new("/Users/mizuame/project/file.rs");
+        let tmp = Path::new("/Users/mizuame/project/.file.rs.tmp");
+        write(&overlay.lower_path(target).unwrap(), "old");
+        write(&overlay.upper_path(tmp).unwrap(), "new");
+        overlay.create_whiteout(target).unwrap();
+
+        overlay.rename(tmp, target).unwrap();
+
+        let OverlayLookup::Found(found) = overlay.resolve(target).unwrap() else {
+            panic!("expected target path");
+        };
+        assert_eq!(found.source, OverlaySource::Upper);
+        assert_eq!(fs::read_to_string(found.storage_path).unwrap(), "new");
+        assert!(matches!(
+            overlay.resolve(tmp).unwrap(),
+            OverlayLookup::Missing
         ));
     }
 

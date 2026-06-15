@@ -571,6 +571,9 @@ mod platform {
                     File::create(&upper).map_err(|_| Errno::EIO)?;
                 }
             }
+            self.overlay
+                .remove_whiteout(&visible)
+                .map_err(|_| Errno::EIO)?;
             Ok(upper)
         }
 
@@ -613,9 +616,8 @@ mod platform {
                     };
                     if self
                         .overlay
-                        .whiteout_path(&child_visible)
+                        .whiteout_exists(&child_visible)
                         .map_err(|_| Errno::EIO)?
-                        .exists()
                     {
                         continue;
                     }
@@ -634,9 +636,8 @@ mod platform {
                 };
                 if self
                     .overlay
-                    .whiteout_path(&child_visible)
+                    .whiteout_exists(&child_visible)
                     .map_err(|_| Errno::EIO)?
-                    .exists()
                 {
                     continue;
                 }
@@ -663,6 +664,55 @@ mod platform {
                 return None;
             }
             self.fallback_path(visible).filter(|path| path.is_dir())
+        }
+
+        fn should_whiteout_removed_path(&self, visible: &Path) -> Result<bool, Errno> {
+            let lower = self.overlay.lower_path(visible).map_err(|_| Errno::EIO)?;
+            Ok(path_exists(&lower)?
+                || self.fallback_path(visible).is_some()
+                || self.fallback_roots.is_virtual_dir(visible))
+        }
+
+        fn remove_file_and_update_whiteout(&self, visible: &Path) -> Result<(), Errno> {
+            let upper = self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?;
+            let upper_exists = path_exists(&upper)?;
+            let should_whiteout = self.should_whiteout_removed_path(visible)?;
+            if !upper_exists && !should_whiteout {
+                return Err(Errno::ENOENT);
+            }
+            if upper_exists {
+                fs::remove_file(&upper).map_err(|_| Errno::EIO)?;
+            }
+            if should_whiteout {
+                self.overlay
+                    .create_whiteout(visible)
+                    .map_err(|_| Errno::EIO)
+            } else {
+                self.overlay
+                    .remove_whiteout(visible)
+                    .map_err(|_| Errno::EIO)
+            }
+        }
+
+        fn remove_dir_and_update_whiteout(&self, visible: &Path) -> Result<(), Errno> {
+            let upper = self.overlay.upper_path(visible).map_err(|_| Errno::EIO)?;
+            let upper_exists = path_exists(&upper)?;
+            let should_whiteout = self.should_whiteout_removed_path(visible)?;
+            if !upper_exists && !should_whiteout {
+                return Err(Errno::ENOENT);
+            }
+            if upper_exists {
+                fs::remove_dir(&upper).map_err(|_| Errno::EIO)?;
+            }
+            if should_whiteout {
+                self.overlay
+                    .create_whiteout(visible)
+                    .map_err(|_| Errno::EIO)
+            } else {
+                self.overlay
+                    .remove_whiteout(visible)
+                    .map_err(|_| Errno::EIO)
+            }
         }
     }
 
@@ -774,6 +824,9 @@ mod platform {
                 fs::create_dir_all(&upper).map_err(|_| Errno::EIO)?;
                 fs::set_permissions(&upper, fs::Permissions::from_mode(mode & 0o7777))
                     .map_err(|_| Errno::EIO)?;
+                self.overlay
+                    .remove_whiteout(&visible)
+                    .map_err(|_| Errno::EIO)?;
                 let ino = self.ino_for_path(&path)?;
                 let attr = file_attr(ino, &upper).map_err(|_| Errno::EIO)?;
                 Ok(attr)
@@ -788,13 +841,7 @@ mod platform {
             let result = (|| {
                 let path = self.child_path(parent, name)?;
                 let visible = self.overlay_visible_path(&path);
-                let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
-                if upper.exists() {
-                    fs::remove_file(&upper).map_err(|_| Errno::EIO)?;
-                }
-                self.overlay
-                    .create_whiteout(&visible)
-                    .map_err(|_| Errno::EIO)
+                self.remove_file_and_update_whiteout(&visible)
             })();
             reply_result(result, reply);
         }
@@ -806,13 +853,7 @@ mod platform {
                     return Err(Errno::ENOTEMPTY);
                 }
                 let visible = self.overlay_visible_path(&path);
-                let upper = self.overlay.upper_path(&visible).map_err(|_| Errno::EIO)?;
-                if upper.exists() {
-                    fs::remove_dir(&upper).map_err(|_| Errno::EIO)?;
-                }
-                self.overlay
-                    .create_whiteout(&visible)
-                    .map_err(|_| Errno::EIO)
+                self.remove_dir_and_update_whiteout(&visible)
             })();
             reply_result(result, reply);
         }
@@ -833,6 +874,9 @@ mod platform {
                     fs::create_dir_all(parent).map_err(|_| Errno::EIO)?;
                 }
                 std::os::unix::fs::symlink(target, &upper).map_err(|_| Errno::EIO)?;
+                self.overlay
+                    .remove_whiteout(&visible)
+                    .map_err(|_| Errno::EIO)?;
                 let ino = self.ino_for_path(&path)?;
                 file_attr(ino, &upper).map_err(|_| Errno::EIO)
             })();
@@ -953,6 +997,9 @@ mod platform {
                     .write(true)
                     .mode(mode & 0o7777)
                     .open(&upper)
+                    .map_err(|_| Errno::EIO)?;
+                self.overlay
+                    .remove_whiteout(&visible)
                     .map_err(|_| Errno::EIO)?;
                 let ino = self.ino_for_path(&mount_path)?;
                 let attr = file_attr(ino, &upper).map_err(|_| Errno::EIO)?;
@@ -1220,6 +1267,14 @@ mod platform {
             .file_type()
             .pipe(FileType::from_std)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "unsupported file type"))
+    }
+
+    fn path_exists(path: &Path) -> Result<bool, Errno> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(Errno::EIO),
+        }
     }
 
     trait Pipe: Sized {
