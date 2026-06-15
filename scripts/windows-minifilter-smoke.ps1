@@ -556,7 +556,10 @@ public static class AgentFsNativeMove {
     private const uint FILE_DISPOSITION_DELETE = 0x00000001;
     private const uint FILE_DISPOSITION_ON_CLOSE = 0x00000008;
     private const uint FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE = 0x00000010;
+    private const uint FILE_RENAME_REPLACE_IF_EXISTS = 0x00000001;
+    private const uint FILE_RENAME_IGNORE_READONLY_ATTRIBUTE = 0x00000040;
     private const int FileDispositionInfoEx = 21;
+    private const int FileRenameInfoEx = 22;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FILE_DISPOSITION_INFO_EX {
@@ -586,6 +589,13 @@ public static class AgentFsNativeMove {
         ref FILE_DISPOSITION_INFO_EX fileInformation,
         int bufferSize);
 
+    [DllImport("kernel32.dll", EntryPoint = "SetFileInformationByHandle", SetLastError = true)]
+    private static extern bool SetFileInformationByHandleBuffer(
+        SafeFileHandle fileHandle,
+        int fileInformationClass,
+        byte[] fileInformation,
+        int bufferSize);
+
     public static void DeleteOnCloseIgnoreReadonly(string path) {
         using (SafeFileHandle handle = CreateFile(
             path,
@@ -606,10 +616,45 @@ public static class AgentFsNativeMove {
             }
         }
     }
+
+    public static void RenameReplaceIgnoreReadonly(string sourcePath, string targetPath) {
+        using (SafeFileHandle handle = CreateFile(
+            sourcePath,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero)) {
+            if (handle.IsInvalid) {
+                throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+            }
+
+            byte[] targetBytes = System.Text.Encoding.Unicode.GetBytes(targetPath);
+            byte[] info = new byte[20 + targetBytes.Length];
+            BitConverter.GetBytes(FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE).CopyTo(info, 0);
+            BitConverter.GetBytes((long)0).CopyTo(info, 8);
+            BitConverter.GetBytes(targetBytes.Length).CopyTo(info, 16);
+            Buffer.BlockCopy(targetBytes, 0, info, 20, targetBytes.Length);
+
+            if (!SetFileInformationByHandleBuffer(handle, FileRenameInfoEx, info, info.Length)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
 }
 '@
 [AgentFsNativeMove]::DeleteOnCloseIgnoreReadonly((Join-Path (Get-Location) 'readonly-delete.txt'))
 if (Test-Path readonly-delete.txt) { throw 'FileDispositionInfoEx delete left readonly lower file visible' }
+Set-Content readonly-replace-source.txt 'readonly-replace-source-env'
+Set-Content readonly-replace-target.txt 'readonly-replace-target-env'
+`$readonlyReplaceTarget = Get-Item readonly-replace-target.txt
+`$readonlyReplaceTarget.Attributes = `$readonlyReplaceTarget.Attributes -bor [IO.FileAttributes]::ReadOnly
+[AgentFsNativeMove]::RenameReplaceIgnoreReadonly(
+    (Join-Path (Get-Location) 'readonly-replace-source.txt'),
+    (Join-Path (Get-Location) 'readonly-replace-target.txt'))
+if (Test-Path readonly-replace-source.txt) { throw 'FileRenameInfoEx replace left readonly replace source visible' }
+if ((Get-Content readonly-replace-target.txt) -ne 'readonly-replace-source-env') { throw 'FileRenameInfoEx replace did not update readonly replace target' }
 `$crossBoundaryMoveFailed = `$false
 if (-not [AgentFsNativeMove]::MoveFileEx('$outsideMoveSource', (Join-Path (Get-Location) 'cross-boundary-move.txt'), 0)) {
     `$crossBoundaryMoveFailed = `$true
@@ -651,6 +696,7 @@ Rename-Item created.txt rename-target.txt
 if (`$names -notcontains 'host.txt') { throw 'directory listing lost lower file' }
 if (`$names -notcontains 'mixed-renamed') { throw 'directory listing lost renamed mixed directory' }
 if (`$names -notcontains 'rename-target.txt') { throw 'directory listing lost upper file renamed onto deleted target' }
+if (`$names -notcontains 'readonly-replace-target.txt') { throw 'directory listing lost FileRenameInfoEx readonly replace target' }
 if (`$names -notcontains 'moved-lower') { throw 'directory listing lost renamed lower directory' }
 if (`$names -notcontains 'replace-file-target.txt') { throw 'directory listing lost replaced lower file target' }
 if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
@@ -706,6 +752,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (Test-Path (Join-Path $source "cross-boundary-link.txt")) {
         throw "host cross-boundary hardlink target was created"
+    }
+    if (Test-Path (Join-Path $source "readonly-replace-source.txt")) {
+        throw "host readonly replace source was created"
+    }
+    if (Test-Path (Join-Path $source "readonly-replace-target.txt")) {
+        throw "host readonly replace target was created"
     }
     if ((Get-Content $outsideMoveSource) -ne "outside-move-original") {
         throw "outside move source was modified"
@@ -842,6 +894,15 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if ((Get-Content (Join-Path $upperSource "rename-target.txt")) -ne "env-created") {
         throw "file renamed onto deleted target was not written to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "readonly-replace-source.txt")) {
+        throw "FileRenameInfoEx readonly replace source remained in upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "readonly-replace-target.txt")) -ne "readonly-replace-source-env") {
+        throw "FileRenameInfoEx readonly replace target was not written to upper"
+    }
+    if (((Get-Item (Join-Path $upperSource "readonly-replace-target.txt")).Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+        throw "FileRenameInfoEx readonly replace target kept readonly attribute"
     }
     if ((Get-Content (Join-Path $upperSource "replace-file-target.txt")) -ne "replace-file-source-original") {
         throw "replaced lower file target was not written to upper"

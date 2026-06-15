@@ -11,6 +11,9 @@
 #ifndef FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE
 #define FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE 0x00000010
 #endif
+#ifndef FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
+#define FILE_RENAME_IGNORE_READONLY_ATTRIBUTE 0x00000040
+#endif
 
 typedef struct _AGENTFS_ENV {
     LIST_ENTRY Link;
@@ -1543,7 +1546,9 @@ static NTSTATUS AgentFsValidateRenameInformation(
         return STATUS_INVALID_PARAMETER;
     }
     if (InfoClass == FileRenameInformationEx) {
-        ULONG supportedFlags = FILE_RENAME_REPLACE_IF_EXISTS;
+        ULONG supportedFlags =
+            FILE_RENAME_REPLACE_IF_EXISTS |
+            FILE_RENAME_IGNORE_READONLY_ATTRIBUTE;
         if ((RenameInfo->Flags & ~supportedFlags) != 0) {
             return STATUS_NOT_SUPPORTED;
         }
@@ -1552,6 +1557,16 @@ static NTSTATUS AgentFsValidateRenameInformation(
         *ReplaceIfExists = RenameInfo->ReplaceIfExists != FALSE;
     }
     return STATUS_SUCCESS;
+}
+
+static BOOLEAN AgentFsRenameIgnoresReadOnly(
+    _In_ FILE_INFORMATION_CLASS InfoClass,
+    _In_opt_ PFILE_RENAME_INFORMATION RenameInfo)
+{
+    if (InfoClass != FileRenameInformationEx || RenameInfo == NULL) {
+        return FALSE;
+    }
+    return (RenameInfo->Flags & FILE_RENAME_IGNORE_READONLY_ATTRIBUTE) != 0;
 }
 
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
@@ -2162,6 +2177,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         UNICODE_STRING targetWhiteout;
         BOOLEAN replaceIfExists = FALSE;
         BOOLEAN sourceIsDirectory = FALSE;
+        BOOLEAN ignoreReadOnlyTarget = FALSE;
         RtlZeroMemory(&targetVisible, sizeof(targetVisible));
         RtlZeroMemory(&targetUpper, sizeof(targetUpper));
         RtlZeroMemory(&targetLower, sizeof(targetLower));
@@ -2202,6 +2218,9 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         if (NT_SUCCESS(status)) {
             status = AgentFsJoinRedirectPath(&targetWhiteout, &env->WhiteoutRoot, &env->SourceRoot, &targetVisible);
         }
+        if (NT_SUCCESS(status)) {
+            ignoreReadOnlyTarget = AgentFsRenameIgnoresReadOnly(infoClass, renameInfo);
+        }
         if (NT_SUCCESS(status) &&
             !replaceIfExists &&
             !AgentFsPathExists(FltObjects->Instance, &targetWhiteout) &&
@@ -2225,6 +2244,9 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         }
         if (NT_SUCCESS(status)) {
             if (AgentFsPathExists(FltObjects->Instance, &upper)) {
+                if (replaceIfExists && ignoreReadOnlyTarget) {
+                    AgentFsClearReadOnlyAttribute(FltObjects->Instance, &targetUpper);
+                }
                 status = AgentFsRenamePath(
                     FltObjects->Instance,
                     &upper,
