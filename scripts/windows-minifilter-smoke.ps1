@@ -377,6 +377,29 @@ if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed m
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
 "@
 
+    & $agentctl --agentfs $agentfs session create $EnvId logtest -- powershell.exe -NoProfile -Command "Write-Output 'session-log-stdout'; [Console]::Error.WriteLine('session-log-stderr')"
+    $sessionLogText = ""
+    for ($i = 0; $i -lt 40; $i++) {
+        $sessionLogText = (& $agentctl --agentfs $agentfs session logs $EnvId logtest) -join "`n"
+        if ($sessionLogText -match "session-log-stdout" -and $sessionLogText -match "session-log-stderr") {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($sessionLogText -notmatch "session-log-stdout") {
+        throw "session stdout was not captured in session logs"
+    }
+    if ($sessionLogText -notmatch "session-log-stderr") {
+        throw "session stderr was not captured in session logs"
+    }
+    $sessionLogPath = Join-Path $agentfs "envs\$EnvId\logs\sessions\logtest.log"
+    if ((Get-Content $sessionLogPath -Raw) -notmatch "session-log-stdout") {
+        throw "session stdout was not written to the agentfs log file"
+    }
+    if ((Get-Content $sessionLogPath -Raw) -notmatch "session-log-stderr") {
+        throw "session stderr was not written to the agentfs log file"
+    }
+
     $hostContent = Get-Content (Join-Path $source "host.txt")
     if ($hostContent -ne "host-original") {
         throw "host file was modified: $hostContent"
