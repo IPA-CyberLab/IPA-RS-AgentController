@@ -376,7 +376,20 @@ impl DesktopService {
     }
 
     pub async fn env_destroy(&self, id: &str) -> Result<()> {
-        let env = self.layout.read_env(id).await?;
+        validate_id(id)?;
+        let env = match self.layout.read_env(id).await {
+            Ok(env) => env,
+            Err(error) => {
+                let env_dir = self.layout.env_dir(id);
+                let metadata = env_dir.join("meta.json");
+                if tokio::fs::try_exists(&env_dir).await?
+                    && !tokio::fs::try_exists(&metadata).await?
+                {
+                    return remove_dir_all_if_exists(&env_dir).await;
+                }
+                return Err(error);
+            }
+        };
         ensure_desktop_backend(&env)?;
         if env.backend == RootfsBackend::PathPreservingOverlay {
             unmount_macos_overlay_if_active(&env.rootfs_path)?;
@@ -932,7 +945,29 @@ fn command_display(command: &[String]) -> String {
 }
 
 async fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
-    match tokio::fs::remove_dir_all(path).await {
+    for attempt in 0..5 {
+        match tokio::fs::remove_dir_all(path).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error)
+                if directory_not_empty(&error) && cfg!(target_os = "macos") && attempt < 4 =>
+            {
+                remove_macos_directory_residue(path).await?;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn directory_not_empty(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::DirectoryNotEmpty
+        || matches!(error.raw_os_error(), Some(39 | 66))
+}
+
+async fn remove_macos_directory_residue(path: &Path) -> Result<()> {
+    match tokio::fs::remove_file(path.join(".DS_Store")).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
@@ -1220,6 +1255,39 @@ mod tests {
         assert_eq!(human_bytes(0), "0B");
         assert_eq!(human_bytes(1024), "1.0K");
         assert_eq!(human_bytes(1536), "1.5K");
+    }
+
+    #[test]
+    fn directory_not_empty_detects_macos_error_code() {
+        let error = std::io::Error::from_raw_os_error(66);
+
+        assert!(super::directory_not_empty(&error));
+    }
+
+    #[tokio::test]
+    async fn remove_dir_all_tolerates_ds_store_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_dir = dir.path().join("env");
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::write(env_dir.join(".DS_Store"), "").unwrap();
+
+        super::remove_dir_all_if_exists(&env_dir).await.unwrap();
+
+        assert!(!env_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn env_destroy_removes_orphan_env_dir_without_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        let env_dir = service.layout.env_dir("orphan");
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::write(env_dir.join(".DS_Store"), "").unwrap();
+
+        service.env_destroy("orphan").await.unwrap();
+
+        assert!(!env_dir.exists());
     }
 
     #[tokio::test]
