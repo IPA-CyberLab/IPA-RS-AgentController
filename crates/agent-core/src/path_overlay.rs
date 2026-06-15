@@ -236,9 +236,11 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
             )
         })?;
     } else if metadata.file_type().is_symlink() {
-        let target = std::fs::read_link(src)?;
         #[cfg(unix)]
-        std::os::unix::fs::symlink(target, dst)?;
+        {
+            let target = std::fs::read_link(src)?;
+            std::os::unix::fs::symlink(target, dst)?;
+        }
         #[cfg(not(unix))]
         return Err(anyhow!(
             "symlink copy-up is unsupported on this platform for {}",

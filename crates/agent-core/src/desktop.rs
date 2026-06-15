@@ -35,7 +35,7 @@ fn path_preserving_cwd_for_backend(
 ) -> PathBuf {
     let base_source_path = Path::new(base_source);
     match backend {
-        RootfsBackend::PathPreservingOverlay => cwd
+        RootfsBackend::PathPreservingOverlay | RootfsBackend::WindowsMinifilterOverlay => cwd
             .filter(|cwd| cwd.starts_with(base_source_path))
             .unwrap_or(base_source_path)
             .to_path_buf(),
@@ -269,17 +269,12 @@ impl DesktopService {
         backend: RootfsBackend,
     ) -> Result<Base> {
         validate_id(name)?;
-        if !matches!(
-            backend,
-            RootfsBackend::PathPreservingOverlay
-                | RootfsBackend::ApfsClone
-                | RootfsBackend::WindowsBlockClone
-        ) {
+        if !backend.is_desktop_native() {
             return Err(anyhow!(
                 "backend {backend:?} is not a desktop clone backend"
             ));
         }
-        if backend == RootfsBackend::PathPreservingOverlay {
+        if backend.is_path_preserving_overlay() {
             self.ensure_safe_path_preserving_source(from)?;
         }
         let base_dir = self.layout.base_dir(name);
@@ -288,7 +283,9 @@ impl DesktopService {
         }
         tokio::fs::create_dir_all(&base_dir).await?;
         let rootfs = match backend {
-            RootfsBackend::PathPreservingOverlay => self.layout.base_lower(name),
+            RootfsBackend::PathPreservingOverlay | RootfsBackend::WindowsMinifilterOverlay => {
+                self.layout.base_lower(name)
+            }
             _ => self.layout.base_rootfs(name),
         };
         let clone_target = desktop_base_clone_target(&backend, &rootfs, from)?;
@@ -377,12 +374,7 @@ impl DesktopService {
             .profile(profile_name)
             .ok_or_else(|| anyhow!("unknown profile {profile_name}"))?;
         let base = self.layout.read_base(base_id).await?;
-        if !matches!(
-            base.backend,
-            RootfsBackend::PathPreservingOverlay
-                | RootfsBackend::ApfsClone
-                | RootfsBackend::WindowsBlockClone
-        ) {
+        if !base.backend.is_desktop_native() {
             return Err(anyhow!("base {base_id} is not a desktop native base"));
         }
         let env_dir = self.layout.env_dir(id);
@@ -391,7 +383,7 @@ impl DesktopService {
         }
         tokio::fs::create_dir_all(&env_dir).await?;
         let rootfs = match base.backend {
-            RootfsBackend::PathPreservingOverlay => {
+            RootfsBackend::PathPreservingOverlay | RootfsBackend::WindowsMinifilterOverlay => {
                 let lower = self.layout.env_lower(id);
                 if let Err(error) = reflink::clone_tree(&base.rootfs_path, &lower) {
                     let _ = remove_dir_all_if_exists(&env_dir).await;
@@ -463,7 +455,7 @@ impl DesktopService {
             }
         };
         ensure_desktop_backend(&env)?;
-        if env.backend == RootfsBackend::PathPreservingOverlay {
+        if env.backend.is_path_preserving_overlay() {
             unmount_macos_overlay_if_active(&env.rootfs_path)?;
         }
         remove_dir_all_if_exists(&self.layout.env_dir(id)).await
@@ -665,7 +657,7 @@ impl DesktopService {
         let text = match export_type {
             ExportType::WorkspacePatch => self.exporter.workspace_patch(&env).await?,
             ExportType::RootfsChangedPaths => {
-                if env.backend == RootfsBackend::PathPreservingOverlay {
+                if env.backend.is_path_preserving_overlay() {
                     self.path_preserving_overlay_changed_paths(env_id)?
                 } else {
                     Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)?
@@ -691,7 +683,7 @@ impl DesktopService {
     pub async fn apply(&self, env_id: &str, force: bool) -> Result<String> {
         let mut env = self.layout.read_env(env_id).await?;
         ensure_desktop_backend(&env)?;
-        if env.backend != RootfsBackend::PathPreservingOverlay {
+        if !env.backend.is_path_preserving_overlay() {
             bail!("apply is implemented only for path-preserving overlay envs");
         }
         let base = self.layout.read_base(&env.base_id).await?;
@@ -706,7 +698,7 @@ impl DesktopService {
         let manifest = self.layout.base_dir(base_id).join("manifest.json");
         if tokio::fs::try_exists(&manifest).await? {
             let base = self.layout.read_base(base_id).await?;
-            if base.backend == RootfsBackend::PathPreservingOverlay
+            if base.backend.is_path_preserving_overlay()
                 && base.source != from.display().to_string()
             {
                 return Err(anyhow!(
@@ -794,6 +786,25 @@ impl DesktopService {
                 )
                 .await;
         }
+        if env.backend == RootfsBackend::WindowsMinifilterOverlay {
+            let base = self.layout.read_base(&env.base_id).await?;
+            let preserved_cwd =
+                path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
+            return self
+                .runner
+                .run_windows_minifilter_overlay(
+                    &env.id,
+                    Path::new(&base.source),
+                    &self.layout.env_lower(&env.id),
+                    &self.layout.env_upper(&env.id),
+                    &self.layout.env_whiteouts(&env.id),
+                    &preserved_cwd,
+                    program,
+                    args,
+                    &env.limits,
+                )
+                .await;
+        }
         self.runner
             .run_desktop_isolated(&env.rootfs_path, program, args, &env.limits)
             .await
@@ -813,6 +824,23 @@ impl DesktopService {
                 path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
             return self.runner.spawn_macos_path_preserving_overlay_session(
                 &env.rootfs_path,
+                Path::new(&base.source),
+                &self.layout.env_lower(&env.id),
+                &self.layout.env_upper(&env.id),
+                &self.layout.env_whiteouts(&env.id),
+                &preserved_cwd,
+                program,
+                args,
+                log_path,
+                &env.limits,
+            );
+        }
+        if env.backend == RootfsBackend::WindowsMinifilterOverlay {
+            let base = self.layout.read_base(&env.base_id).await?;
+            let preserved_cwd =
+                path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
+            return self.runner.spawn_windows_minifilter_overlay_session(
+                &env.id,
                 Path::new(&base.source),
                 &self.layout.env_lower(&env.id),
                 &self.layout.env_upper(&env.id),
@@ -907,12 +935,7 @@ impl DesktopService {
 }
 
 fn ensure_desktop_backend(env: &Env) -> Result<()> {
-    if matches!(
-        env.backend,
-        RootfsBackend::PathPreservingOverlay
-            | RootfsBackend::ApfsClone
-            | RootfsBackend::WindowsBlockClone
-    ) {
+    if env.backend.is_desktop_native() {
         Ok(())
     } else {
         Err(anyhow!("env {} is not a desktop native env", env.id))
@@ -1248,10 +1271,12 @@ fn replace_path_from(src: &Path, dst: &Path) -> Result<()> {
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
     if metadata.file_type().is_symlink() {
-        let target = std::fs::read_link(src)?;
         #[cfg(unix)]
-        std::os::unix::fs::symlink(target, dst)
-            .with_context(|| format!("failed to symlink {}", dst.display()))?;
+        {
+            let target = std::fs::read_link(src)?;
+            std::os::unix::fs::symlink(target, dst)
+                .with_context(|| format!("failed to symlink {}", dst.display()))?;
+        }
         #[cfg(not(unix))]
         bail!(
             "symlink apply is unsupported on this platform for {}",
@@ -1570,7 +1595,7 @@ fn desktop_base_clone_target(
     rootfs: &Path,
     from: &Path,
 ) -> Result<PathBuf> {
-    if *backend == RootfsBackend::PathPreservingOverlay {
+    if backend.is_path_preserving_overlay() {
         Ok(rootfs.join(absolute_path_as_overlay_relative(from)?))
     } else {
         Ok(rootfs.to_path_buf())
@@ -1622,7 +1647,66 @@ fn macos_overlay_mount_is_active(path: &Path) -> bool {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn platform_desktop_shell_command(
+    rootfs_path: &Path,
+    source_root: &Path,
+    backend: RootfsBackend,
+    env_id: &str,
+    host_workspace: Option<&str>,
+    limits: &Limits,
+) -> Vec<String> {
+    if backend == RootfsBackend::WindowsMinifilterOverlay {
+        return windows_minifilter_shell_command(
+            rootfs_path,
+            source_root,
+            env_id,
+            host_workspace,
+            limits,
+        );
+    }
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn windows_minifilter_shell_command(
+    view_root: &Path,
+    source_root: &Path,
+    env_id: &str,
+    host_workspace: Option<&str>,
+    limits: &Limits,
+) -> Vec<String> {
+    let preserved_cwd = host_workspace.unwrap_or_else(|| source_root.to_str().unwrap_or("\\"));
+    let env_dir = view_root.parent().unwrap_or_else(|| Path::new("\\"));
+    let shell = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+    vec![
+        windows_minifilterctl_program(),
+        "exec".to_string(),
+        "--env-id".to_string(),
+        env_id.to_string(),
+        "--source-root".to_string(),
+        source_root.display().to_string(),
+        "--lower".to_string(),
+        env_dir.join("lower").display().to_string(),
+        "--upper".to_string(),
+        env_dir.join("upper").display().to_string(),
+        "--whiteouts".to_string(),
+        env_dir.join("whiteouts").display().to_string(),
+        "--cwd".to_string(),
+        preserved_cwd.to_string(),
+        "--network".to_string(),
+        limits.network.clone(),
+        "--".to_string(),
+        shell,
+    ]
+}
+
+#[cfg(windows)]
+fn windows_minifilterctl_program() -> String {
+    std::env::var("AGENT_MINIFILTERCTL").unwrap_or_else(|_| "agent-minifilterctl".to_string())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn platform_desktop_shell_command(
     _rootfs_path: &Path,
     _source_root: &Path,
@@ -1775,8 +1859,13 @@ mod tests {
         let Response::DesktopShell { command, .. } = response else {
             panic!("expected desktop shell response");
         };
-        assert!(command.contains(&"--source-root".to_string()));
-        assert!(command.contains(&source.display().to_string()));
+        #[cfg(target_os = "macos")]
+        {
+            assert!(command.contains(&"--source-root".to_string()));
+            assert!(command.contains(&source.display().to_string()));
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(command.is_empty());
         assert!(!service.layout.base_dir("base-from-root").exists());
     }
 

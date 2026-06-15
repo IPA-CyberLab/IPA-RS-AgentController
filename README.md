@@ -135,9 +135,13 @@ and arm64 targets. `agent-forkd` is operational on Linux where the runtime
 requirements below are available. Windows and macOS can either use `--remote`
 or `AGENT_REMOTE` for the Linux-backed workflow, or run the native desktop
 daemon locally. The native backend uses path-preserving overlay metadata and
-the `agent-viewd` and `agent-overlayfs` helpers on macOS, and
-`FSCTL_DUPLICATE_EXTENTS_TO_FILE` block cloning on Windows so base/env trees can
-be derived without full copies on filesystems that support those primitives.
+the `agent-viewd` and `agent-overlayfs` helpers on macOS. On Windows,
+`agent-minifilterctl` registers the launched process with the `agentfs`
+minifilter so the process keeps seeing the original `C:\Users\...\project`
+path while reads resolve through lower/upper/whiteout state and writes are
+redirected to the env upper layer. Set `AGENT_WINDOWS_BLOCK_CLONE=1` to use the
+older compatibility backend based on `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block
+cloning.
 macOS path-preserving views require macFUSE. The native backend currently
 supports local exec/shell plus `workspace-patch` and `rootfs-changed-paths`
 export. macOS exec and shell mount `agent-overlayfs` directly on the selected
@@ -152,12 +156,25 @@ and temp variables pointed at the overlaid source path. macOS path-preserving
 views support `network=host` and `network=none`; `bridge` is a Linux nspawn mode
 and is rejected instead of silently running with host networking. `network=none`
 wraps the entered command in the macOS sandbox profile that denies `network*`.
-Windows exec runs inside a Job Object so child processes are grouped, capped by
-`pids_max`, and terminated when the job closes.
-This is still weaker than the Linux `systemd-nspawn`
-backend: Windows native shells run inside a Job Object rooted at the env
-directory, and native desktop sessions support background create/list/logs/kill
-but not interactive attach yet.
+Windows minifilter execution starts the command suspended, registers its PID and
+overlay roots through the filter communication port, assigns it to a Job
+Object, then resumes it. The compatibility block-clone backend is still weaker
+than the Linux `systemd-nspawn` backend: it runs inside a Job Object rooted at
+the env directory, and native desktop sessions support background
+create/list/logs/kill but not interactive attach yet.
+
+On a Windows development machine with WDK installed and test-signing enabled,
+build, load, and verify the minifilter path-preserving backend from an elevated
+Developer PowerShell prompt:
+
+```powershell
+scripts\windows-minifilter-smoke.ps1
+```
+
+The smoke test builds `agentctl`, `agent-forkd`, `agent-minifilterctl`, and the
+`agentfs` minifilter, loads the filter, runs a command from the original host
+project path, and verifies that host files stay unchanged while modified,
+renamed, and deleted entries appear under the env upper/whiteout trees.
 
 After installing on a macOS host with macFUSE, run the native backend smoke
 test to verify the privileged helper and runtime path view end to end:
@@ -318,16 +335,14 @@ is a privileged helper, `agent-overlayfs` performs the macFUSE mount, and
 `agent-viewd` only accepts the fixed path-preserving env layout
 `<agentfs>/envs/<id>/{lower,upper,whiteouts,view-root}` without `..` or symlink
 components before it creates or mounts privileged paths. Neither helper must
-fall back to running directly in the host workspace. Windows
-exec uses a Job Object for process lifetime and
-process-count containment, but it does not yet provide filesystem or network
-isolation equivalent to Linux namespaces. Windows interactive shells run in a
-Job Object with the env rootfs as their working directory. Native desktop
-sessions are tracked as background host processes with transcript files under
-the env's session log directory; macOS session commands use the same mounted
-path-preserving view as exec, while Windows session commands are kept in
-daemon-held Job Objects when started by the current daemon and fall back to
-PID-tree cleanup after daemon restart.
+fall back to running directly in the host workspace. Windows minifilter envs
+use the same lower/upper/whiteout metadata but enforce the view in kernel mode
+for registered PIDs only. The driver is a filesystem isolation mechanism, not a
+security boundary equivalent to Linux namespaces, and it requires normal Windows
+driver signing/test-signing discipline. Native desktop sessions are tracked as
+background host processes with transcript files under the env's session log
+directory; macOS and Windows minifilter session commands use the same
+path-preserving view as exec.
 
 ## Test Notes
 

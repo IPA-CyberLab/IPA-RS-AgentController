@@ -147,6 +147,59 @@ impl CommandRunner {
         )
     }
 
+    pub async fn run_windows_minifilter_overlay(
+        &self,
+        env_id: &str,
+        source_root: &Path,
+        lower: &Path,
+        upper: &Path,
+        whiteouts: &Path,
+        preserved_cwd: &Path,
+        program: &str,
+        args: &[String],
+        limits: &Limits,
+    ) -> Result<CmdOutput> {
+        run_windows_minifilter_overlay(
+            env_id,
+            source_root,
+            lower,
+            upper,
+            whiteouts,
+            preserved_cwd,
+            program,
+            args,
+            limits,
+        )
+        .await
+    }
+
+    pub fn spawn_windows_minifilter_overlay_session(
+        &self,
+        env_id: &str,
+        source_root: &Path,
+        lower: &Path,
+        upper: &Path,
+        whiteouts: &Path,
+        preserved_cwd: &Path,
+        program: &str,
+        args: &[String],
+        log_path: &Path,
+        limits: &Limits,
+    ) -> Result<u32> {
+        spawn_windows_minifilter_overlay_session(
+            env_id,
+            source_root,
+            lower,
+            upper,
+            whiteouts,
+            preserved_cwd,
+            program,
+            args,
+            log_path,
+            limits,
+        )
+    }
+
     pub async fn append_to_file(path: &Path, content: &str) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 
@@ -165,6 +218,130 @@ impl CommandRunner {
         }
         Ok(())
     }
+}
+
+#[cfg(windows)]
+async fn run_windows_minifilter_overlay(
+    env_id: &str,
+    source_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+    preserved_cwd: &Path,
+    program: &str,
+    args: &[String],
+    limits: &Limits,
+) -> Result<CmdOutput> {
+    let mut command = Command::new(windows_minifilterctl_program());
+    command
+        .arg("exec")
+        .arg("--env-id")
+        .arg(env_id)
+        .arg("--source-root")
+        .arg(source_root)
+        .arg("--lower")
+        .arg(lower)
+        .arg("--upper")
+        .arg(upper)
+        .arg("--whiteouts")
+        .arg(whiteouts)
+        .arg("--cwd")
+        .arg(preserved_cwd)
+        .arg("--network")
+        .arg(&limits.network)
+        .arg("--")
+        .arg(program)
+        .args(args);
+    let output = command
+        .output()
+        .await
+        .with_context(|| "failed to execute agent-minifilterctl for Windows overlay")?;
+    Ok(CmdOutput {
+        status: output.status.code().unwrap_or(128),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+#[cfg(not(windows))]
+async fn run_windows_minifilter_overlay(
+    _env_id: &str,
+    _source_root: &Path,
+    _lower: &Path,
+    _upper: &Path,
+    _whiteouts: &Path,
+    _preserved_cwd: &Path,
+    _program: &str,
+    _args: &[String],
+    _limits: &Limits,
+) -> Result<CmdOutput> {
+    Err(anyhow!(
+        "Windows minifilter overlay execution is available only on Windows"
+    ))
+}
+
+#[cfg(windows)]
+fn spawn_windows_minifilter_overlay_session(
+    env_id: &str,
+    source_root: &Path,
+    lower: &Path,
+    upper: &Path,
+    whiteouts: &Path,
+    preserved_cwd: &Path,
+    program: &str,
+    args: &[String],
+    log_path: &Path,
+    limits: &Limits,
+) -> Result<u32> {
+    let mut command = std::process::Command::new(windows_minifilterctl_program());
+    command
+        .arg("session")
+        .arg("--env-id")
+        .arg(env_id)
+        .arg("--source-root")
+        .arg(source_root)
+        .arg("--lower")
+        .arg(lower)
+        .arg("--upper")
+        .arg(upper)
+        .arg("--whiteouts")
+        .arg(whiteouts)
+        .arg("--cwd")
+        .arg(preserved_cwd)
+        .arg("--network")
+        .arg(&limits.network)
+        .arg("--log-path")
+        .arg(log_path)
+        .arg("--")
+        .arg(program)
+        .args(args);
+    let child = command
+        .spawn()
+        .with_context(|| "failed to execute agent-minifilterctl session for Windows overlay")?;
+    Ok(child.id())
+}
+
+#[cfg(not(windows))]
+fn spawn_windows_minifilter_overlay_session(
+    _env_id: &str,
+    _source_root: &Path,
+    _lower: &Path,
+    _upper: &Path,
+    _whiteouts: &Path,
+    _preserved_cwd: &Path,
+    _program: &str,
+    _args: &[String],
+    _log_path: &Path,
+    _limits: &Limits,
+) -> Result<u32> {
+    Err(anyhow!(
+        "Windows minifilter overlay sessions are available only on Windows"
+    ))
+}
+
+#[cfg(windows)]
+fn windows_minifilterctl_program() -> String {
+    std::env::var("AGENT_MINIFILTERCTL").unwrap_or_else(|_| "agent-minifilterctl".to_string())
 }
 
 #[cfg(target_os = "macos")]

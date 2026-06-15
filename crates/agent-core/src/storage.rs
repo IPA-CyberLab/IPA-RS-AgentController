@@ -231,7 +231,7 @@ impl Layout {
                     ));
                 }
             }
-            RootfsBackend::PathPreservingOverlay => {
+            RootfsBackend::PathPreservingOverlay | RootfsBackend::WindowsMinifilterOverlay => {
                 let expected_lower = self.base_lower(&base.id);
                 if base.rootfs_path != expected_lower {
                     return Err(anyhow!(
@@ -292,7 +292,9 @@ impl Layout {
             ));
         }
         let expected_rootfs = match env.backend {
-            RootfsBackend::PathPreservingOverlay => self.env_view_root(&env.id),
+            RootfsBackend::PathPreservingOverlay | RootfsBackend::WindowsMinifilterOverlay => {
+                self.env_view_root(&env.id)
+            }
             _ => self.env_rootfs(&env.id),
         };
         if env.rootfs_path != expected_rootfs {

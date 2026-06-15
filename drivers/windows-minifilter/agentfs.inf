@@ -1,0 +1,49 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class="ActivityMonitor"
+ClassGuid={b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider=%ManufacturerName%
+DriverVer=06/15/2026,0.1.0.0
+CatalogFile=agentfs.cat
+
+[DestinationDirs]
+DefaultDestDir=12
+MiniFilter.DriverFiles=12
+
+[DefaultInstall.NTamd64]
+OptionDesc=%ServiceDescription%
+CopyFiles=MiniFilter.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService=%ServiceName%,,MiniFilter.Service
+
+[DefaultUninstall.NTamd64]
+DelFiles=MiniFilter.DriverFiles
+
+[DefaultUninstall.NTamd64.Services]
+DelService=%ServiceName%,0x200
+
+[MiniFilter.DriverFiles]
+agentfs.sys
+
+[MiniFilter.Service]
+DisplayName=%ServiceDescription%
+Description=%ServiceDescription%
+ServiceBinary=%12%\agentfs.sys
+Dependencies=FltMgr
+ServiceType=2
+StartType=3
+ErrorControl=1
+LoadOrderGroup="FSFilter Activity Monitor"
+AddReg=MiniFilter.AddRegistry
+
+[MiniFilter.AddRegistry]
+HKR,"Instances","DefaultInstance",0x00000000,%InstanceName%
+HKR,"Instances\%InstanceName%","Altitude",0x00000000,"385240"
+HKR,"Instances\%InstanceName%","Flags",0x00010001,0
+
+[Strings]
+ManufacturerName="IPA CyberLab"
+ServiceDescription="IPA-RS AgentFs path-preserving overlay minifilter"
+ServiceName="agentfs"
+InstanceName="AgentFs Instance"

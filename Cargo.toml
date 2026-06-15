@@ -4,6 +4,7 @@ members = [
     "crates/agent-overlayfs",
     "crates/agentctl",
     "crates/agent-forkd",
+    "crates/agent-minifilterctl",
     "crates/agent-viewd",
 ]
 resolver = "2"

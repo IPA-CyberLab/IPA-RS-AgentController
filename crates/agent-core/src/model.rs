@@ -47,11 +47,29 @@ pub enum RootfsBackend {
     PathPreservingOverlay,
     ApfsClone,
     WindowsBlockClone,
+    WindowsMinifilterOverlay,
 }
 
 impl RootfsBackend {
     pub fn native_clone_for_current_os() -> Option<Self> {
         native_clone_backend()
+    }
+
+    pub fn is_path_preserving_overlay(&self) -> bool {
+        matches!(
+            self,
+            RootfsBackend::PathPreservingOverlay | RootfsBackend::WindowsMinifilterOverlay
+        )
+    }
+
+    pub fn is_desktop_native(&self) -> bool {
+        matches!(
+            self,
+            RootfsBackend::PathPreservingOverlay
+                | RootfsBackend::ApfsClone
+                | RootfsBackend::WindowsBlockClone
+                | RootfsBackend::WindowsMinifilterOverlay
+        )
     }
 }
 
@@ -62,7 +80,18 @@ fn native_clone_backend() -> Option<RootfsBackend> {
 
 #[cfg(target_os = "windows")]
 fn native_clone_backend() -> Option<RootfsBackend> {
-    Some(RootfsBackend::WindowsBlockClone)
+    if std::env::var_os("AGENT_WINDOWS_BLOCK_CLONE")
+        .as_deref()
+        .is_some_and(|value| {
+            matches!(
+                value.to_string_lossy().as_ref(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+    {
+        return Some(RootfsBackend::WindowsBlockClone);
+    }
+    Some(RootfsBackend::WindowsMinifilterOverlay)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -482,6 +511,7 @@ mod tests {
                 "path_preserving_overlay",
                 "apfs_clone",
                 "windows_block_clone",
+                "windows_minifilter_overlay",
             ],
         );
         assert_schema_enum_values(
@@ -493,6 +523,7 @@ mod tests {
                 "path_preserving_overlay",
                 "apfs_clone",
                 "windows_block_clone",
+                "windows_minifilter_overlay",
             ],
         );
         assert_schema_enum_values(
@@ -530,7 +561,7 @@ mod tests {
         #[cfg(target_os = "windows")]
         assert_eq!(
             RootfsBackend::native_clone_for_current_os(),
-            Some(RootfsBackend::WindowsBlockClone)
+            Some(RootfsBackend::WindowsMinifilterOverlay)
         );
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         assert_eq!(RootfsBackend::native_clone_for_current_os(), None);

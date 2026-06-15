@@ -176,6 +176,7 @@ fn default_new_source() -> PathBuf {
     host_current_dir_or_dot()
 }
 
+#[cfg(not(target_os = "linux"))]
 fn host_current_dir_or_dot() -> PathBuf {
     host_current_dir_from_env()
         .or_else(|| std::env::current_dir().ok())
@@ -822,9 +823,13 @@ fn run_desktop_shell_command(
 fn run_desktop_shell_command(
     shell: &mut StdCommand,
     rootfs_path: PathBuf,
-    _start_dir: PathBuf,
-    _path_preserving: bool,
+    start_dir: PathBuf,
+    path_preserving: bool,
 ) -> Result<i32> {
+    if path_preserving {
+        let status = shell.current_dir(start_dir).status()?;
+        return Ok(status.code().unwrap_or(128));
+    }
     windows_desktop_shell::run_in_job(shell, rootfs_path)
 }
 
@@ -860,10 +865,13 @@ fn desktop_shell_start_dir_for_current_dir(
 }
 
 fn desktop_shell_path_preserving_overlay(command: &[String]) -> bool {
-    command
-        .first()
-        .is_some_and(|program| program == "agent-viewd")
-        && command.iter().any(|arg| arg == "--view-root")
+    let Some(program) = command.first() else {
+        return false;
+    };
+    ((program == "agent-viewd" && command.iter().any(|arg| arg == "--view-root"))
+        || program == "agent-minifilterctl"
+        || program.ends_with("\\agent-minifilterctl.exe")
+        || program.ends_with("/agent-minifilterctl.exe"))
         && command.iter().any(|arg| arg == "--cwd")
 }
 
@@ -1466,6 +1474,22 @@ mod tests {
         assert!(desktop_shell_path_preserving_overlay(&command));
 
         std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    #[test]
+    fn windows_minifilter_shell_command_is_path_preserving() {
+        let command = vec![
+            "agent-minifilterctl".to_string(),
+            "exec".to_string(),
+            "--source-root".to_string(),
+            "C:\\Users\\mizuame\\Desktop\\project".to_string(),
+            "--cwd".to_string(),
+            "C:\\Users\\mizuame\\Desktop\\project".to_string(),
+            "--".to_string(),
+            "cmd.exe".to_string(),
+        ];
+
+        assert!(desktop_shell_path_preserving_overlay(&command));
     }
 
     #[test]

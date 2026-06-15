@@ -33,6 +33,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-minifilterctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "agent-overlayfs"
 version = "0.1.0"
 dependencies = [

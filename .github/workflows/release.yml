@@ -92,6 +92,8 @@ jobs:
           packages=(-p agentctl -p agent-forkd)
           if [[ "${{ runner.os }}" == "macOS" ]]; then
             packages+=(-p agent-viewd -p agent-overlayfs)
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            packages+=(-p agent-minifilterctl)
           fi
           cargo build --release --target "${{ matrix.target }}" "${packages[@]}"
 
@@ -114,6 +116,8 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             cp "target/${{ matrix.target }}/release/agentctl.exe" "$staging/bin/"
             cp "target/${{ matrix.target }}/release/agent-forkd.exe" "$staging/bin/"
+            cp "target/${{ matrix.target }}/release/agent-minifilterctl.exe" "$staging/bin/"
+            cp -R drivers/windows-minifilter "$staging/"
           else
             cp "target/${{ matrix.target }}/release/agentctl" "$staging/bin/"
             cp "target/${{ matrix.target }}/release/agent-forkd" "$staging/bin/"
@@ -137,6 +141,8 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agentctl.exe" "$contents"
             grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-forkd.exe" "$contents"
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-minifilterctl.exe" "$contents"
+            grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/windows-minifilter/agentfs.inf" "$contents"
           else
             grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agentctl" "$contents"
             grep -F "ipa-rs-isolated-agent-${{ matrix.target }}/bin/agent-forkd" "$contents"
@@ -220,21 +226,21 @@ jobs:
           "$agentctl" --agentfs "$agentfs" env list
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- powershell.exe -NoProfile -Command "Set-Content -Path created.txt -Value desktop-smoke; Get-Content created.txt" | tee "$runner_temp/exec.out"
+            AGENT_WINDOWS_BLOCK_CLONE=1 "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- powershell.exe -NoProfile -Command "Set-Content -Path created.txt -Value desktop-smoke; Get-Content created.txt" | tee "$runner_temp/exec.out"
           else
             "$agentctl" --agentfs "$agentfs" new -t smoke --from "$source_dir" -- /bin/sh -c "cat nested/source.txt && echo desktop-smoke > created.txt && cat created.txt" | tee "$runner_temp/exec.out"
           fi
           grep -q "desktop-smoke" "$runner_temp/exec.out"
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            printf 'cd\r\nexit\r\n' | "$agentctl" --agentfs "$agentfs" shell smoke | tee "$runner_temp/shell.out"
+            printf 'cd\r\nexit\r\n' | AGENT_WINDOWS_BLOCK_CLONE=1 "$agentctl" --agentfs "$agentfs" shell smoke | tee "$runner_temp/shell.out"
           else
             printf 'pwd\nexit\n' | "$agentctl" --agentfs "$agentfs" shell smoke | tee "$runner_temp/shell.out"
           fi
           grep -q "rootfs" "$runner_temp/shell.out"
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            "$agentctl" --agentfs "$agentfs" session create smoke dev -- powershell.exe -NoProfile -Command "Write-Output desktop-session; Start-Sleep -Seconds 30"
+            AGENT_WINDOWS_BLOCK_CLONE=1 "$agentctl" --agentfs "$agentfs" session create smoke dev -- powershell.exe -NoProfile -Command "Write-Output desktop-session; Start-Sleep -Seconds 30"
           else
             "$agentctl" --agentfs "$agentfs" session create smoke dev -- /bin/sh -c "echo desktop-session; sleep 30"
           fi

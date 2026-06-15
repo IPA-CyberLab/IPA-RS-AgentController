@@ -218,7 +218,9 @@ impl AgentService {
         validate_id(name)?;
         if !matches!(
             backend,
-            RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone
+            RootfsBackend::ApfsClone
+                | RootfsBackend::WindowsBlockClone
+                | RootfsBackend::WindowsMinifilterOverlay
         ) {
             return Err(anyhow!("backend {backend:?} is not a native clone backend"));
         }
@@ -399,7 +401,8 @@ impl AgentService {
             }
             RootfsBackend::ApfsClone
             | RootfsBackend::WindowsBlockClone
-            | RootfsBackend::PathPreservingOverlay => {
+            | RootfsBackend::PathPreservingOverlay
+            | RootfsBackend::WindowsMinifilterOverlay => {
                 if let Err(error) = reflink::clone_tree(&base.rootfs_path, &rootfs) {
                     cleanup_failed_env_dir(&env_dir).await;
                     return Err(error);
@@ -598,7 +601,8 @@ impl AgentService {
             }
             RootfsBackend::ApfsClone
             | RootfsBackend::WindowsBlockClone
-            | RootfsBackend::PathPreservingOverlay => {
+            | RootfsBackend::PathPreservingOverlay
+            | RootfsBackend::WindowsMinifilterOverlay => {
                 remove_dir_all_if_exists(&env.rootfs_path).await?;
             }
         }
@@ -861,7 +865,8 @@ impl AgentService {
                 RootfsBackend::Overlay => self.overlay_changed_paths(&env).await,
                 RootfsBackend::ApfsClone
                 | RootfsBackend::WindowsBlockClone
-                | RootfsBackend::PathPreservingOverlay => {
+                | RootfsBackend::PathPreservingOverlay
+                | RootfsBackend::WindowsMinifilterOverlay => {
                     Exporter::changed_paths_by_walk(&base.rootfs_path, &env.rootfs_path)
                 }
             },
@@ -1005,7 +1010,8 @@ impl AgentService {
             RootfsBackend::Btrfs
             | RootfsBackend::ApfsClone
             | RootfsBackend::WindowsBlockClone
-            | RootfsBackend::PathPreservingOverlay => env.rootfs_path.clone(),
+            | RootfsBackend::PathPreservingOverlay
+            | RootfsBackend::WindowsMinifilterOverlay => env.rootfs_path.clone(),
             RootfsBackend::Overlay => self.overlay_upper_dir(&env.id),
         };
         self.disk_used(&path).await
@@ -1098,7 +1104,8 @@ impl AgentService {
             }
             RootfsBackend::ApfsClone
             | RootfsBackend::WindowsBlockClone
-            | RootfsBackend::PathPreservingOverlay => {
+            | RootfsBackend::PathPreservingOverlay
+            | RootfsBackend::WindowsMinifilterOverlay => {
                 let _ = remove_dir_all_if_exists(rootfs).await;
             }
             RootfsBackend::Overlay => {}
