@@ -1958,13 +1958,49 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     UNICODE_STRING whiteout;
     UNICODE_STRING upper;
     UNICODE_STRING lower;
+    BOOLEAN sourceManaged = FALSE;
     RtlZeroMemory(&visible, sizeof(visible));
     RtlZeroMemory(&whiteout, sizeof(whiteout));
     RtlZeroMemory(&upper, sizeof(upper));
     RtlZeroMemory(&lower, sizeof(lower));
     status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &visible);
+    if (NT_SUCCESS(status)) {
+        sourceManaged = AgentFsStartsWithPath(&visible, &env->SourceRoot);
+    }
+    if (!sourceManaged &&
+        (infoClass == FileRenameInformation ||
+            infoClass == FileRenameInformationEx ||
+            infoClass == FileLinkInformation ||
+            infoClass == FileLinkInformationEx)) {
+        PFILE_RENAME_INFORMATION targetInfo =
+            (PFILE_RENAME_INFORMATION)Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
+        UNICODE_STRING targetVisible;
+        RtlZeroMemory(&targetVisible, sizeof(targetVisible));
+        if (targetInfo != NULL) {
+            status = AgentFsRenameTargetVisiblePath(
+                FltObjects->Instance,
+                env,
+                &nameInfo->Name,
+                Data->RequestorMode,
+                targetInfo->RootDirectory,
+                targetInfo->FileName,
+                targetInfo->FileNameLength,
+                &targetVisible);
+            if (NT_SUCCESS(status) && AgentFsStartsWithPath(&targetVisible, &env->SourceRoot)) {
+                AgentFsFreeUnicode(&targetVisible);
+                AgentFsFreeUnicode(&visible);
+                FltReleaseFileNameInformation(nameInfo);
+                AgentFsFreeEnv(env);
+                Data->IoStatus.Status = STATUS_NOT_SUPPORTED;
+                Data->IoStatus.Information = 0;
+                return FLT_PREOP_COMPLETE;
+            }
+        }
+        AgentFsFreeUnicode(&targetVisible);
+    }
     FltReleaseFileNameInformation(nameInfo);
-    if (!NT_SUCCESS(status)) {
+    if (!sourceManaged) {
+        AgentFsFreeUnicode(&visible);
         AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }

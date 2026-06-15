@@ -192,6 +192,8 @@ Assert-Admin
 $repo = Resolve-Path (Join-Path $PSScriptRoot "..")
 $agentfs = Join-Path $env:TEMP ("agentfs-minifilter-" + [Guid]::NewGuid().ToString("N"))
 $source = Join-Path $env:TEMP ("agentfs-source-" + [Guid]::NewGuid().ToString("N"))
+$outsideMoveSource = Join-Path $env:TEMP ("agentfs-outside-move-" + [Guid]::NewGuid().ToString("N") + ".txt")
+$outsideLinkSource = Join-Path $env:TEMP ("agentfs-outside-link-" + [Guid]::NewGuid().ToString("N") + ".txt")
 $driverProject = Join-Path $repo "drivers\windows-minifilter\agentfs.vcxproj"
 $driverSys = Join-Path $repo "drivers\windows-minifilter\$Platform\$Configuration\agentfs.sys"
 $driverDir = Split-Path $driverProject
@@ -251,6 +253,8 @@ try {
     $moveLowerSddl = (Get-Acl $moveLower).Sddl
     Set-Content -Path (Join-Path $source "mixed-lower\upper-changed.txt") -Value "mixed-lower-original"
     Set-Content -Path (Join-Path $source "mixed-lower\lower-only.txt") -Value "mixed-lower-only"
+    Set-Content -Path $outsideMoveSource -Value "outside-move-original"
+    Set-Content -Path $outsideLinkSource -Value "outside-link-original"
 
     Push-Location $repo
     Invoke-Logged { cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc }
@@ -378,8 +382,22 @@ using System.Runtime.InteropServices;
 public static class AgentFsNativeMove {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool MoveFileEx(string existingFileName, string newFileName, int flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr securityAttributes);
 }
 '@
+`$crossBoundaryMoveFailed = `$false
+if (-not [AgentFsNativeMove]::MoveFileEx('$outsideMoveSource', (Join-Path (Get-Location) 'cross-boundary-move.txt'), 0)) {
+    `$crossBoundaryMoveFailed = `$true
+}
+if (-not `$crossBoundaryMoveFailed) { throw 'external file rename into overlay unexpectedly succeeded' }
+if (-not (Test-Path '$outsideMoveSource')) { throw 'failed external rename removed outside source' }
+if (Test-Path cross-boundary-move.txt) { throw 'failed external rename created managed target' }
+if ([AgentFsNativeMove]::CreateHardLink((Join-Path (Get-Location) 'cross-boundary-link.txt'), '$outsideLinkSource', [IntPtr]::Zero)) {
+    throw 'external hardlink into overlay unexpectedly succeeded'
+}
+if (Test-Path cross-boundary-link.txt) { throw 'failed external hardlink created managed target' }
 `$replaceDirFailed = `$false
 if (-not [AgentFsNativeMove]::MoveFileEx((Join-Path (Get-Location) 'replace-dir-source.txt'), (Join-Path (Get-Location) 'replace-dir-target'), 1)) {
     `$replaceDirFailed = `$true
@@ -455,6 +473,18 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (Test-Path (Join-Path $source "symlink-host.txt")) {
         throw "host symlink was created"
+    }
+    if (Test-Path (Join-Path $source "cross-boundary-move.txt")) {
+        throw "host cross-boundary move target was created"
+    }
+    if (Test-Path (Join-Path $source "cross-boundary-link.txt")) {
+        throw "host cross-boundary hardlink target was created"
+    }
+    if ((Get-Content $outsideMoveSource) -ne "outside-move-original") {
+        throw "outside move source was modified"
+    }
+    if ((Get-Content $outsideLinkSource) -ne "outside-link-original") {
+        throw "outside link source was modified"
     }
     if (((Get-Item (Join-Path $source "lower-symlink.txt") -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
         throw "host lower symlink stopped being a reparse point"
@@ -604,6 +634,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if (Test-Path (Join-Path $upperSource "hardlink-host.txt")) {
         throw "hardlink target was unexpectedly created in upper"
     }
+    if (Test-Path (Join-Path $upperSource "cross-boundary-move.txt")) {
+        throw "cross-boundary move target was unexpectedly created in upper"
+    }
+    if (Test-Path (Join-Path $upperSource "cross-boundary-link.txt")) {
+        throw "cross-boundary hardlink target was unexpectedly created in upper"
+    }
     if (Test-Path (Join-Path $upperSource "lower-symlink.txt")) {
         throw "lower symlink was unexpectedly copied to upper"
     }
@@ -651,5 +687,5 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
         Stop-Process -Id $daemonProcess.Id -Force -ErrorAction SilentlyContinue
     }
     fltmc unload agentfs 2>$null | Out-Null
-    Remove-Item -Recurse -Force $agentfs, $source -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $agentfs, $source, $outsideMoveSource, $outsideLinkSource -ErrorAction SilentlyContinue
 }
