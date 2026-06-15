@@ -3,6 +3,7 @@ mod windows_app {
     use anyhow::{anyhow, bail, Result};
     use clap::{Parser, Subcommand};
     use std::ffi::OsStr;
+    use std::io::Write;
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;
@@ -146,23 +147,20 @@ mod windows_app {
     pub(crate) fn main() -> Result<()> {
         let cli = Cli::parse();
         match cli.command {
-            Command::Exec(args) => std::process::exit(run(args, true)?),
-            Command::Session(args) => {
-                let pid = spawn_registered(args)?;
-                println!("{pid}");
-                Ok(())
-            }
+            Command::Exec(args) => std::process::exit(run_registered(args, false)?),
+            Command::Session(args) => std::process::exit(run_registered(args, true)?),
             Command::Register(args) => send_register(args),
             Command::Unregister { pid } => send_unregister(pid),
             Command::Check => send_check(),
         }
     }
 
-    fn run(args: RunArgs, wait: bool) -> Result<i32> {
-        if !wait {
-            return Ok(spawn_registered(args)? as i32);
-        }
+    fn run_registered(args: RunArgs, print_pid: bool) -> Result<i32> {
         let child = create_registered_process(&args)?;
+        if print_pid {
+            println!("{}", child.pid);
+            std::io::stdout().flush()?;
+        }
         let wait_result = unsafe { WaitForSingleObject(child.process, INFINITE) };
         if wait_result == u32::MAX {
             let error = unsafe { GetLastError() };
@@ -178,13 +176,6 @@ mod windows_app {
             return Err(anyhow!("GetExitCodeProcess failed with {error}"));
         }
         Ok(exit_code as i32)
-    }
-
-    fn spawn_registered(args: RunArgs) -> Result<u32> {
-        let child = create_registered_process(&args)?;
-        let pid = child.pid;
-        std::mem::forget(child);
-        Ok(pid)
     }
 
     struct RegisteredProcess {
