@@ -520,6 +520,58 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     return status;
 }
 
+static NTSTATUS AgentFsRenamePath(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING Source,
+    _In_ PCUNICODE_STRING Target,
+    _In_ BOOLEAN ReplaceIfExists)
+{
+    NTSTATUS status = AgentFsEnsureParentDirectory(Instance, Target);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle = NULL;
+    InitializeObjectAttributes(&oa, (PUNICODE_STRING)Source, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    status = FltCreateFile(
+        gFilter,
+        Instance,
+        &handle,
+        DELETE | SYNCHRONIZE,
+        &oa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    ULONG infoBytes = FIELD_OFFSET(FILE_RENAME_INFORMATION, FileName) + Target->Length;
+    PFILE_RENAME_INFORMATION info = ExAllocatePool2(POOL_FLAG_NON_PAGED, infoBytes, AGENTFS_TAG);
+    if (info == NULL) {
+        FltClose(handle);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(info, infoBytes);
+    info->ReplaceIfExists = ReplaceIfExists;
+    info->RootDirectory = NULL;
+    info->FileNameLength = Target->Length;
+    RtlCopyMemory(info->FileName, Target->Buffer, Target->Length);
+
+    status = ZwSetInformationFile(handle, &iosb, info, infoBytes, FileRenameInformation);
+    ExFreePoolWithTag(info, AGENTFS_TAG);
+    FltClose(handle);
+    return status;
+}
+
 static ULONG AgentFsCreateDisposition(_In_ ULONG Options)
 {
     return (Options >> 24) & 0xff;
@@ -1053,10 +1105,13 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         }
         if (NT_SUCCESS(status)) {
             if (AgentFsPathExists(FltObjects->Instance, &upper)) {
-                status = AgentFsCopyFile(FltObjects->Instance, &upper, &targetUpper);
-                if (NT_SUCCESS(status)) {
-                    (VOID)AgentFsDeletePath(&upper);
-                }
+                status = AgentFsRenamePath(
+                    FltObjects->Instance,
+                    &upper,
+                    &targetUpper,
+                    renameInfo->ReplaceIfExists != FALSE);
+            } else if (AgentFsPathIsDirectory(FltObjects->Instance, &lower)) {
+                status = AgentFsEnsureDirectoryTree(FltObjects->Instance, &targetUpper);
             } else {
                 status = AgentFsCopyFile(FltObjects->Instance, &lower, &targetUpper);
             }

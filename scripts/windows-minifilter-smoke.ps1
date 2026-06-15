@@ -264,6 +264,7 @@ New-Item -ItemType Directory -Force -Path nested\lower | Out-Null
 Set-Content nested\lower\deep.txt 'deep-modified'
 New-Item -ItemType Directory -Force -Path nested\created\more | Out-Null
 Set-Content nested\created\more\new.txt 'new-deep'
+Rename-Item nested\created nested\renamed
 Remove-Item delete-me.txt
 Remove-Item recreate-me.txt
 Set-Content recreate-me.txt 'recreated-in-env'
@@ -298,8 +299,11 @@ if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteou
     if ((Get-Content (Join-Path $upperSource "nested\lower\deep.txt")) -ne "deep-modified") {
         throw "nested lower file was not copied to upper"
     }
-    if ((Get-Content (Join-Path $upperSource "nested\created\more\new.txt")) -ne "new-deep") {
-        throw "nested created file was not written to upper"
+    if ((Get-Content (Join-Path $upperSource "nested\renamed\more\new.txt")) -ne "new-deep") {
+        throw "nested renamed directory contents were not written to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "nested\created")) {
+        throw "renamed upper directory source still exists"
     }
     if (-not (Test-Path (Join-Path $upperSource "renamed.txt"))) {
         throw "renamed file was not written to upper"
