@@ -217,6 +217,7 @@ try {
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
+    (Get-Item (Join-Path $source "move-lower\inside\lower-file.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime
     Set-Content -Path (Join-Path $source "mixed-lower\upper-changed.txt") -Value "mixed-lower-original"
     Set-Content -Path (Join-Path $source "mixed-lower\lower-only.txt") -Value "mixed-lower-only"
 
@@ -374,6 +375,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $upperSource "moved-lower\inside\lower-file.txt")) -ne "lower-tree-original") {
         throw "renamed lower directory tree was not copied to upper"
+    }
+    if ((Get-Item (Join-Path $upperSource "moved-lower\inside\lower-file.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime) {
+        throw "renamed lower directory tree did not preserve file timestamp"
     }
     if ((Get-Content (Join-Path $upperSource "mixed-renamed\upper-changed.txt")) -ne "mixed-upper-modified") {
         throw "renamed mixed directory lost upper-modified file"

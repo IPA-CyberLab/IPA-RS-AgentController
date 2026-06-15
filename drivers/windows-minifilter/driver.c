@@ -432,7 +432,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
         gFilter,
         Instance,
         &sourceHandle,
-        FILE_READ_DATA | SYNCHRONIZE,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         &sourceOa,
         &iosb,
         NULL,
@@ -450,7 +450,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
         gFilter,
         Instance,
         &targetHandle,
-        FILE_WRITE_DATA | SYNCHRONIZE,
+        FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
         &targetOa,
         &iosb,
         NULL,
@@ -515,6 +515,24 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     }
     if (status == STATUS_END_OF_FILE) {
         status = STATUS_SUCCESS;
+    }
+    if (NT_SUCCESS(status)) {
+        FILE_BASIC_INFORMATION basicInfo;
+        RtlZeroMemory(&basicInfo, sizeof(basicInfo));
+        status = ZwQueryInformationFile(
+            sourceHandle,
+            &iosb,
+            &basicInfo,
+            sizeof(basicInfo),
+            FileBasicInformation);
+        if (NT_SUCCESS(status)) {
+            status = ZwSetInformationFile(
+                targetHandle,
+                &iosb,
+                &basicInfo,
+                sizeof(basicInfo),
+                FileBasicInformation);
+        }
     }
     ExFreePoolWithTag(buffer, AGENTFS_TAG);
     FltClose(targetHandle);
