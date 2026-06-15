@@ -634,6 +634,14 @@ public static class AgentFsNativeMove {
         bool restartScan);
 
     public static string[] QueryDirectoryNames(string path, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset) {
+        return QueryDirectoryNames(path, fileInformationClass, fileNameLengthOffset, fileNameOffset, false);
+    }
+
+    public static string[] QueryDirectoryNamesSingleEntry(string path, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset) {
+        return QueryDirectoryNames(path, fileInformationClass, fileNameLengthOffset, fileNameOffset, true);
+    }
+
+    private static string[] QueryDirectoryNames(string path, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset, bool returnSingleEntry) {
         using (SafeFileHandle handle = CreateFile(
             path,
             FILE_LIST_DIRECTORY,
@@ -661,7 +669,7 @@ public static class AgentFsNativeMove {
                     buffer,
                     (uint)buffer.Length,
                     fileInformationClass,
-                    false,
+                    returnSingleEntry,
                     IntPtr.Zero,
                     restartScan);
                 restartScan = false;
@@ -842,6 +850,12 @@ if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost u
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
 if ((Get-ChildItem -Name delete-lower-dir -ErrorAction SilentlyContinue) -contains 'delete-lower-dir') { throw 'exact listing showed whiteouted lower directory' }
 if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'exact listing lost recreated upper file over lower target' }
+`$singleNames = [AgentFsNativeMove]::QueryDirectoryNamesSingleEntry((Get-Location).Path, 12, 8, 12)
+if (`$singleNames -notcontains 'host.txt') { throw 'single-entry listing lost upper replacement over lower file' }
+if (`$singleNames -notcontains 'rename-target.txt') { throw 'single-entry listing lost upper file renamed onto deleted target' }
+if (`$singleNames -notcontains 'upper-only-dir') { throw 'single-entry listing lost upper-only directory' }
+if (`$singleNames -contains 'delete-me.txt') { throw 'single-entry listing showed whiteouted lower file' }
+if (`$singleNames -contains 'delete-lower-dir') { throw 'single-entry listing showed whiteouted lower directory' }
 `$fileIdExtdNames = [AgentFsNativeMove]::QueryDirectoryNames((Get-Location).Path, 60, 60, 88)
 if (`$fileIdExtdNames -notcontains 'host.txt') { throw 'FileIdExtdDirectoryInformation lost lower file' }
 if (`$fileIdExtdNames -notcontains 'upper-only-dir') { throw 'FileIdExtdDirectoryInformation lost upper directory' }
