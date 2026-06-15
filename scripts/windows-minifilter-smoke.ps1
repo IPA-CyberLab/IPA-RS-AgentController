@@ -317,6 +317,7 @@ try {
     `$mappedFile.Dispose()
 }
 if ((Get-Content stream-source.txt -Stream lower) -ne 'lower-stream-original') { throw 'lower ADS read failed' }
+Set-Content stream-source.txt 'stream-main-env'
 Set-Content stream-source.txt -Stream env 'env-stream'
 `$hardlinkFailed = `$false
 try {
@@ -410,6 +411,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     if ((Get-Content (Join-Path $source "stream-source.txt") -Stream lower) -ne "lower-stream-original") {
         throw "host lower ADS was modified"
     }
+    if ((Get-Content (Join-Path $source "stream-source.txt")) -ne "stream-main-original") {
+        throw "host stream-source.txt main stream was modified"
+    }
     if (Get-Item -Path (Join-Path $source "stream-source.txt") -Stream env -ErrorAction SilentlyContinue) {
         throw "host env ADS was created"
     }
@@ -494,6 +498,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Acl (Join-Path $upperSource "acl-source.txt")).Sddl -ne $aclSourceSddl) {
         throw "copy-up did not preserve security descriptor"
+    }
+    if ((Get-Content (Join-Path $upperSource "stream-source.txt")) -ne "stream-main-env") {
+        throw "ADS source main stream write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream lower) -ne "lower-stream-original") {
+        throw "copy-up did not preserve lower ADS"
     }
     if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream env) -ne "env-stream") {
         throw "ADS write was not redirected to upper"

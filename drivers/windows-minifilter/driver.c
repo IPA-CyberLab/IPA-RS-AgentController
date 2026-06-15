@@ -416,6 +416,49 @@ static NTSTATUS AgentFsJoinChildPath(
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS AgentFsJoinStreamPath(
+    _Out_ PUNICODE_STRING Target,
+    _In_ PCUNICODE_STRING Path,
+    _In_reads_bytes_(StreamNameLength) PCWCH StreamName,
+    _In_ ULONG StreamNameLength)
+{
+    if (Path->Length > MAXUSHORT - sizeof(WCHAR)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    ULONG maxStreamNameLength = (ULONG)MAXUSHORT - (ULONG)Path->Length - sizeof(WCHAR);
+    if (StreamName == NULL || StreamNameLength == 0 || StreamNameLength > maxStreamNameLength) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    USHORT totalBytes = Path->Length + (USHORT)StreamNameLength;
+    Target->Length = totalBytes;
+    Target->MaximumLength = totalBytes + sizeof(WCHAR);
+    Target->Buffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, Target->MaximumLength, AGENTFS_TAG);
+    if (Target->Buffer == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlCopyMemory(Target->Buffer, Path->Buffer, Path->Length);
+    RtlCopyMemory((PUCHAR)Target->Buffer + Path->Length, StreamName, StreamNameLength);
+    Target->Buffer[totalBytes / sizeof(WCHAR)] = L'\0';
+    return STATUS_SUCCESS;
+}
+
+static BOOLEAN AgentFsIsDefaultDataStream(
+    _In_reads_bytes_(StreamNameLength) PCWCH StreamName,
+    _In_ ULONG StreamNameLength)
+{
+    static const WCHAR defaultDataStream[] = L"::$DATA";
+    if (StreamNameLength > MAXUSHORT) {
+        return FALSE;
+    }
+    UNICODE_STRING candidate;
+    UNICODE_STRING expected;
+    candidate.Buffer = (PWCH)StreamName;
+    candidate.Length = (USHORT)StreamNameLength;
+    candidate.MaximumLength = candidate.Length;
+    RtlInitUnicodeString(&expected, defaultDataStream);
+    return RtlEqualUnicodeString(&candidate, &expected, TRUE);
+}
+
 static VOID AgentFsCopySecurityDescriptor(
     _In_ PFLT_INSTANCE Instance,
     _In_ HANDLE SourceHandle,
@@ -533,6 +576,171 @@ static VOID AgentFsCopySecurityDescriptor(
     }
 
     ExFreePoolWithTag(securityDescriptor, AGENTFS_TAG);
+}
+
+static NTSTATUS AgentFsCopyNamedStream(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING Source,
+    _In_ PCUNICODE_STRING Target)
+{
+    OBJECT_ATTRIBUTES sourceOa;
+    OBJECT_ATTRIBUTES targetOa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE sourceHandle = NULL;
+    HANDLE targetHandle = NULL;
+    InitializeObjectAttributes(&sourceOa, (PUNICODE_STRING)Source, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    InitializeObjectAttributes(&targetOa, (PUNICODE_STRING)Target, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    NTSTATUS status = FltCreateFile(
+        gFilter,
+        Instance,
+        &sourceHandle,
+        FILE_READ_DATA | SYNCHRONIZE,
+        &sourceOa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    status = FltCreateFile(
+        gFilter,
+        Instance,
+        &targetHandle,
+        FILE_WRITE_DATA | SYNCHRONIZE,
+        &targetOa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OVERWRITE_IF,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        FltClose(sourceHandle);
+        return status;
+    }
+
+    PVOID buffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
+    if (buffer == NULL) {
+        FltClose(targetHandle);
+        FltClose(sourceHandle);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    LARGE_INTEGER offset;
+    offset.QuadPart = 0;
+    for (;;) {
+        IO_STATUS_BLOCK readStatus;
+        IO_STATUS_BLOCK writeStatus;
+        RtlZeroMemory(&readStatus, sizeof(readStatus));
+        RtlZeroMemory(&writeStatus, sizeof(writeStatus));
+        status = ZwReadFile(
+            sourceHandle,
+            NULL,
+            NULL,
+            NULL,
+            &readStatus,
+            buffer,
+            64 * 1024,
+            &offset,
+            NULL);
+        ULONG readBytes = (ULONG)readStatus.Information;
+        if (!NT_SUCCESS(status) || readBytes == 0) {
+            break;
+        }
+        status = ZwWriteFile(
+            targetHandle,
+            NULL,
+            NULL,
+            NULL,
+            &writeStatus,
+            buffer,
+            readBytes,
+            &offset,
+            NULL);
+        ULONG written = (ULONG)writeStatus.Information;
+        if (!NT_SUCCESS(status)) {
+            break;
+        }
+        offset.QuadPart += written;
+        if (written != readBytes) {
+            status = STATUS_DISK_FULL;
+            break;
+        }
+    }
+    if (status == STATUS_END_OF_FILE) {
+        status = STATUS_SUCCESS;
+    }
+
+    ExFreePoolWithTag(buffer, AGENTFS_TAG);
+    FltClose(targetHandle);
+    FltClose(sourceHandle);
+    return status;
+}
+
+static VOID AgentFsCopyAlternateDataStreams(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ HANDLE SourceHandle,
+    _In_ PCUNICODE_STRING Source,
+    _In_ PCUNICODE_STRING Target)
+{
+    PVOID streamInfo = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
+    if (streamInfo == NULL) {
+        return;
+    }
+
+    IO_STATUS_BLOCK iosb;
+    RtlZeroMemory(&iosb, sizeof(iosb));
+    RtlZeroMemory(streamInfo, 64 * 1024);
+    NTSTATUS status = ZwQueryInformationFile(
+        SourceHandle,
+        &iosb,
+        streamInfo,
+        64 * 1024,
+        FileStreamInformation);
+    if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(streamInfo, AGENTFS_TAG);
+        return;
+    }
+
+    ULONG offset = 0;
+    ULONG returned = (ULONG)iosb.Information;
+    while (offset < returned) {
+        PFILE_STREAM_INFORMATION entry = (PFILE_STREAM_INFORMATION)((PUCHAR)streamInfo + offset);
+        if (entry->StreamNameLength != 0 &&
+            !AgentFsIsDefaultDataStream(entry->StreamName, entry->StreamNameLength)) {
+            UNICODE_STRING sourceStream;
+            UNICODE_STRING targetStream;
+            RtlZeroMemory(&sourceStream, sizeof(sourceStream));
+            RtlZeroMemory(&targetStream, sizeof(targetStream));
+            status = AgentFsJoinStreamPath(&sourceStream, Source, entry->StreamName, entry->StreamNameLength);
+            if (NT_SUCCESS(status)) {
+                status = AgentFsJoinStreamPath(&targetStream, Target, entry->StreamName, entry->StreamNameLength);
+            }
+            if (NT_SUCCESS(status)) {
+                (VOID)AgentFsCopyNamedStream(Instance, &sourceStream, &targetStream);
+            }
+            AgentFsFreeUnicode(&targetStream);
+            AgentFsFreeUnicode(&sourceStream);
+        }
+
+        if (entry->NextEntryOffset == 0) {
+            break;
+        }
+        offset += entry->NextEntryOffset;
+    }
+
+    ExFreePoolWithTag(streamInfo, AGENTFS_TAG);
 }
 
 static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Source, _In_ PCUNICODE_STRING Target)
@@ -661,6 +869,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     }
     if (NT_SUCCESS(status)) {
         AgentFsCopySecurityDescriptor(Instance, sourceHandle, Target, 0);
+        AgentFsCopyAlternateDataStreams(Instance, sourceHandle, Source, Target);
     }
     ExFreePoolWithTag(buffer, AGENTFS_TAG);
     FltClose(targetHandle);
