@@ -86,6 +86,10 @@ pub enum Request {
         env_id: String,
         export_type: String,
     },
+    Apply {
+        env_id: String,
+        force: bool,
+    },
     Ping,
 }
 
@@ -180,6 +184,7 @@ fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]>
         }
         "session_list" | "diff" => &["type", "env_id"],
         "export" => &["type", "env_id", "export_type"],
+        "apply" => &["type", "env_id", "force"],
         _ => return None,
     })
 }
@@ -345,6 +350,10 @@ mod tests {
             Request::Export {
                 env_id: "codex-1".to_string(),
                 export_type: "dpkg-delta".to_string(),
+            },
+            Request::Apply {
+                env_id: "codex-1".to_string(),
+                force: false,
             },
             Request::Ping,
         ]

@@ -233,6 +233,7 @@ agentctl env list
 agentctl env status codex-1
 agentctl session list codex-1
 agentctl diff codex-1
+agentctl apply codex-1
 agentctl export codex-1 --type workspace-patch
 agentctl export codex-1 --type dpkg-delta
 agentctl export codex-1 --type rootfs-changed-paths
@@ -255,6 +256,10 @@ inside the child and attaches the current terminal to it. `agentctl diff`
 prints the `/workspace` Git patch when that directory is a Git repository, and
 `workspace-patch` also persists the patch artifact under the env's `exports`
 directory.
+
+On macOS path-preserving overlay envs, `agentctl apply <env-id>` applies the
+env's upper layer and whiteouts back to the original source tree. It refuses to
+overwrite host paths that changed since env creation unless `--force` is passed.
 
 `dpkg-delta` compares package names and versions, reporting installed, removed, and upgraded packages.
 

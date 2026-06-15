@@ -156,6 +156,9 @@ impl AgentService {
                     .export(&env_id, ExportType::parse(&export_type)?)
                     .await?,
             }),
+            Request::Apply { .. } => Err(anyhow!(
+                "apply is implemented only by the native desktop path-preserving overlay backend"
+            )),
             Request::Ping => Ok(Response::Ok),
         }
     }

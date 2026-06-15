@@ -60,6 +60,7 @@ enum Command {
         env_id: String,
     },
     Export(ExportArgs),
+    Apply(ApplyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -217,6 +218,13 @@ struct ExportArgs {
     env_id: String,
     #[arg(long = "type")]
     export_type: ExportKind,
+}
+
+#[derive(Debug, Args)]
+struct ApplyArgs {
+    env_id: String,
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -418,6 +426,13 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
             args.push("--type".to_string());
             args.push(export.export_type.as_wire().to_string());
         }
+        Command::Apply(apply) => {
+            args.push("apply".to_string());
+            args.push(apply.env_id.clone());
+            if apply.force {
+                args.push("--force".to_string());
+            }
+        }
     }
 }
 
@@ -580,6 +595,10 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
         Command::Export(args) => Ok(Request::Export {
             env_id: args.env_id.clone(),
             export_type: args.export_type.as_wire().to_string(),
+        }),
+        Command::Apply(args) => Ok(Request::Apply {
+            env_id: args.env_id.clone(),
+            force: args.force,
         }),
     }
 }
@@ -954,7 +973,7 @@ mod tests {
         desktop_shell_start_dir_for_current_dir, effective_agentfs, env_state_label,
         machinectl_attach_args, needs_remote_tty, parse_response_line, remote_agentctl_args,
         remote_shell_command, session_state_label, shell_quote, tmux_attach_command, to_request,
-        Cli, Command, EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs, StdCommand,
+        ApplyArgs, Cli, Command, EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs, StdCommand,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
@@ -1469,6 +1488,28 @@ mod tests {
             } => {
                 assert_eq!(env_id, "codex-1");
                 assert_eq!(export_type, "workspace-patch");
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_command_maps_to_apply_request() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
+            command: Command::Apply(ApplyArgs {
+                env_id: "codex-1".to_string(),
+                force: true,
+            }),
+        };
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::Apply { env_id, force } => {
+                assert_eq!(env_id, "codex-1");
+                assert!(force);
             }
             other => panic!("unexpected request {other:?}"),
         }

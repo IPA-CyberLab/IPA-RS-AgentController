@@ -15,7 +15,10 @@ use crate::reflink;
 use crate::storage::{validate_id, write_text_file, Layout};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
+use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
 pub struct DesktopService {
@@ -190,6 +193,9 @@ impl DesktopService {
                 text: self
                     .export(&env_id, ExportType::parse(&export_type)?)
                     .await?,
+            }),
+            Request::Apply { env_id, force } => Ok(Response::Text {
+                text: self.apply(&env_id, force).await?,
             }),
         }
     }
@@ -616,6 +622,19 @@ impl DesktopService {
         Ok(text)
     }
 
+    pub async fn apply(&self, env_id: &str, force: bool) -> Result<String> {
+        let mut env = self.layout.read_env(env_id).await?;
+        ensure_desktop_backend(&env)?;
+        if env.backend != RootfsBackend::PathPreservingOverlay {
+            bail!("apply is implemented only for path-preserving overlay envs");
+        }
+        let base = self.layout.read_base(&env.base_id).await?;
+        let stats = self.apply_path_preserving_overlay(&env, Path::new(&base.source), force)?;
+        env.last_active_at = Utc::now();
+        self.layout.write_env(&env).await?;
+        Ok(stats.summary())
+    }
+
     async fn ensure_base(&self, base_id: &str, from: &Path) -> Result<Base> {
         validate_id(base_id)?;
         let manifest = self.layout.base_dir(base_id).join("manifest.json");
@@ -759,6 +778,59 @@ impl DesktopService {
         )?;
         paths.sort();
         Ok(paths.join("\n"))
+    }
+
+    fn apply_path_preserving_overlay(
+        &self,
+        env: &Env,
+        source_root: &Path,
+        force: bool,
+    ) -> Result<ApplyStats> {
+        let lower = self.layout.env_lower(&env.id);
+        let upper = self.layout.env_upper(&env.id);
+        let whiteouts = self.layout.env_whiteouts(&env.id);
+        let source_rel = absolute_path_as_overlay_relative(source_root)?;
+        let upper_source = upper.join(&source_rel);
+        let whiteouts_source = whiteouts.join(&source_rel);
+        let mut stats = ApplyStats::default();
+
+        let mut upper_entries = collect_overlay_apply_entries(&upper_source)?;
+        upper_entries.sort_by_key(|path| path.components().count());
+        let mut applied_upper = Vec::new();
+        for upper_path in &upper_entries {
+            let visible = visible_path_from_overlay_storage(&upper, upper_path)?;
+            if !visible.starts_with(source_root) {
+                continue;
+            }
+            let target = visible.clone();
+            let lower_path = lower.join(absolute_path_as_overlay_relative(&visible)?);
+            ensure_no_host_conflict(&lower_path, &target, force)?;
+            apply_upper_path(upper_path, &target)?;
+            apply_upper_path(upper_path, &lower_path)?;
+            stats.updated += 1;
+            applied_upper.push(upper_path.clone());
+        }
+        cleanup_applied_overlay_entries(applied_upper, &upper)?;
+
+        let mut whiteout_entries = collect_overlay_apply_entries(&whiteouts_source)?;
+        whiteout_entries.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        let mut applied_whiteouts = Vec::new();
+        for whiteout_path in &whiteout_entries {
+            let visible = visible_path_from_overlay_storage(&whiteouts, whiteout_path)?;
+            if !visible.starts_with(source_root) {
+                continue;
+            }
+            let target = visible.clone();
+            let lower_path = lower.join(absolute_path_as_overlay_relative(&visible)?);
+            ensure_no_host_conflict(&lower_path, &target, force)?;
+            remove_path_recursively_if_exists(&target)?;
+            remove_path_recursively_if_exists(&lower_path)?;
+            stats.deleted += 1;
+            applied_whiteouts.push(whiteout_path.clone());
+        }
+        cleanup_applied_overlay_entries(applied_whiteouts, &whiteouts)?;
+
+        Ok(stats)
     }
 }
 
@@ -1029,6 +1101,252 @@ fn collect_path_preserving_overlay_entries(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct ApplyStats {
+    updated: usize,
+    deleted: usize,
+}
+
+impl ApplyStats {
+    fn summary(&self) -> String {
+        if self.updated == 0 && self.deleted == 0 {
+            return "no changes to apply\n".to_string();
+        }
+        format!(
+            "applied {} updated, {} deleted\n",
+            self.updated, self.deleted
+        )
+    }
+}
+
+fn collect_overlay_apply_entries(root: &Path) -> Result<Vec<PathBuf>> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false).min_depth(1) {
+        let entry = entry.with_context(|| format!("failed to walk {}", root.display()))?;
+        entries.push(entry.path().to_path_buf());
+    }
+    Ok(entries)
+}
+
+fn visible_path_from_overlay_storage(root: &Path, path: &Path) -> Result<PathBuf> {
+    let rel = path.strip_prefix(root)?;
+    Ok(Path::new("/").join(rel))
+}
+
+fn ensure_no_host_conflict(lower: &Path, target: &Path, force: bool) -> Result<()> {
+    if force || paths_equivalent(lower, target)? {
+        return Ok(());
+    }
+    bail!(
+        "host path {} changed since env creation; rerun with --force to overwrite",
+        target.display()
+    )
+}
+
+fn apply_upper_path(src: &Path, dst: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(src)
+        .with_context(|| format!("failed to stat {}", src.display()))?;
+    if metadata.is_dir() {
+        if dst.exists() && !std::fs::symlink_metadata(dst)?.is_dir() {
+            remove_path_recursively_if_exists(dst)?;
+        }
+        std::fs::create_dir_all(dst)
+            .with_context(|| format!("failed to create directory {}", dst.display()))?;
+        copy_permissions(&metadata, dst)?;
+        return Ok(());
+    }
+    replace_path_from(src, dst)
+}
+
+fn replace_path_from(src: &Path, dst: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(src)
+        .with_context(|| format!("failed to stat {}", src.display()))?;
+    remove_path_recursively_if_exists(dst)?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(src)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, dst)
+            .with_context(|| format!("failed to symlink {}", dst.display()))?;
+        #[cfg(not(unix))]
+        bail!(
+            "symlink apply is unsupported on this platform for {}",
+            dst.display()
+        );
+    } else if metadata.is_file() {
+        std::fs::copy(src, dst)
+            .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
+        copy_permissions(&metadata, dst)?;
+    } else if metadata.is_dir() {
+        std::fs::create_dir_all(dst)
+            .with_context(|| format!("failed to create directory {}", dst.display()))?;
+        copy_permissions(&metadata, dst)?;
+    }
+    Ok(())
+}
+
+fn copy_permissions(metadata: &std::fs::Metadata, dst: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            dst,
+            std::fs::Permissions::from_mode(metadata.permissions().mode()),
+        )
+        .with_context(|| format!("failed to set permissions on {}", dst.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (metadata, dst);
+    }
+    Ok(())
+}
+
+fn cleanup_applied_overlay_entries(mut entries: Vec<PathBuf>, storage_root: &Path) -> Result<()> {
+    entries.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for path in entries {
+        remove_overlay_storage_entry(&path)?;
+    }
+    remove_empty_storage_parents(storage_root)?;
+    Ok(())
+}
+
+fn remove_overlay_storage_entry(path: &Path) -> Result<()> {
+    let Some(metadata) = symlink_metadata_if_exists(path)? else {
+        return Ok(());
+    };
+    if metadata.is_dir() {
+        match std::fs::remove_dir(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn remove_empty_storage_parents(root: &Path) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    let mut dirs = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false).min_depth(1) {
+        let entry = entry.with_context(|| format!("failed to walk {}", root.display()))?;
+        if entry.file_type().is_dir() {
+            dirs.push(entry.path().to_path_buf());
+        }
+    }
+    dirs.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for dir in dirs {
+        match std::fs::remove_dir(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn remove_path_recursively_if_exists(path: &Path) -> Result<()> {
+    let Some(metadata) = symlink_metadata_if_exists(path)? else {
+        return Ok(());
+    };
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove directory {}", path.display()))?;
+    } else {
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to remove file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> Result<bool> {
+    let left_meta = symlink_metadata_if_exists(left)?;
+    let right_meta = symlink_metadata_if_exists(right)?;
+    let (left_meta, right_meta) = match (left_meta, right_meta) {
+        (Some(left_meta), Some(right_meta)) => (left_meta, right_meta),
+        (None, None) => return Ok(true),
+        _ => return Ok(false),
+    };
+    if metadata_kind_changed(&left_meta, &right_meta)
+        || metadata_permissions_changed(&left_meta, &right_meta)
+    {
+        return Ok(false);
+    }
+    if left_meta.is_file() {
+        return files_equal(left, right);
+    }
+    if left_meta.file_type().is_symlink() {
+        return Ok(std::fs::read_link(left)? == std::fs::read_link(right)?);
+    }
+    if left_meta.is_dir() {
+        return dirs_equivalent(left, right);
+    }
+    Ok(true)
+}
+
+fn metadata_kind_changed(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    left.is_dir() != right.is_dir()
+        || left.is_file() != right.is_file()
+        || left.file_type().is_symlink() != right.file_type().is_symlink()
+}
+
+#[cfg(unix)]
+fn metadata_permissions_changed(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    left.permissions().mode() != right.permissions().mode()
+}
+
+#[cfg(not(unix))]
+fn metadata_permissions_changed(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn files_equal(left: &Path, right: &Path) -> Result<bool> {
+    let left_meta = std::fs::metadata(left)?;
+    let right_meta = std::fs::metadata(right)?;
+    if left_meta.len() != right_meta.len() {
+        return Ok(false);
+    }
+    Ok(std::fs::read(left)? == std::fs::read(right)?)
+}
+
+fn dirs_equivalent(left: &Path, right: &Path) -> Result<bool> {
+    let mut names = BTreeSet::<OsString>::new();
+    for entry in std::fs::read_dir(left)? {
+        names.insert(entry?.file_name());
+    }
+    for entry in std::fs::read_dir(right)? {
+        names.insert(entry?.file_name());
+    }
+    for name in names {
+        if !paths_equivalent(&left.join(&name), &right.join(&name))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn symlink_metadata_if_exists(path: &Path) -> Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn desktop_shell_command(
@@ -1412,6 +1730,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn path_preserving_apply_updates_host_and_clears_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        let source = dir.path().join("workspace");
+        create_path_preserving_env_fixture(&service, &source).await;
+        let rel = crate::path_overlay::absolute_path_as_overlay_relative(&source).unwrap();
+        let lower_source = service.layout.env_lower("codex-1").join(&rel);
+        let upper_source = service.layout.env_upper("codex-1").join(&rel);
+        let whiteouts_source = service.layout.env_whiteouts("codex-1").join(&rel);
+
+        let summary = service.apply("codex-1", false).await.unwrap();
+
+        assert!(summary.contains("applied 2 updated, 1 deleted"));
+        assert_eq!(
+            fs::read_to_string(source.join("README.md")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            fs::read_to_string(source.join("new.txt")).unwrap(),
+            "added\n"
+        );
+        assert!(!source.join("old.txt").exists());
+        assert_eq!(
+            fs::read_to_string(lower_source.join("README.md")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            fs::read_to_string(lower_source.join("new.txt")).unwrap(),
+            "added\n"
+        );
+        assert!(!lower_source.join("old.txt").exists());
+        assert!(!upper_source.join("README.md").exists());
+        assert!(!upper_source.join("new.txt").exists());
+        assert!(!whiteouts_source.join("old.txt").exists());
+        assert_eq!(
+            service
+                .export("codex-1", ExportType::RootfsChangedPaths)
+                .await
+                .unwrap(),
+            ""
+        );
+    }
+
+    #[tokio::test]
+    async fn path_preserving_apply_rejects_host_conflicts_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        let source = dir.path().join("workspace");
+        create_path_preserving_env_fixture(&service, &source).await;
+        fs::write(source.join("README.md"), "host edit\n").unwrap();
+
+        let error = service
+            .apply("codex-1", false)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("changed since env creation"));
+        assert_eq!(
+            fs::read_to_string(source.join("README.md")).unwrap(),
+            "host edit\n"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                service
+                    .layout
+                    .env_upper("codex-1")
+                    .join(crate::path_overlay::absolute_path_as_overlay_relative(&source).unwrap())
+                    .join("README.md")
+            )
+            .unwrap(),
+            "new\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn path_preserving_apply_force_overwrites_host_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        let source = dir.path().join("workspace");
+        create_path_preserving_env_fixture(&service, &source).await;
+        fs::write(source.join("README.md"), "host edit\n").unwrap();
+
+        service.apply("codex-1", true).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(source.join("README.md")).unwrap(),
+            "new\n"
+        );
+    }
+
+    #[tokio::test]
     async fn desktop_sessions_track_logs_and_state() {
         let dir = tempfile::tempdir().unwrap();
         let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
@@ -1579,6 +1992,64 @@ mod tests {
                 base_id: "base-001".to_string(),
                 backend: RootfsBackend::ApfsClone,
                 rootfs_path: env_rootfs,
+                machine_name: machine_name("codex-1"),
+                state: EnvState::Running,
+                profile: "default".to_string(),
+                created_at,
+                last_active_at: created_at,
+                limits: Limits::default(),
+                network_policy: NetworkPolicy::default(),
+                sessions: Vec::new(),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn create_path_preserving_env_fixture(service: &DesktopService, source: &Path) {
+        fs::create_dir_all(source).unwrap();
+        fs::write(source.join("README.md"), "old\n").unwrap();
+        fs::write(source.join("old.txt"), "deleted\n").unwrap();
+        let rel = crate::path_overlay::absolute_path_as_overlay_relative(source).unwrap();
+        let base_lower = service.layout.base_lower("base-pp");
+        let env_lower = service.layout.env_lower("codex-1");
+        let env_upper = service.layout.env_upper("codex-1");
+        let env_whiteouts = service.layout.env_whiteouts("codex-1");
+        let lower_source = env_lower.join(&rel);
+        let upper_source = env_upper.join(&rel);
+        let whiteouts_source = env_whiteouts.join(&rel);
+        fs::create_dir_all(&base_lower).unwrap();
+        fs::create_dir_all(&lower_source).unwrap();
+        fs::create_dir_all(&upper_source).unwrap();
+        fs::create_dir_all(&whiteouts_source).unwrap();
+        fs::create_dir_all(service.layout.env_dir("codex-1").join("exports")).unwrap();
+        fs::create_dir_all(service.layout.session_logs("codex-1")).unwrap();
+        fs::write(lower_source.join("README.md"), "old\n").unwrap();
+        fs::write(lower_source.join("old.txt"), "deleted\n").unwrap();
+        fs::write(upper_source.join("README.md"), "new\n").unwrap();
+        fs::write(upper_source.join("new.txt"), "added\n").unwrap();
+        fs::write(whiteouts_source.join("old.txt"), "").unwrap();
+
+        let created_at = Utc::now();
+        service
+            .layout
+            .write_base(&Base {
+                id: "base-pp".to_string(),
+                backend: RootfsBackend::PathPreservingOverlay,
+                rootfs_path: base_lower,
+                readonly: true,
+                created_at,
+                source: source.display().to_string(),
+                dpkg_manifest: service.layout.base_dir("base-pp").join("dpkg.list"),
+            })
+            .await
+            .unwrap();
+        service
+            .layout
+            .write_env(&Env {
+                id: "codex-1".to_string(),
+                base_id: "base-pp".to_string(),
+                backend: RootfsBackend::PathPreservingOverlay,
+                rootfs_path: service.layout.env_view_root("codex-1"),
                 machine_name: machine_name("codex-1"),
                 state: EnvState::Running,
                 profile: "default".to_string(),
