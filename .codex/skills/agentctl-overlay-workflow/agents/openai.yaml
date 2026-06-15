@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agentctl Overlay Workflow"
+  short_description: "Use agctl overlay envs and apply changes safely"
+  default_prompt: "Use $agentctl-overlay-workflow to run an agentctl overlay environment workflow and apply changes back safely."
