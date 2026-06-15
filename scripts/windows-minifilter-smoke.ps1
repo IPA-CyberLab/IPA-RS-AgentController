@@ -363,6 +363,7 @@ try {
     Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
     (Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime
+    Set-Content -Path (Join-Path $source "truncate.txt") -Value "truncate-original"
     Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
     Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
@@ -468,6 +469,13 @@ try {
 }
 if (-not `$lockedWriteFailed) { throw 'write to exclusively locked lower file unexpectedly succeeded' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
+`$truncateFile = [IO.File]::Open('truncate.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+try {
+    `$truncateFile.SetLength(8)
+} finally {
+    `$truncateFile.Dispose()
+}
+if ([IO.File]::ReadAllText((Join-Path (Get-Location) 'truncate.txt')) -ne 'truncate') { throw 'truncated lower file did not show env length' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
 Set-Content acl-source.txt 'acl-env'
@@ -919,6 +927,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime) {
         throw "host metadata.txt timestamp was modified"
     }
+    if ((Get-Content (Join-Path $source "truncate.txt")) -ne "truncate-original") {
+        throw "host truncate.txt was modified"
+    }
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
     }
@@ -1060,6 +1071,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ((Get-Item (Join-Path $upperSource "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2020-02-03T04:05:06Z").UtcDateTime) {
         throw "metadata write was not redirected to upper"
+    }
+    if ([IO.File]::ReadAllText((Join-Path $upperSource "truncate.txt")) -ne "truncate") {
+        throw "truncated file was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "mapped.txt")) -ne "mapped-env") {
         throw "memory-mapped write was not redirected to upper"
