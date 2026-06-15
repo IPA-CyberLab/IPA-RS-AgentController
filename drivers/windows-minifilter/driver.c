@@ -91,6 +91,7 @@ static VOID AgentFsProcessNotify(
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static BOOLEAN AgentFsPathIsReparsePoint(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
+static NTSTATUS AgentFsDeleteDirectoryTree(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static NTSTATUS AgentFsDupUnicode(_Out_ PUNICODE_STRING Destination, _In_ PCUNICODE_STRING Source);
 static NTSTATUS AgentFsVisiblePathFromName(
     _In_ PAGENTFS_ENV Env,
@@ -949,6 +950,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     if (buffer == NULL) {
         FltClose(targetHandle);
         FltClose(sourceHandle);
+        (VOID)AgentFsDeletePath(Target);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     LARGE_INTEGER offset;
@@ -1021,6 +1023,9 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     ExFreePoolWithTag(buffer, AGENTFS_TAG);
     FltClose(targetHandle);
     FltClose(sourceHandle);
+    if (!NT_SUCCESS(status)) {
+        (VOID)AgentFsDeletePath(Target);
+    }
     return status;
 }
 
@@ -1164,6 +1169,7 @@ static NTSTATUS AgentFsCopyDirectoryTree(
     _In_ PCUNICODE_STRING Source,
     _In_ PCUNICODE_STRING Target)
 {
+    BOOLEAN targetExisted = AgentFsPathExists(Instance, Target);
     if (AgentFsPathIsReparsePoint(Instance, Source)) {
         return STATUS_NOT_SUPPORTED;
     }
@@ -1193,12 +1199,18 @@ static NTSTATUS AgentFsCopyDirectoryTree(
         0,
         0);
     if (!NT_SUCCESS(status)) {
+        if (!targetExisted) {
+            (VOID)AgentFsDeleteDirectoryTree(Instance, Target);
+        }
         return status;
     }
 
     PVOID temp = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
     if (temp == NULL) {
         FltClose(handle);
+        if (!targetExisted) {
+            (VOID)AgentFsDeleteDirectoryTree(Instance, Target);
+        }
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -1267,6 +1279,9 @@ static NTSTATUS AgentFsCopyDirectoryTree(
 Exit:
     ExFreePoolWithTag(temp, AGENTFS_TAG);
     FltClose(handle);
+    if (!NT_SUCCESS(status) && !targetExisted) {
+        (VOID)AgentFsDeleteDirectoryTree(Instance, Target);
+    }
     return status;
 }
 
