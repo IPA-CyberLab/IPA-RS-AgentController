@@ -61,11 +61,70 @@ jobs:
         with:
           vs-version: "[17.0,18.0)"
 
+      - name: Install WDK MSBuild bridge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $buildRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\build"
+          $wdkVersion = Get-ChildItem -Directory -Path $buildRoot |
+            Where-Object { Test-Path (Join-Path $_.FullName "WindowsDriver.Common.targets") } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1 -ExpandProperty Name
+          if (-not $wdkVersion) {
+            throw "Windows Driver Kit build files were not found under $buildRoot"
+          }
+          "WDK_BUILD_VERSION=$wdkVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          $vsRoot = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VC\v170"
+          $toolset = Join-Path $vsRoot "Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
+          $wdkRoot = (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\") -replace '\\', '\\'
+          New-Item -ItemType Directory -Force -Path $toolset | Out-Null
+
+          @"
+          <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+            <Import Project="..\v143\Toolset.props" />
+            <PropertyGroup>
+              <WDKContentRoot>$wdkRoot</WDKContentRoot>
+              <WDKBuildFolder Condition="'`$(WDKBuildFolder)' == ''">`$(WindowsTargetPlatformVersion)</WDKBuildFolder>
+              <TargetVersion Condition="'`$(TargetVersion)' == ''">Windows10</TargetVersion>
+              <TargetPlatformVersion Condition="'`$(TargetPlatformVersion)' == ''">`$(WindowsTargetPlatformVersion)</TargetPlatformVersion>
+              <MatchingSdkPresent>true</MatchingSdkPresent>
+            </PropertyGroup>
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.Default.props" />
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.Shared.props" />
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\x64\WindowsKernelModeDriver\WDK.x64.WindowsKernelModeDriver.props" />
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.Default.props" />
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.props" />
+          </Project>
+          "@ | Set-Content -Encoding UTF8 -Path (Join-Path $toolset "Toolset.props")
+
+          @"
+          <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+            <Import Project="..\v143\Toolset.targets" />
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.Common.targets" />
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.targets" Condition="Exists('`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.targets')" />
+            <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\x64\ImportAfter\WDK.x64.WindowsDriverCommonToolset.Platform.Targets" />
+          </Project>
+          "@ | Set-Content -Encoding UTF8 -Path (Join-Path $toolset "Toolset.targets")
+
       - name: Build minifilter driver
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          msbuild drivers\windows-minifilter\agentfs.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+          msbuild drivers\windows-minifilter\agentfs.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=$env:WDK_BUILD_VERSION /p:EnableTestSign=false /m
+          Copy-Item -Force drivers\windows-minifilter\x64\Release\agentfs.sys drivers\windows-minifilter\agentfs.sys
+
+          $inf2cat = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin\$env:WDK_BUILD_VERSION") `
+            -Recurse `
+            -Filter inf2cat.exe |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $inf2cat) {
+            throw "inf2cat.exe was not found for WDK $env:WDK_BUILD_VERSION"
+          }
+          & $inf2cat /driver:drivers\windows-minifilter /os:10_X64
+          if ($LASTEXITCODE -ne 0) {
+            throw "inf2cat failed with exit code $LASTEXITCODE"
+          }
 
       - name: Upload driver artifacts
         uses: actions/upload-artifact@v4
@@ -75,3 +134,4 @@ jobs:
             drivers/windows-minifilter/x64/Release/agentfs.sys
             drivers/windows-minifilter/x64/Release/agentfs.pdb
             drivers/windows-minifilter/agentfs.inf
+            drivers/windows-minifilter/agentfs.cat

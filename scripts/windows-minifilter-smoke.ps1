@@ -18,6 +18,130 @@ function Invoke-Logged {
     param([scriptblock]$Command)
     Write-Host ">> $Command"
     & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "command failed with exit code ${LASTEXITCODE}: $Command"
+    }
+}
+
+function Get-WdkBuildVersion {
+    $buildRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\build"
+    $versions = Get-ChildItem -Directory -Path $buildRoot -ErrorAction Stop |
+        Where-Object { Test-Path (Join-Path $_.FullName "WindowsDriver.Common.targets") } |
+        Sort-Object Name -Descending
+    if (-not $versions) {
+        throw "Windows Driver Kit build files were not found under $buildRoot"
+    }
+    return $versions[0].Name
+}
+
+function Install-WdkMsbuildBridge {
+    param([string]$WdkVersion)
+
+    $vsRoot = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VC\v170"
+    $toolset = Join-Path $vsRoot "Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
+    $wdkRoot = (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\") -replace '\\', '\\'
+    New-Item -ItemType Directory -Force -Path $toolset | Out-Null
+
+    @"
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\v143\Toolset.props" />
+  <PropertyGroup>
+    <WDKContentRoot>$wdkRoot</WDKContentRoot>
+    <WDKBuildFolder Condition="'`$(WDKBuildFolder)' == ''">`$(WindowsTargetPlatformVersion)</WDKBuildFolder>
+    <TargetVersion Condition="'`$(TargetVersion)' == ''">Windows10</TargetVersion>
+    <TargetPlatformVersion Condition="'`$(TargetPlatformVersion)' == ''">`$(WindowsTargetPlatformVersion)</TargetPlatformVersion>
+    <MatchingSdkPresent>true</MatchingSdkPresent>
+  </PropertyGroup>
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.Default.props" />
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.Shared.props" />
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\x64\WindowsKernelModeDriver\WDK.x64.WindowsKernelModeDriver.props" />
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.Default.props" />
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.props" />
+</Project>
+"@ | Set-Content -Encoding UTF8 -Path (Join-Path $toolset "Toolset.props")
+
+    @"
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\v143\Toolset.targets" />
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.Common.targets" />
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.targets" Condition="Exists('`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\WindowsDriver.KernelMode.targets')" />
+  <Import Project="`$(WDKContentRoot)build\`$(WindowsTargetPlatformVersion)\x64\ImportAfter\WDK.x64.WindowsDriverCommonToolset.Platform.Targets" />
+</Project>
+"@ | Set-Content -Encoding UTF8 -Path (Join-Path $toolset "Toolset.targets")
+}
+
+function Get-WdkTool {
+    param([string]$WdkVersion, [string]$Name)
+
+    $binRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin\$WdkVersion"
+    foreach ($arch in @("x64", "x86", "arm64")) {
+        $candidate = Join-Path $binRoot "$arch\$Name"
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+    throw "$Name was not found under $binRoot"
+}
+
+function Invoke-AgentFsPackageSigning {
+    param(
+        [string]$DriverDirectory,
+        [string]$DriverSys,
+        [string]$WdkVersion
+    )
+
+    Copy-Item -Force -Path $DriverSys -Destination (Join-Path $DriverDirectory "agentfs.sys")
+
+    $inf2cat = Get-WdkTool -WdkVersion $WdkVersion -Name "inf2cat.exe"
+    $signtool = Get-WdkTool -WdkVersion $WdkVersion -Name "signtool.exe"
+    Invoke-Logged { & $inf2cat /driver:$DriverDirectory /os:10_X64 }
+
+    $cert = Get-ChildItem Cert:\LocalMachine\My |
+        Where-Object { $_.Subject -eq "CN=AgentFs Test Driver" } |
+        Sort-Object NotBefore -Descending |
+        Select-Object -First 1
+    if (-not $cert) {
+        $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject "CN=AgentFs Test Driver" `
+            -CertStoreLocation "Cert:\LocalMachine\My" `
+            -HashAlgorithm SHA256
+    }
+
+    $cer = Join-Path $DriverDirectory "agentfs-test.cer"
+    Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+    Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+    Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\TrustedPublisher" | Out-Null
+
+    Invoke-Logged { & $signtool sign /sm /fd SHA256 /sha1 $cert.Thumbprint (Join-Path $DriverDirectory "agentfs.cat") }
+    Invoke-Logged { & $signtool sign /sm /fd SHA256 /sha1 $cert.Thumbprint (Join-Path $DriverDirectory "agentfs.sys") }
+}
+
+function Install-AgentFsService {
+    param([string]$DriverDirectory)
+
+    $driverPath = Join-Path $DriverDirectory "agentfs.sys"
+    $systemDriverPath = Join-Path $env:windir "System32\drivers\agentfs.sys"
+    Copy-Item -Force -Path $driverPath -Destination $systemDriverPath
+
+    $service = "HKLM:\SYSTEM\CurrentControlSet\Services\agentfs"
+    New-Item -Force -Path $service | Out-Null
+    New-ItemProperty -Force -Path $service -Name Type -PropertyType DWord -Value 2 | Out-Null
+    New-ItemProperty -Force -Path $service -Name Start -PropertyType DWord -Value 3 | Out-Null
+    New-ItemProperty -Force -Path $service -Name ErrorControl -PropertyType DWord -Value 1 | Out-Null
+    New-ItemProperty -Force -Path $service -Name Group -PropertyType String -Value "FSFilter Activity Monitor" | Out-Null
+    New-ItemProperty -Force -Path $service -Name DependOnService -PropertyType MultiString -Value @("FltMgr") | Out-Null
+    New-ItemProperty -Force -Path $service -Name ImagePath -PropertyType ExpandString -Value "system32\drivers\agentfs.sys" | Out-Null
+    New-ItemProperty -Force -Path $service -Name DisplayName -PropertyType String -Value "IPA-RS AgentFs path-preserving overlay minifilter" | Out-Null
+
+    $instances = Join-Path $service "Instances"
+    New-Item -Force -Path $instances | Out-Null
+    New-ItemProperty -Force -Path $instances -Name DefaultInstance -PropertyType String -Value "AgentFs Instance" | Out-Null
+
+    $instance = Join-Path $instances "AgentFs Instance"
+    New-Item -Force -Path $instance | Out-Null
+    New-ItemProperty -Force -Path $instance -Name Altitude -PropertyType String -Value "385240" | Out-Null
+    New-ItemProperty -Force -Path $instance -Name Flags -PropertyType DWord -Value 0 | Out-Null
 }
 
 Assert-Admin
@@ -27,11 +151,13 @@ $agentfs = Join-Path $env:TEMP ("agentfs-minifilter-" + [Guid]::NewGuid().ToStri
 $source = Join-Path $env:TEMP ("agentfs-source-" + [Guid]::NewGuid().ToString("N"))
 $driverProject = Join-Path $repo "drivers\windows-minifilter\agentfs.vcxproj"
 $driverSys = Join-Path $repo "drivers\windows-minifilter\$Platform\$Configuration\agentfs.sys"
+$driverDir = Split-Path $driverProject
 $driverInf = Join-Path $repo "drivers\windows-minifilter\agentfs.inf"
 $binDir = Join-Path $repo "target\x86_64-pc-windows-msvc\debug"
 $agentctl = Join-Path $binDir "agentctl.exe"
 $daemon = Join-Path $binDir "agent-forkd.exe"
 $filterctl = Join-Path $binDir "agent-minifilterctl.exe"
+$wdkVersion = Get-WdkBuildVersion
 
 try {
     New-Item -ItemType Directory -Force -Path $source | Out-Null
@@ -42,14 +168,21 @@ try {
 
     Push-Location $repo
     Invoke-Logged { cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc }
-    Invoke-Logged { msbuild $driverProject /p:Configuration=$Configuration /p:Platform=$Platform }
+    Install-WdkMsbuildBridge -WdkVersion $wdkVersion
+    Invoke-Logged { msbuild $driverProject /p:Configuration=$Configuration /p:Platform=$Platform /p:WindowsTargetPlatformVersion=$wdkVersion /p:EnableTestSign=false }
     Pop-Location
 
     if (-not (Test-Path $driverSys)) {
         throw "driver binary was not produced at $driverSys"
     }
+    Invoke-AgentFsPackageSigning -DriverDirectory $driverDir -DriverSys $driverSys -WdkVersion $wdkVersion
 
-    Invoke-Logged { pnputil /add-driver $driverInf /install }
+    Write-Host ">> pnputil /add-driver $driverInf /install"
+    & pnputil /add-driver $driverInf /install
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 259) {
+        throw "pnputil failed with exit code ${LASTEXITCODE}"
+    }
+    Install-AgentFsService -DriverDirectory $driverDir
     fltmc unload agentfs 2>$null | Out-Null
     Invoke-Logged { fltmc load agentfs }
     Invoke-Logged { & $filterctl check }

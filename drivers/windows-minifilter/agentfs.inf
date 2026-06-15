@@ -10,6 +10,12 @@ CatalogFile=agentfs.cat
 DefaultDestDir=12
 MiniFilter.DriverFiles=12
 
+[SourceDisksNames]
+1=%DiskName%,,,
+
+[SourceDisksFiles]
+agentfs.sys=1
+
 [DefaultInstall.NTamd64]
 OptionDesc=%ServiceDescription%
 CopyFiles=MiniFilter.DriverFiles
@@ -47,3 +53,4 @@ ManufacturerName="IPA CyberLab"
 ServiceDescription="IPA-RS AgentFs path-preserving overlay minifilter"
 ServiceName="agentfs"
 InstanceName="AgentFs Instance"
+DiskName="AgentFs installation media"

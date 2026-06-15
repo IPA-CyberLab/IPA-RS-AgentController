@@ -20,17 +20,32 @@
     <ConfigurationType>Driver</ConfigurationType>
     <DriverType>FSFilter</DriverType>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <GenerateManifest>false</GenerateManifest>
+    <EmbedManifest>false</EmbedManifest>
+    <EnableUAC>false</EnableUAC>
+    <EnableTestSign>false</EnableTestSign>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
-      <PreprocessorDefinitions>_KERNEL_MODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <StringPooling>true</StringPooling>
+      <PreprocessorDefinitions>_AMD64_;AMD64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(WindowsSdkDir)Include\$(WindowsTargetPlatformVersion)\km;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>FltMgr.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(WindowsSdkDir)Lib\$(WindowsTargetPlatformVersion)\km\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ntoskrnl.lib;FltMgr.lib;BufferOverflowFastFailK.lib</AdditionalDependencies>
+      <EntryPointSymbol>DriverEntry</EntryPointSymbol>
+      <GenerateManifest>false</GenerateManifest>
+      <EnableUAC>false</EnableUAC>
+      <TreatLinkerWarningAsErrors>false</TreatLinkerWarningAsErrors>
+      <AdditionalOptions>/MANIFEST:NO /MANIFESTUAC:NO %(AdditionalOptions)</AdditionalOptions>
     </Link>
+    <Manifest>
+      <EmbedManifest>false</EmbedManifest>
+    </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="agentfs.h" />
@@ -39,7 +54,9 @@
     <ClCompile Include="driver.c" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="agentfs.inf" />
+    <Inf Include="agentfs.inf">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </Inf>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

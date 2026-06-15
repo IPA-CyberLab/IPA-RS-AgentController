@@ -469,7 +469,6 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
             buffer,
             64 * 1024,
             &offset,
-            NULL,
             NULL);
         ULONG readBytes = (ULONG)readStatus.Information;
         if (!NT_SUCCESS(status) || readBytes == 0) {
@@ -484,7 +483,6 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
             buffer,
             readBytes,
             &offset,
-            NULL,
             NULL);
         ULONG written = (ULONG)writeStatus.Information;
         if (!NT_SUCCESS(status)) {
