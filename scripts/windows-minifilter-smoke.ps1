@@ -271,6 +271,13 @@ if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+`$hardlinkFailed = `$false
+try {
+    New-Item -ItemType HardLink -Path hardlink-host.txt -Target host.txt | Out-Null
+} catch {
+    `$hardlinkFailed = `$true
+}
+if (-not `$hardlinkFailed) { throw 'hardlink creation unexpectedly succeeded inside overlay' }
 New-Item -ItemType Directory -Force -Path upper-only-dir | Out-Null
 Set-Content upper-only-dir\child.txt 'upper-only-child'
 if ((Get-Content upper-only-dir\child.txt) -ne 'upper-only-child') { throw 'upper-only directory child read failed' }
@@ -318,6 +325,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     $hostContent = Get-Content (Join-Path $source "host.txt")
     if ($hostContent -ne "host-original") {
         throw "host file was modified: $hostContent"
+    }
+    if (Test-Path (Join-Path $source "hardlink-host.txt")) {
+        throw "host hardlink was created"
     }
     if (-not (Test-Path (Join-Path $source "delete-me.txt"))) {
         throw "host delete-me.txt was removed"
@@ -388,6 +398,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Item (Join-Path $upperSource "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2020-02-03T04:05:06Z").UtcDateTime) {
         throw "metadata write was not redirected to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "hardlink-host.txt")) {
+        throw "hardlink target was unexpectedly created in upper"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"

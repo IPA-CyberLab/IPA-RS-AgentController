@@ -1256,7 +1256,9 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     if (infoClass != FileDispositionInformation &&
         infoClass != FileDispositionInformationEx &&
         infoClass != FileRenameInformation &&
-        infoClass != FileRenameInformationEx) {
+        infoClass != FileRenameInformationEx &&
+        infoClass != FileLinkInformation &&
+        infoClass != FileLinkInformationEx) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     if ((infoClass == FileDispositionInformation || infoClass == FileDispositionInformationEx) &&
@@ -1378,6 +1380,14 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         AgentFsFreeUnicode(&visible);
         AgentFsFreeEnv(env);
         Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
+    }
+
+    if (infoClass == FileLinkInformation || infoClass == FileLinkInformationEx) {
+        AgentFsFreeUnicode(&visible);
+        AgentFsFreeEnv(env);
+        Data->IoStatus.Status = STATUS_NOT_SUPPORTED;
         Data->IoStatus.Information = 0;
         return FLT_PREOP_COMPLETE;
     }
