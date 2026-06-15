@@ -1268,7 +1268,7 @@ mod tests {
     use clap::Parser;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn canonical_temp_root(temp: &tempfile::TempDir) -> PathBuf {
         fs::canonicalize(temp.path()).unwrap()
@@ -1401,6 +1401,45 @@ mod tests {
         assert_eq!(super::status_display(None), "terminated by signal");
         assert_eq!(super::stderr_suffix(""), "");
         assert_eq!(super::stderr_suffix("  mount failed\n"), ": mount failed");
+    }
+
+    #[test]
+    fn source_view_path_maps_preserved_cwd_inside_private_view_root() {
+        let view_root = PathBuf::from("/Users/me/.agentfs/envs/codex/view-root");
+        let source_root = PathBuf::from("/Users/me/project");
+
+        assert_eq!(
+            super::source_view_path(&view_root, &source_root, &source_root).unwrap(),
+            view_root
+        );
+        assert_eq!(
+            super::source_view_path(
+                &view_root,
+                &source_root,
+                Path::new("/Users/me/project/crates")
+            )
+            .unwrap(),
+            PathBuf::from("/Users/me/.agentfs/envs/codex/view-root/crates")
+        );
+
+        let error = super::source_view_path(&view_root, &source_root, Path::new("/Users/me/other"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must be inside source-root"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn direct_mount_sandbox_writes_only_private_view_root() {
+        let profile = super::direct_mount_sandbox_profile(
+            Path::new("/Users/me/.agentfs/envs/codex/view-root"),
+            "host",
+        );
+
+        assert!(profile.contains(
+            r#"(allow file-write* (subpath "/Users/me/.agentfs/envs/codex/view-root"))"#
+        ));
+        assert!(!profile.contains(r#"(subpath "/Users/me/project")"#));
     }
 
     #[test]
