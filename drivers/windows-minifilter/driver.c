@@ -748,6 +748,7 @@ static NTSTATUS AgentFsDupUnicode(_Out_ PUNICODE_STRING Destination, _In_ PCUNIC
 static NTSTATUS AgentFsCloneEnvForProcessLocked(
     _In_ PAGENTFS_ENV Parent,
     _In_ HANDLE ProcessId,
+    _In_ BOOLEAN Insert,
     _Outptr_ PAGENTFS_ENV *Child)
 {
     PAGENTFS_ENV env = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(AGENTFS_ENV), AGENTFS_TAG);
@@ -765,9 +766,24 @@ static NTSTATUS AgentFsCloneEnvForProcessLocked(
         AgentFsFreeEnv(env);
         return status;
     }
-    InsertTailList(&gEnvs, &env->Link);
+    if (Insert) {
+        InsertTailList(&gEnvs, &env->Link);
+    }
     *Child = env;
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS AgentFsSnapshotEnvForProcess(_In_ HANDLE ProcessId, _Outptr_result_maybenull_ PAGENTFS_ENV *Snapshot)
+{
+    PAGENTFS_ENV env;
+    *Snapshot = NULL;
+    ExAcquireFastMutex(&gEnvLock);
+    env = AgentFsFindEnvLocked(ProcessId);
+    if (env != NULL) {
+        (VOID)AgentFsCloneEnvForProcessLocked(env, ProcessId, FALSE, Snapshot);
+    }
+    ExReleaseFastMutex(&gEnvLock);
+    return *Snapshot == NULL ? STATUS_NOT_FOUND : STATUS_SUCCESS;
 }
 
 static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
@@ -778,15 +794,13 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
     UNREFERENCED_PARAMETER(CompletionContext);
     HANDLE pid = PsGetCurrentProcessId();
     PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
-    PAGENTFS_ENV env;
+    PAGENTFS_ENV env = NULL;
     UNICODE_STRING redirect;
     NTSTATUS status;
     RtlZeroMemory(&redirect, sizeof(redirect));
 
-    ExAcquireFastMutex(&gEnvLock);
-    env = AgentFsFindEnvLocked(pid);
-    if (env == NULL) {
-        ExReleaseFastMutex(&gEnvLock);
+    status = AgentFsSnapshotEnvForProcess(pid, &env);
+    if (!NT_SUCCESS(status)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -795,13 +809,13 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
         FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
         &nameInfo);
     if (!NT_SUCCESS(status)) {
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltParseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status) || !AgentFsStartsWithPath(&nameInfo->Name, &env->SourceRoot)) {
         FltReleaseFileNameInformation(nameInfo);
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -813,7 +827,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
         Data->Iopb->Parameters.Create.Options,
         &redirect);
     FltReleaseFileNameInformation(nameInfo);
-    ExReleaseFastMutex(&gEnvLock);
+    AgentFsFreeEnv(env);
 
     if (status == STATUS_OBJECT_NAME_NOT_FOUND) {
         Data->IoStatus.Status = status;
@@ -869,14 +883,12 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     }
 
     HANDLE pid = PsGetCurrentProcessId();
-    PAGENTFS_ENV env;
+    PAGENTFS_ENV env = NULL;
     PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
     NTSTATUS status;
 
-    ExAcquireFastMutex(&gEnvLock);
-    env = AgentFsFindEnvLocked(pid);
-    if (env == NULL) {
-        ExReleaseFastMutex(&gEnvLock);
+    status = AgentFsSnapshotEnvForProcess(pid, &env);
+    if (!NT_SUCCESS(status)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltGetFileNameInformation(
@@ -884,13 +896,13 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
         &nameInfo);
     if (!NT_SUCCESS(status)) {
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltParseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status)) {
         FltReleaseFileNameInformation(nameInfo);
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -905,7 +917,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &visible);
     FltReleaseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status)) {
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -954,7 +966,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         AgentFsFreeUnicode(&upper);
         AgentFsFreeUnicode(&lower);
         AgentFsFreeUnicode(&visible);
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         Data->IoStatus.Status = status;
         Data->IoStatus.Information = 0;
         return FLT_PREOP_COMPLETE;
@@ -967,7 +979,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     AgentFsFreeUnicode(&upper);
     status = AgentFsJoinRedirectPath(&whiteout, &env->WhiteoutRoot, &env->SourceRoot, &visible);
     AgentFsFreeUnicode(&visible);
-    ExReleaseFastMutex(&gEnvLock);
+    AgentFsFreeEnv(env);
     if (!NT_SUCCESS(status)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
@@ -990,15 +1002,13 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     }
 
     HANDLE pid = PsGetCurrentProcessId();
-    PAGENTFS_ENV env;
+    PAGENTFS_ENV env = NULL;
     PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
     PAGENTFS_DIR_CONTEXT context = NULL;
     NTSTATUS status;
 
-    ExAcquireFastMutex(&gEnvLock);
-    env = AgentFsFindEnvLocked(pid);
-    if (env == NULL) {
-        ExReleaseFastMutex(&gEnvLock);
+    status = AgentFsSnapshotEnvForProcess(pid, &env);
+    if (!NT_SUCCESS(status)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltGetFileNameInformation(
@@ -1006,20 +1016,20 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
         FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
         &nameInfo);
     if (!NT_SUCCESS(status)) {
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltParseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status)) {
         FltReleaseFileNameInformation(nameInfo);
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
     context = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(AGENTFS_DIR_CONTEXT), AGENTFS_TAG);
     if (context == NULL) {
         FltReleaseFileNameInformation(nameInfo);
-        ExReleaseFastMutex(&gEnvLock);
+        AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     RtlZeroMemory(context, sizeof(*context));
@@ -1034,7 +1044,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     if (NT_SUCCESS(status)) {
         status = AgentFsJoinRedirectPath(&context->WhiteoutPath, &env->WhiteoutRoot, &env->SourceRoot, &context->VisiblePath);
     }
-    ExReleaseFastMutex(&gEnvLock);
+    AgentFsFreeEnv(env);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeDirContext(context);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
@@ -1295,7 +1305,7 @@ static VOID AgentFsProcessNotify(
         PAGENTFS_ENV parent = AgentFsFindEnvLocked(CreateInfo->ParentProcessId);
         if (parent != NULL) {
             PAGENTFS_ENV child = NULL;
-            (VOID)AgentFsCloneEnvForProcessLocked(parent, ProcessId, &child);
+            (VOID)AgentFsCloneEnvForProcessLocked(parent, ProcessId, TRUE, &child);
         }
     }
     ExReleaseFastMutex(&gEnvLock);
