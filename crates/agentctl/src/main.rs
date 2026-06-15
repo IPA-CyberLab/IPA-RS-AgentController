@@ -14,7 +14,7 @@ use tokio::net::UnixStream;
 
 #[derive(Debug, Parser)]
 #[command(name = "agentctl", about = "Control forked dev environments")]
-struct Cli {
+struct RawCli {
     #[arg(long, env = "AGENTFS", default_value_os_t = default_agentfs(), global = true)]
     agentfs: PathBuf,
     #[arg(long, env = "AGENT_FORKD_CONFIG", global = true)]
@@ -28,8 +28,77 @@ struct Cli {
         global = true
     )]
     remote_agentctl: String,
+    #[arg(short = 't', long = "target")]
+    target: Option<String>,
     #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug)]
+struct Cli {
+    agentfs: PathBuf,
+    config: Option<PathBuf>,
+    remote: Option<String>,
+    remote_agentctl: String,
     command: Command,
+}
+
+impl TryFrom<RawCli> for Cli {
+    type Error = anyhow::Error;
+
+    fn try_from(raw: RawCli) -> Result<Self> {
+        let command = match (raw.command, raw.target) {
+            (Some(command), None) => command,
+            (None, Some(target)) => Command::New(NewArgs {
+                target,
+                base: None,
+                from: default_new_source(),
+                profile: None,
+                cpu_max: None,
+                memory_max: None,
+                pids_max: None,
+                disk_max: None,
+                network: None,
+                idle_timeout: None,
+                max_runtime: None,
+                command: Vec::new(),
+            }),
+            (Some(_), Some(_)) => {
+                return Err(anyhow!(
+                    "top-level -t/--target is shorthand for `new -t`; do not combine it with another subcommand"
+                ));
+            }
+            (None, None) => {
+                return Err(anyhow!("missing command; use `agentctl --help` for usage"));
+            }
+        };
+        Ok(Self {
+            agentfs: raw.agentfs,
+            config: raw.config,
+            remote: raw.remote,
+            remote_agentctl: raw.remote_agentctl,
+            command,
+        })
+    }
+}
+
+#[cfg(test)]
+impl Cli {
+    fn parse_from<I, T>(itr: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        RawCli::parse_from(itr).try_into().unwrap()
+    }
+
+    fn try_parse_from<I, T>(itr: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        RawCli::try_parse_from(itr)?.try_into()
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -246,7 +315,7 @@ impl ExportKind {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::try_from(RawCli::parse())?;
     if let Some(remote) = &cli.remote {
         exec_remote(remote, &cli)?;
     }
@@ -978,7 +1047,6 @@ mod tests {
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, SessionState};
     use agent_core::protocol::Request;
-    use clap::Parser;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
@@ -1271,6 +1339,26 @@ mod tests {
         assert!(matches!(cli.command, Command::Ls));
         match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
             Request::EnvList => {}
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn top_level_target_shorthand_maps_to_new_request() {
+        let cli =
+            Cli::try_parse_from(["agentctl", "--agentfs", "/agentfs", "-t", "codex"]).unwrap();
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::New {
+                target,
+                base,
+                command,
+                ..
+            } => {
+                assert_eq!(target, "codex");
+                assert!(!base.is_empty());
+                assert!(command.is_empty());
+            }
             other => panic!("unexpected request {other:?}"),
         }
     }

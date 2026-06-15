@@ -818,14 +818,11 @@ fn source_view_path(view_root: &Path, source_root: &Path, path: &Path) -> Result
     Ok(view_root.join(relative))
 }
 
-fn prepare_source_view_workspace(view_root: &Path, mounted_cwd: &Path) -> Result<()> {
-    if !mounted_cwd.is_dir() {
-        bail!(
-            "path-preserving view at {} is missing cwd {}",
-            view_root.display(),
-            mounted_cwd.display()
-        );
-    }
+fn prepare_source_view_workspace(_view_root: &Path, _mounted_cwd: &Path) -> Result<()> {
+    // macFUSE mounts are owned by the target user. This helper often runs as
+    // setuid root, so probing the mounted path here can report false negatives.
+    // The child drops to the target user before chdir and will surface a real
+    // missing cwd if the mounted path is genuinely absent.
     Ok(())
 }
 
