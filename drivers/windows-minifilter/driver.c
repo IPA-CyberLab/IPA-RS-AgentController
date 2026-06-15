@@ -81,6 +81,7 @@ static VOID AgentFsProcessNotify(
     _In_ HANDLE ProcessId,
     _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
+static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject);
 static BOOLEAN AgentFsDirUpperAlreadyMerged(_In_ PFILE_OBJECT FileObject);
 static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject);
@@ -568,6 +569,119 @@ static NTSTATUS AgentFsRenamePath(
 
     status = ZwSetInformationFile(handle, &iosb, info, infoBytes, FileRenameInformation);
     ExFreePoolWithTag(info, AGENTFS_TAG);
+    FltClose(handle);
+    return status;
+}
+
+static BOOLEAN AgentFsIsDotDirectoryName(_In_reads_bytes_(NameLength) PCWCH Name, _In_ ULONG NameLength)
+{
+    if (NameLength == sizeof(WCHAR) && Name[0] == L'.') {
+        return TRUE;
+    }
+    return NameLength == 2 * sizeof(WCHAR) && Name[0] == L'.' && Name[1] == L'.';
+}
+
+static NTSTATUS AgentFsCopyDirectoryTree(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING Source,
+    _In_ PCUNICODE_STRING Target)
+{
+    NTSTATUS status = AgentFsEnsureDirectoryTree(Instance, Target);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle = NULL;
+    InitializeObjectAttributes(&oa, (PUNICODE_STRING)Source, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    status = FltCreateFile(
+        gFilter,
+        Instance,
+        &handle,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        &oa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    PVOID temp = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
+    if (temp == NULL) {
+        FltClose(handle);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    BOOLEAN restartScan = TRUE;
+    for (;;) {
+        IO_STATUS_BLOCK queryStatus;
+        RtlZeroMemory(&queryStatus, sizeof(queryStatus));
+        RtlZeroMemory(temp, 64 * 1024);
+        status = ZwQueryDirectoryFile(
+            handle,
+            NULL,
+            NULL,
+            NULL,
+            &queryStatus,
+            temp,
+            64 * 1024,
+            FileNamesInformation,
+            FALSE,
+            NULL,
+            restartScan);
+        restartScan = FALSE;
+        if (status == STATUS_NO_MORE_FILES || status == STATUS_NO_SUCH_FILE) {
+            status = STATUS_SUCCESS;
+            break;
+        }
+        if (!NT_SUCCESS(status)) {
+            break;
+        }
+
+        ULONG returned = (ULONG)queryStatus.Information;
+        ULONG offset = 0;
+        while (offset < returned) {
+            PFILE_NAMES_INFORMATION entry = (PFILE_NAMES_INFORMATION)((PUCHAR)temp + offset);
+            if (!AgentFsIsDotDirectoryName(entry->FileName, entry->FileNameLength)) {
+                UNICODE_STRING sourceChild;
+                UNICODE_STRING targetChild;
+                RtlZeroMemory(&sourceChild, sizeof(sourceChild));
+                RtlZeroMemory(&targetChild, sizeof(targetChild));
+                status = AgentFsJoinChildPath(&sourceChild, Source, entry->FileName, entry->FileNameLength);
+                if (NT_SUCCESS(status)) {
+                    status = AgentFsJoinChildPath(&targetChild, Target, entry->FileName, entry->FileNameLength);
+                }
+                if (NT_SUCCESS(status)) {
+                    if (AgentFsPathIsDirectory(Instance, &sourceChild)) {
+                        status = AgentFsCopyDirectoryTree(Instance, &sourceChild, &targetChild);
+                    } else {
+                        status = AgentFsCopyFile(Instance, &sourceChild, &targetChild);
+                    }
+                }
+                AgentFsFreeUnicode(&sourceChild);
+                AgentFsFreeUnicode(&targetChild);
+                if (!NT_SUCCESS(status)) {
+                    goto Exit;
+                }
+            }
+
+            if (entry->NextEntryOffset == 0) {
+                break;
+            }
+            offset += entry->NextEntryOffset;
+        }
+    }
+
+Exit:
+    ExFreePoolWithTag(temp, AGENTFS_TAG);
     FltClose(handle);
     return status;
 }
@@ -1111,7 +1225,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
                     &targetUpper,
                     renameInfo->ReplaceIfExists != FALSE);
             } else if (AgentFsPathIsDirectory(FltObjects->Instance, &lower)) {
-                status = AgentFsEnsureDirectoryTree(FltObjects->Instance, &targetUpper);
+                status = AgentFsCopyDirectoryTree(FltObjects->Instance, &lower, &targetUpper);
             } else {
                 status = AgentFsCopyFile(FltObjects->Instance, &lower, &targetUpper);
             }
