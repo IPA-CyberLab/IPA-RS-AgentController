@@ -23,11 +23,19 @@ typedef struct _AGENTFS_DIR_CONTEXT {
     UNICODE_STRING WhiteoutPath;
 } AGENTFS_DIR_CONTEXT, *PAGENTFS_DIR_CONTEXT;
 
+typedef struct _AGENTFS_DIR_STATE {
+    LIST_ENTRY Link;
+    PFILE_OBJECT FileObject;
+    BOOLEAN UpperMerged;
+} AGENTFS_DIR_STATE, *PAGENTFS_DIR_STATE;
+
 static PFLT_FILTER gFilter;
 static PFLT_PORT gServerPort;
 static PFLT_PORT gClientPort;
 static FAST_MUTEX gEnvLock;
 static LIST_ENTRY gEnvs;
+static FAST_MUTEX gDirStateLock;
+static LIST_ENTRY gDirStates;
 
 DRIVER_INITIALIZE DriverEntry;
 
@@ -49,6 +57,10 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _In_opt_ PVOID CompletionContext,
     _In_ FLT_POST_OPERATION_FLAGS Flags);
+static FLT_PREOP_CALLBACK_STATUS AgentFsPreCleanup(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext);
 
 static NTSTATUS AgentFsConnect(
     _In_ PFLT_PORT ClientPort,
@@ -69,11 +81,16 @@ static VOID AgentFsProcessNotify(
     _In_ HANDLE ProcessId,
     _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
+static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject);
+static BOOLEAN AgentFsDirUpperAlreadyMerged(_In_ PFILE_OBJECT FileObject);
+static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject);
+static VOID AgentFsRemoveDirState(_In_opt_ PFILE_OBJECT FileObject);
 
 CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
     { IRP_MJ_CREATE, 0, AgentFsPreCreate, NULL },
     { IRP_MJ_SET_INFORMATION, 0, AgentFsPreSetInformation, NULL },
     { IRP_MJ_DIRECTORY_CONTROL, 0, AgentFsPreDirectoryControl, AgentFsPostDirectoryControl },
+    { IRP_MJ_CLEANUP, 0, AgentFsPreCleanup, NULL },
     { IRP_MJ_OPERATION_END }
 };
 
@@ -1057,6 +1074,10 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     if (Data->Iopb->MinorFunction != IRP_MN_QUERY_DIRECTORY) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
+    if ((Data->Iopb->OperationFlags & SL_RESTART_SCAN) != 0 ||
+        Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName != NULL) {
+        AgentFsResetDirState(FltObjects->FileObject);
+    }
 
     HANDLE pid = PsGetCurrentProcessId();
     PAGENTFS_ENV env = NULL;
@@ -1118,6 +1139,79 @@ static PVOID AgentFsDirectoryBufferAddress(_In_ PFLT_CALLBACK_DATA Data)
             NormalPagePriority | MdlMappingNoExecute);
     }
     return Data->Iopb->Parameters.DirectoryControl.QueryDirectory.DirectoryBuffer;
+}
+
+static PAGENTFS_DIR_STATE AgentFsFindDirStateLocked(_In_ PFILE_OBJECT FileObject)
+{
+    for (PLIST_ENTRY link = gDirStates.Flink; link != &gDirStates; link = link->Flink) {
+        PAGENTFS_DIR_STATE state = CONTAINING_RECORD(link, AGENTFS_DIR_STATE, Link);
+        if (state->FileObject == FileObject) {
+            return state;
+        }
+    }
+    return NULL;
+}
+
+static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject)
+{
+    if (FileObject == NULL) {
+        return;
+    }
+    ExAcquireFastMutex(&gDirStateLock);
+    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
+    if (state != NULL) {
+        state->UpperMerged = FALSE;
+    }
+    ExReleaseFastMutex(&gDirStateLock);
+}
+
+static BOOLEAN AgentFsDirUpperAlreadyMerged(_In_ PFILE_OBJECT FileObject)
+{
+    if (FileObject == NULL) {
+        return FALSE;
+    }
+    ExAcquireFastMutex(&gDirStateLock);
+    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
+    BOOLEAN merged = state != NULL && state->UpperMerged;
+    ExReleaseFastMutex(&gDirStateLock);
+    return merged;
+}
+
+static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject)
+{
+    if (FileObject == NULL) {
+        return;
+    }
+    ExAcquireFastMutex(&gDirStateLock);
+    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
+    if (state == NULL) {
+        state = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(AGENTFS_DIR_STATE), AGENTFS_TAG);
+        if (state != NULL) {
+            RtlZeroMemory(state, sizeof(*state));
+            state->FileObject = FileObject;
+            InsertTailList(&gDirStates, &state->Link);
+        }
+    }
+    if (state != NULL) {
+        state->UpperMerged = TRUE;
+    }
+    ExReleaseFastMutex(&gDirStateLock);
+}
+
+static VOID AgentFsRemoveDirState(_In_opt_ PFILE_OBJECT FileObject)
+{
+    if (FileObject == NULL) {
+        return;
+    }
+    ExAcquireFastMutex(&gDirStateLock);
+    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
+    if (state != NULL) {
+        RemoveEntryList(&state->Link);
+    }
+    ExReleaseFastMutex(&gDirStateLock);
+    if (state != NULL) {
+        ExFreePoolWithTag(state, AGENTFS_TAG);
+    }
 }
 
 static NTSTATUS AgentFsAppendUpperDirectoryEntries(
@@ -1287,17 +1381,20 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     }
 
     if (AgentFsShouldAppendUpperDirectoryEntries(Data)) {
-        (VOID)AgentFsAppendUpperDirectoryEntries(
-            FltObjects->Instance,
-            context,
-            infoClass,
-            Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName,
-            nameLengthOffset,
-            nameOffset,
-            output,
-            capacity,
-            &used,
-            &lastOffset);
+        if (!AgentFsDirUpperAlreadyMerged(FltObjects->FileObject)) {
+            (VOID)AgentFsAppendUpperDirectoryEntries(
+                FltObjects->Instance,
+                context,
+                infoClass,
+                Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName,
+                nameLengthOffset,
+                nameOffset,
+                output,
+                capacity,
+                &used,
+                &lastOffset);
+            AgentFsMarkDirUpperMerged(FltObjects->FileObject);
+        }
     }
 
     if (used == 0) {
@@ -1312,6 +1409,17 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     ExFreePoolWithTag(output, AGENTFS_TAG);
     AgentFsFreeDirContext(context);
     return FLT_POSTOP_FINISHED_PROCESSING;
+}
+
+static FLT_PREOP_CALLBACK_STATUS AgentFsPreCleanup(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext)
+{
+    UNREFERENCED_PARAMETER(Data);
+    UNREFERENCED_PARAMETER(CompletionContext);
+    AgentFsRemoveDirState(FltObjects->FileObject);
+    return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
 
 static NTSTATUS AgentFsRegister(_In_ PAGENTFS_REQUEST Request)
@@ -1468,6 +1576,15 @@ static NTSTATUS AgentFsUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
         ExAcquireFastMutex(&gEnvLock);
     }
     ExReleaseFastMutex(&gEnvLock);
+    ExAcquireFastMutex(&gDirStateLock);
+    while (!IsListEmpty(&gDirStates)) {
+        PLIST_ENTRY link = RemoveHeadList(&gDirStates);
+        PAGENTFS_DIR_STATE state = CONTAINING_RECORD(link, AGENTFS_DIR_STATE, Link);
+        ExReleaseFastMutex(&gDirStateLock);
+        ExFreePoolWithTag(state, AGENTFS_TAG);
+        ExAcquireFastMutex(&gDirStateLock);
+    }
+    ExReleaseFastMutex(&gDirStateLock);
     if (gFilter != NULL) {
         FltUnregisterFilter(gFilter);
     }
@@ -1479,6 +1596,8 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     UNREFERENCED_PARAMETER(RegistryPath);
     ExInitializeFastMutex(&gEnvLock);
     InitializeListHead(&gEnvs);
+    ExInitializeFastMutex(&gDirStateLock);
+    InitializeListHead(&gDirStates);
     NTSTATUS status = FltRegisterFilter(DriverObject, &FilterRegistration, &gFilter);
     if (!NT_SUCCESS(status)) {
         return status;
