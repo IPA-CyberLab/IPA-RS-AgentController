@@ -53,6 +53,10 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _Flt_CompletionContext_Outptr_ PVOID *CompletionContext);
+static FLT_PREOP_CALLBACK_STATUS AgentFsPreFileSystemControl(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext);
 static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
@@ -92,6 +96,7 @@ CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
     { IRP_MJ_CREATE, 0, AgentFsPreCreate, NULL },
     { IRP_MJ_SET_INFORMATION, 0, AgentFsPreSetInformation, NULL },
     { IRP_MJ_DIRECTORY_CONTROL, 0, AgentFsPreDirectoryControl, AgentFsPostDirectoryControl },
+    { IRP_MJ_FILE_SYSTEM_CONTROL, 0, AgentFsPreFileSystemControl, NULL },
     { IRP_MJ_CLEANUP, 0, AgentFsPreCleanup, NULL },
     { IRP_MJ_OPERATION_END }
 };
@@ -1262,6 +1267,58 @@ static NTSTATUS AgentFsVisiblePathFromName(
         return status;
     }
     return AgentFsStorageToVisiblePath(Visible, &Env->SourceRoot, &Env->LowerRoot, Name);
+}
+
+static FLT_PREOP_CALLBACK_STATUS AgentFsPreFileSystemControl(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Flt_CompletionContext_Outptr_ PVOID *CompletionContext)
+{
+    UNREFERENCED_PARAMETER(CompletionContext);
+    UNREFERENCED_PARAMETER(FltObjects);
+    if (Data->Iopb->MinorFunction != IRP_MN_USER_FS_REQUEST ||
+        Data->Iopb->Parameters.FileSystemControl.Common.FsControlCode != FSCTL_SET_REPARSE_POINT) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    HANDLE pid = PsGetCurrentProcessId();
+    PAGENTFS_ENV env = NULL;
+    PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
+    UNICODE_STRING visible;
+    RtlZeroMemory(&visible, sizeof(visible));
+
+    NTSTATUS status = AgentFsSnapshotEnvForProcess(pid, &env);
+    if (!NT_SUCCESS(status)) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    status = FltGetFileNameInformation(
+        Data,
+        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
+        &nameInfo);
+    if (!NT_SUCCESS(status)) {
+        AgentFsFreeEnv(env);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    status = FltParseFileNameInformation(nameInfo);
+    if (NT_SUCCESS(status)) {
+        status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &visible);
+    }
+    FltReleaseFileNameInformation(nameInfo);
+    if (!NT_SUCCESS(status)) {
+        AgentFsFreeEnv(env);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    BOOLEAN managed = AgentFsStartsWithPath(&visible, &env->SourceRoot);
+    AgentFsFreeUnicode(&visible);
+    AgentFsFreeEnv(env);
+    if (!managed) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    Data->IoStatus.Status = STATUS_NOT_SUPPORTED;
+    Data->IoStatus.Information = 0;
+    return FLT_PREOP_COMPLETE;
 }
 
 static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(

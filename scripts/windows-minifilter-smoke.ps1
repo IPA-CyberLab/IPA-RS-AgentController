@@ -279,6 +279,13 @@ try {
     `$hardlinkFailed = `$true
 }
 if (-not `$hardlinkFailed) { throw 'hardlink creation unexpectedly succeeded inside overlay' }
+`$symlinkFailed = `$false
+try {
+    New-Item -ItemType SymbolicLink -Path symlink-host.txt -Target host.txt | Out-Null
+} catch {
+    `$symlinkFailed = `$true
+}
+if (-not `$symlinkFailed) { throw 'symlink creation unexpectedly succeeded inside overlay' }
 New-Item -ItemType Directory -Force -Path upper-only-dir | Out-Null
 Set-Content upper-only-dir\child.txt 'upper-only-child'
 if ((Get-Content upper-only-dir\child.txt) -ne 'upper-only-child') { throw 'upper-only directory child read failed' }
@@ -329,6 +336,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if (Test-Path (Join-Path $source "hardlink-host.txt")) {
         throw "host hardlink was created"
+    }
+    if (Test-Path (Join-Path $source "symlink-host.txt")) {
+        throw "host symlink was created"
     }
     if (-not (Test-Path (Join-Path $source "delete-me.txt"))) {
         throw "host delete-me.txt was removed"
@@ -405,6 +415,10 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if (Test-Path (Join-Path $upperSource "hardlink-host.txt")) {
         throw "hardlink target was unexpectedly created in upper"
+    }
+    $upperSymlink = Join-Path $upperSource "symlink-host.txt"
+    if ((Test-Path $upperSymlink) -and (((Get-Item $upperSymlink -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "symlink reparse point was unexpectedly created in upper"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
