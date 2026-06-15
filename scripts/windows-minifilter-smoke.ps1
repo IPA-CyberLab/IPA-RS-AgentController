@@ -213,6 +213,9 @@ try {
     Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
     (Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime
+    Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
+    Set-Content -Path (Join-Path $source "stream-source.txt") -Value "stream-main-original"
+    Set-Content -Path (Join-Path $source "stream-source.txt") -Stream lower -Value "lower-stream-original"
     Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
@@ -272,6 +275,26 @@ if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+`$mappedBytes = [Text.Encoding]::UTF8.GetBytes('mapped-env')
+`$mappedFile = [IO.File]::Open('mapped.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+try {
+    `$mmf = [IO.MemoryMappedFiles.MemoryMappedFile]::CreateFromFile(`$mappedFile, `$null, 0, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite, `$null, [IO.HandleInheritability]::None, `$false)
+    try {
+        `$view = `$mmf.CreateViewAccessor(0, `$mappedBytes.Length, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::Write)
+        try {
+            `$view.WriteArray(0, `$mappedBytes, 0, `$mappedBytes.Length)
+            `$view.Flush()
+        } finally {
+            `$view.Dispose()
+        }
+    } finally {
+        `$mmf.Dispose()
+    }
+} finally {
+    `$mappedFile.Dispose()
+}
+if ((Get-Content stream-source.txt -Stream lower) -ne 'lower-stream-original') { throw 'lower ADS read failed' }
+Set-Content stream-source.txt -Stream env 'env-stream'
 `$hardlinkFailed = `$false
 try {
     New-Item -ItemType HardLink -Path hardlink-host.txt -Target host.txt | Out-Null
@@ -352,6 +375,15 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     if ((Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime) {
         throw "host metadata.txt timestamp was modified"
     }
+    if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
+        throw "host mapped.txt was modified"
+    }
+    if ((Get-Content (Join-Path $source "stream-source.txt") -Stream lower) -ne "lower-stream-original") {
+        throw "host lower ADS was modified"
+    }
+    if (Get-Item -Path (Join-Path $source "stream-source.txt") -Stream env -ErrorAction SilentlyContinue) {
+        throw "host env ADS was created"
+    }
     if ((Get-Content (Join-Path $source "collision-source.txt")) -ne "collision-source-original") {
         throw "host collision-source.txt was modified"
     }
@@ -412,6 +444,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Item (Join-Path $upperSource "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2020-02-03T04:05:06Z").UtcDateTime) {
         throw "metadata write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "mapped.txt")) -ne "mapped-env") {
+        throw "memory-mapped write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream env) -ne "env-stream") {
+        throw "ADS write was not redirected to upper"
     }
     if (Test-Path (Join-Path $upperSource "hardlink-host.txt")) {
         throw "hardlink target was unexpectedly created in upper"

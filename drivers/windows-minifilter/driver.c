@@ -1391,11 +1391,15 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         RtlZeroMemory(&targetUpper, sizeof(targetUpper));
         RtlZeroMemory(&targetLower, sizeof(targetLower));
         RtlZeroMemory(&targetWhiteout, sizeof(targetWhiteout));
-        status = AgentFsSiblingVisiblePath(
-            &targetVisible,
-            &visible,
-            renameInfo->FileName,
-            renameInfo->FileNameLength);
+        if (renameInfo == NULL || renameInfo->RootDirectory != NULL) {
+            status = STATUS_NOT_SUPPORTED;
+        } else {
+            status = AgentFsSiblingVisiblePath(
+                &targetVisible,
+                &visible,
+                renameInfo->FileName,
+                renameInfo->FileNameLength);
+        }
         if (NT_SUCCESS(status) && !AgentFsStartsWithPath(&targetVisible, &env->SourceRoot)) {
             status = STATUS_NOT_SUPPORTED;
         }
