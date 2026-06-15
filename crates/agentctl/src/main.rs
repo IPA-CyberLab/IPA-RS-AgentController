@@ -103,7 +103,25 @@ fn default_new_source() -> PathBuf {
 
 #[cfg(not(target_os = "linux"))]
 fn default_new_source() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    host_current_dir_or_dot()
+}
+
+fn host_current_dir_or_dot() -> PathBuf {
+    host_current_dir_from_env()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn host_current_dir() -> Result<PathBuf> {
+    if let Some(path) = host_current_dir_from_env() {
+        return Ok(path);
+    }
+    std::env::current_dir().context("failed to read current directory")
+}
+
+fn host_current_dir_from_env() -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os("AGENT_HOST_CWD")?);
+    path.is_absolute().then_some(path)
 }
 
 #[derive(Debug, Subcommand)]
@@ -460,7 +478,7 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
                 max_runtime: args.max_runtime.clone(),
             },
             command: args.command.clone(),
-            cwd: Some(std::env::current_dir()?),
+            cwd: Some(host_current_dir()?),
         }),
         Command::Base { command } => Ok(match command {
             BaseCommand::Freeze { name, from } => Request::BaseFreeze {
@@ -504,19 +522,19 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
         }),
         Command::Shell { env_id } => Ok(Request::Shell {
             id: env_id.clone(),
-            cwd: Some(std::env::current_dir()?),
+            cwd: Some(host_current_dir()?),
         }),
         Command::Exec(args) => Ok(Request::Exec {
             id: args.env_id.clone(),
             command: args.command.clone(),
-            cwd: Some(std::env::current_dir()?),
+            cwd: Some(host_current_dir()?),
         }),
         Command::Session { command } => Ok(match command {
             SessionCommand::Create(args) => Request::SessionCreate {
                 env_id: args.env_id.clone(),
                 session_id: args.session_id.clone(),
                 command: args.command.clone(),
-                cwd: Some(std::env::current_dir()?),
+                cwd: Some(host_current_dir()?),
             },
             SessionCommand::Attach { env_id, session_id } => Request::SessionAttach {
                 env_id: env_id.clone(),
@@ -705,7 +723,7 @@ fn run_desktop_shell_command(
 }
 
 fn desktop_shell_start_dir(rootfs_path: &Path, command: &[String]) -> Result<PathBuf> {
-    let current_dir = std::env::current_dir()?;
+    let current_dir = host_current_dir()?;
     Ok(desktop_shell_start_dir_for_current_dir(
         rootfs_path,
         command,

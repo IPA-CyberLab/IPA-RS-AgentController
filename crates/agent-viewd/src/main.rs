@@ -404,12 +404,6 @@ fn ensure_source_overlay_mounted(
     whiteouts: &Path,
 ) -> Result<MountedOverlay> {
     validate_source_overlay_paths(source_root, lower, upper, whiteouts)?;
-    std::fs::create_dir_all(source_root.join(".tmp")).with_context(|| {
-        format!(
-            "failed to create path-preserving tmpdir {}",
-            source_root.join(".tmp").display()
-        )
-    })?;
     ensure_overlay_mounted_at(source_root, Some(source_root), lower, upper, whiteouts)
 }
 
@@ -823,9 +817,9 @@ fn command_for_direct_mount(
         .env("AGENT_NETWORK", network)
         .env("HOME", source_root)
         .env("ZDOTDIR", source_root)
-        .env("TMPDIR", source_root.join(".tmp"))
-        .env("TMP", source_root.join(".tmp"))
-        .env("TEMP", source_root.join(".tmp"));
+        .env("TMPDIR", source_root)
+        .env("TMP", source_root)
+        .env("TEMP", source_root);
     if let Ok(host_home) = std::env::var("HOME") {
         command.env("HOST_HOME", host_home);
     }

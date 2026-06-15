@@ -82,21 +82,33 @@ path_contains_install_dir() {
 }
 
 ensure_shell_path() {
-  if path_contains_install_dir; then
-    return 0
-  fi
-
   profile="$(profile_file)"
   mkdir -p "$(dirname "$profile")"
   touch "$profile"
-  if ! grep -F "export PATH=\"$INSTALL_DIR:\$PATH\"" "$profile" >/dev/null 2>&1; then
+  if ! path_contains_install_dir && ! grep -F "export PATH=\"$INSTALL_DIR:\$PATH\"" "$profile" >/dev/null 2>&1; then
     {
       echo ""
       echo "# IPA-RS Isolated Agent"
       echo "export PATH=\"$INSTALL_DIR:\$PATH\""
     } >> "$profile"
+    echo "Added $INSTALL_DIR to PATH in $profile"
   fi
-  echo "Added $INSTALL_DIR to PATH in $profile"
+  if [ "$(uname -s)" = "Darwin" ] &&
+    ! grep -F "AGENT_HOST_CWD=" "$profile" >/dev/null 2>&1; then
+    {
+      echo ""
+      echo "# IPA-RS Isolated Agent cwd-preserving wrapper"
+      echo "agctl() {"
+      echo "  local __ipa_agent_cwd=\"\$PWD\""
+      echo "  cd / || return"
+      echo "  AGENT_HOST_CWD=\"\$__ipa_agent_cwd\" command agentctl \"\$@\""
+      echo "  local __ipa_agent_status=\$?"
+      echo "  cd \"\$__ipa_agent_cwd\" 2>/dev/null || cd /"
+      echo "  return \$__ipa_agent_status"
+      echo "}"
+    } >> "$profile"
+    echo "Added macOS agctl cwd wrapper to $profile"
+  fi
 }
 
 ensure_windows_path() {

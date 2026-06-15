@@ -140,21 +140,20 @@ the `agent-viewd` and `agent-overlayfs` helpers on macOS, and
 be derived without full copies on filesystems that support those primitives.
 macOS path-preserving views require macFUSE. The native backend currently
 supports local exec/shell plus `workspace-patch` and `rootfs-changed-paths`
-export. macOS exec and shell enter a chroot mounted by `agent-overlayfs`; writes
-are copied into the env upper layer while lower and whiteout layers preserve the
-host-visible path. The mounted view exposes only the env lower/upper/whiteout
-layers plus a fixed read-only set of macOS system fallback roots needed to run
-`/bin`, `/usr/bin`, `/usr/lib`, `/System`, and the macFUSE filesystem
-registration under `/Library/Filesystems`. Broad user-controlled host trees
-such as `/usr/local`, `/opt`, `/Library/Application Support`, `/private`,
-`/private/etc`, `/var`, and `/dev` are not fallback roots; only selected
-shell and network configuration files under `/etc` and `/private/etc` are
-exposed. macOS
-path-preserving views support `network=host` and `network=none`; `bridge` is a
-Linux nspawn mode and is rejected instead of silently running with host
-networking. `network=none` wraps the entered command in the macOS sandbox
-profile that denies `network*`. Windows exec runs inside a Job Object so child
-processes are grouped, capped by `pids_max`, and terminated when the job closes.
+export. macOS exec and shell mount `agent-overlayfs` directly on the selected
+source path for the lifetime of the command, so tools see the original absolute
+workspace path while writes are copied into the env upper layer and the host
+source remains unchanged after unmount. Because macOS has no per-process mount
+namespace, the installer adds a small `agctl` shell wrapper that temporarily
+moves the calling shell out of the workspace and passes the original directory
+through `AGENT_HOST_CWD`; this keeps mount/unmount from invalidating the
+terminal's current directory. The command itself runs with `HOME`, `ZDOTDIR`,
+and temp variables pointed at the overlaid source path. macOS path-preserving
+views support `network=host` and `network=none`; `bridge` is a Linux nspawn mode
+and is rejected instead of silently running with host networking. `network=none`
+wraps the entered command in the macOS sandbox profile that denies `network*`.
+Windows exec runs inside a Job Object so child processes are grouped, capped by
+`pids_max`, and terminated when the job closes.
 This is still weaker than the Linux `systemd-nspawn`
 backend: Windows native shells run inside a Job Object rooted at the env
 directory, and native desktop sessions support background create/list/logs/kill
