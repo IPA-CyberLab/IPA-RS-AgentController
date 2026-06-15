@@ -175,6 +175,10 @@ The smoke test builds `agentctl`, `agent-forkd`, `agent-minifilterctl`, and the
 `agentfs` minifilter, loads the filter, runs a command from the original host
 project path, and verifies that host files stay unchanged while modified,
 renamed, and deleted entries appear under the env upper/whiteout trees.
+Because the script signs the package with a local test certificate, Secure Boot
+hosts must either boot with test-signing enabled or use a production/attestation
+signed `agentfs.sys`; otherwise Windows rejects `fltmc load agentfs` before the
+runtime overlay can be exercised.
 
 After installing on a macOS host with macFUSE, run the native backend smoke
 test to verify the privileged helper and runtime path view end to end:

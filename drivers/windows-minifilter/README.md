@@ -27,3 +27,7 @@ pnputil /add-driver drivers\windows-minifilter\agentfs.inf /install
 fltmc load agentfs
 agent-minifilterctl check
 ```
+
+The development smoke script signs the driver package with a local test
+certificate. Secure Boot systems must boot with test-signing enabled, or use a
+production/attestation signed driver, before `fltmc load agentfs` can succeed.

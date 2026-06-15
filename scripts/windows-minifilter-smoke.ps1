@@ -144,6 +144,49 @@ function Install-AgentFsService {
     New-ItemProperty -Force -Path $instance -Name Flags -PropertyType DWord -Value 0 | Out-Null
 }
 
+function Test-SecureBootEnabled {
+    try {
+        return [bool](Confirm-SecureBootUEFI)
+    } catch {
+        return $false
+    }
+}
+
+function Get-TestSigningState {
+    try {
+        $bootConfig = bcdedit /enum "{current}" 2>$null
+        $line = $bootConfig | Where-Object { $_ -match "testsigning" } | Select-Object -First 1
+        if ($line -and $line -match "\s+Yes$") {
+            return "on"
+        }
+        if ($line -and $line -match "\s+No$") {
+            return "off"
+        }
+    } catch {
+    }
+    return "off"
+}
+
+function Invoke-AgentFsLoad {
+    Write-Host ">> fltmc load agentfs"
+    $output = & fltmc load agentfs 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($output) {
+        $output | ForEach-Object { Write-Host $_ }
+    }
+    if ($exitCode -eq 0) {
+        return
+    }
+
+    $secureBoot = Test-SecureBootEnabled
+    $testSigning = Get-TestSigningState
+    $detail = "fltmc load agentfs failed with exit code $exitCode. SecureBoot=$secureBoot TestSigning=$testSigning."
+    if ($secureBoot -and $testSigning -ne "on") {
+        $detail += " This smoke script uses a local test certificate; Secure Boot blocks that driver unless test-signing is enabled before boot or the driver is production/attestation signed."
+    }
+    throw $detail
+}
+
 Assert-Admin
 
 $repo = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -184,7 +227,7 @@ try {
     }
     Install-AgentFsService -DriverDirectory $driverDir
     fltmc unload agentfs 2>$null | Out-Null
-    Invoke-Logged { fltmc load agentfs }
+    Invoke-AgentFsLoad
     Invoke-Logged { & $filterctl check }
 
     $env:AGENTFS = $agentfs
