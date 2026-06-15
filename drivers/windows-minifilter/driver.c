@@ -1285,6 +1285,23 @@ static BOOLEAN AgentFsDeleteRequested(_In_ PFLT_CALLBACK_DATA Data, _In_ FILE_IN
     return FALSE;
 }
 
+static NTSTATUS AgentFsValidateDeleteInformation(
+    _In_ FILE_INFORMATION_CLASS InfoClass,
+    _In_opt_ PVOID InfoBuffer)
+{
+    if (InfoBuffer == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (InfoClass == FileDispositionInformationEx) {
+        ULONG flags = ((PFILE_DISPOSITION_INFORMATION_EX)InfoBuffer)->Flags;
+        ULONG supportedFlags = FILE_DISPOSITION_DELETE;
+        if ((flags & ~supportedFlags) != 0) {
+            return STATUS_NOT_SUPPORTED;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS AgentFsValidateRenameInformation(
     _In_ FILE_INFORMATION_CLASS InfoClass,
     _In_ PFILE_RENAME_INFORMATION RenameInfo,
@@ -1919,6 +1936,17 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         AgentFsFreeUnicode(&visible);
         AgentFsFreeEnv(env);
         Data->IoStatus.Status = STATUS_NOT_SUPPORTED;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
+    }
+
+    status = AgentFsValidateDeleteInformation(
+        infoClass,
+        Data->Iopb->Parameters.SetFileInformation.InfoBuffer);
+    if (!NT_SUCCESS(status)) {
+        AgentFsFreeUnicode(&visible);
+        AgentFsFreeEnv(env);
+        Data->IoStatus.Status = status;
         Data->IoStatus.Information = 0;
         return FLT_PREOP_COMPLETE;
     }
