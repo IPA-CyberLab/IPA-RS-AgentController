@@ -230,6 +230,8 @@ try {
     $aclSourceSddl = (Get-Acl $aclSource).Sddl
     Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
+    Set-Content -Path (Join-Path $source "replace-file-source.txt") -Value "replace-file-source-original"
+    Set-Content -Path (Join-Path $source "replace-file-target.txt") -Value "replace-file-target-original"
     Set-Content -Path (Join-Path $source "replace-dir-source.txt") -Value "replace-dir-source-original"
     New-Item -ItemType Directory -Force -Path (Join-Path $source "replace-dir-target") | Out-Null
     Set-Content -Path (Join-Path $source "replace-dir-target\child.txt") -Value "replace-dir-target-original"
@@ -385,6 +387,11 @@ if (-not [AgentFsNativeMove]::MoveFileEx((Join-Path (Get-Location) 'replace-dir-
 if (-not `$replaceDirFailed) { throw 'rename replace over existing lower directory unexpectedly succeeded' }
 if ((Get-Content replace-dir-source.txt) -ne 'replace-dir-source-original') { throw 'replace-dir failed move hid source file' }
 if ((Get-Content replace-dir-target\child.txt) -ne 'replace-dir-target-original') { throw 'replace-dir failed move modified target directory' }
+if (-not [AgentFsNativeMove]::MoveFileEx((Join-Path (Get-Location) 'replace-file-source.txt'), (Join-Path (Get-Location) 'replace-file-target.txt'), 1)) {
+    throw 'rename replace over existing lower file failed'
+}
+if (Test-Path replace-file-source.txt) { throw 'replace-file source remained visible after move' }
+if ((Get-Content replace-file-target.txt) -ne 'replace-file-source-original') { throw 'replace-file target did not show source content' }
 New-Item -ItemType Directory -Force -Path nested\lower | Out-Null
 Set-Content nested\lower\deep.txt 'deep-modified'
 New-Item -ItemType Directory -Force -Path nested\created\more | Out-Null
@@ -403,12 +410,14 @@ if (`$names -notcontains 'host.txt') { throw 'directory listing lost lower file'
 if (`$names -notcontains 'mixed-renamed') { throw 'directory listing lost renamed mixed directory' }
 if (`$names -notcontains 'rename-target.txt') { throw 'directory listing lost upper file renamed onto deleted target' }
 if (`$names -notcontains 'moved-lower') { throw 'directory listing lost renamed lower directory' }
+if (`$names -notcontains 'replace-file-target.txt') { throw 'directory listing lost replaced lower file target' }
 if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
 if (`$names -notcontains 'stale-dir') { throw 'directory listing lost recreated upper directory' }
 if (`$names -notcontains 'upper-only-dir') { throw 'directory listing lost upper-only directory' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
 if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed mixed source' }
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
+if (`$names -contains 'replace-file-source.txt') { throw 'directory listing showed replaced lower file source' }
 if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost upper replacement over lower file' }
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
 if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'exact listing lost recreated upper file over lower target' }
@@ -489,6 +498,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if ((Get-Content (Join-Path $source "collision-target.txt")) -ne "collision-target-original") {
         throw "host collision-target.txt was modified"
     }
+    if ((Get-Content (Join-Path $source "replace-file-source.txt")) -ne "replace-file-source-original") {
+        throw "host replace-file-source.txt was modified"
+    }
+    if ((Get-Content (Join-Path $source "replace-file-target.txt")) -ne "replace-file-target-original") {
+        throw "host replace-file-target.txt was modified"
+    }
     if ((Get-Content (Join-Path $source "replace-dir-source.txt")) -ne "replace-dir-source-original") {
         throw "host replace-dir-source.txt was modified"
     }
@@ -546,6 +561,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if ((Get-Content (Join-Path $upperSource "rename-target.txt")) -ne "env-created") {
         throw "file renamed onto deleted target was not written to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "replace-file-target.txt")) -ne "replace-file-source-original") {
+        throw "replaced lower file target was not written to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "replace-file-source.txt")) {
+        throw "replaced lower file source was copied to upper"
     }
     if ((Get-Content (Join-Path $upperSource "recreate-me.txt")) -ne "recreated-in-env") {
         throw "recreated file was not written to upper"
@@ -607,6 +628,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (Test-Path (Join-Path $upperSource "replace-dir-target")) {
         throw "failed replace-dir rename wrote the target to upper"
+    }
+    if (-not (Test-Path (Join-Path $whiteoutSource "replace-file-source.txt"))) {
+        throw "replaced lower file source whiteout was not created"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "move-lower"))) {
         throw "renamed lower directory source whiteout was not created"
