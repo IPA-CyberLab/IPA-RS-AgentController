@@ -829,6 +829,15 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
 if (`$names -contains 'readonly-delete.txt') { throw 'directory listing showed readonly disposition-deleted lower file' }
 if (`$names -contains 'readonly-tree') { throw 'directory listing showed readonly disposition-deleted upper directory tree' }
 if (`$names -contains 'replace-file-source.txt') { throw 'directory listing showed replaced lower file source' }
+`$txtNames = Get-ChildItem -Name *.txt | Sort-Object
+if (`$txtNames -notcontains 'host.txt') { throw 'wildcard listing lost upper replacement over lower file' }
+if (`$txtNames -notcontains 'rename-target.txt') { throw 'wildcard listing lost upper file renamed onto deleted target' }
+if (`$txtNames -notcontains 'readonly-replace-target.txt') { throw 'wildcard listing lost FileRenameInfoEx readonly replace target' }
+if (`$txtNames -notcontains 'replace-file-target.txt') { throw 'wildcard listing lost replaced lower file target' }
+if (`$txtNames -notcontains 'recreate-me.txt') { throw 'wildcard listing lost recreated file' }
+if (`$txtNames -contains 'delete-me.txt') { throw 'wildcard listing showed whiteouted lower file' }
+if (`$txtNames -contains 'readonly-delete.txt') { throw 'wildcard listing showed readonly disposition-deleted lower file' }
+if (`$txtNames -contains 'replace-file-source.txt') { throw 'wildcard listing showed replaced lower file source' }
 if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost upper replacement over lower file' }
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
 if ((Get-ChildItem -Name delete-lower-dir -ErrorAction SilentlyContinue) -contains 'delete-lower-dir') { throw 'exact listing showed whiteouted lower directory' }
