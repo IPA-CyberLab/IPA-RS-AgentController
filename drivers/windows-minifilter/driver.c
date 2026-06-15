@@ -68,6 +68,7 @@ static VOID AgentFsProcessNotify(
     _Inout_ PEPROCESS Process,
     _In_ HANDLE ProcessId,
     _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
+static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 
 CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
     { IRP_MJ_CREATE, 0, AgentFsPreCreate, NULL },
@@ -216,27 +217,34 @@ static NTSTATUS AgentFsStorageToVisiblePath(
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS AgentFsEnsureParentDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
+static NTSTATUS AgentFsEnsureDirectoryTree(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Directory)
 {
-    USHORT chars = Path->Length / sizeof(WCHAR);
+    if (AgentFsPathExists(Instance, Directory)) {
+        return STATUS_SUCCESS;
+    }
+
+    USHORT chars = Directory->Length / sizeof(WCHAR);
     USHORT lastSlash = 0;
     for (USHORT i = 0; i < chars; i++) {
-        if (Path->Buffer[i] == L'\\' || Path->Buffer[i] == L'/') {
+        if (Directory->Buffer[i] == L'\\' || Directory->Buffer[i] == L'/') {
             lastSlash = i;
         }
     }
-    if (lastSlash == 0) {
-        return STATUS_SUCCESS;
+    if (lastSlash > 0) {
+        UNICODE_STRING parent;
+        parent.Buffer = Directory->Buffer;
+        parent.Length = lastSlash * sizeof(WCHAR);
+        parent.MaximumLength = parent.Length;
+        NTSTATUS parentStatus = AgentFsEnsureDirectoryTree(Instance, &parent);
+        if (!NT_SUCCESS(parentStatus)) {
+            return parentStatus;
+        }
     }
-    UNICODE_STRING parent;
-    parent.Buffer = Path->Buffer;
-    parent.Length = lastSlash * sizeof(WCHAR);
-    parent.MaximumLength = parent.Length;
 
     OBJECT_ATTRIBUTES oa;
     IO_STATUS_BLOCK iosb;
     HANDLE handle = NULL;
-    InitializeObjectAttributes(&oa, &parent, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    InitializeObjectAttributes(&oa, (PUNICODE_STRING)Directory, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
     NTSTATUS status = FltCreateFile(
         gFilter,
         Instance,
@@ -256,6 +264,25 @@ static NTSTATUS AgentFsEnsureParentDirectory(_In_ PFLT_INSTANCE Instance, _In_ P
         FltClose(handle);
     }
     return status;
+}
+
+static NTSTATUS AgentFsEnsureParentDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
+{
+    USHORT chars = Path->Length / sizeof(WCHAR);
+    USHORT lastSlash = 0;
+    for (USHORT i = 0; i < chars; i++) {
+        if (Path->Buffer[i] == L'\\' || Path->Buffer[i] == L'/') {
+            lastSlash = i;
+        }
+    }
+    if (lastSlash == 0) {
+        return STATUS_SUCCESS;
+    }
+    UNICODE_STRING parent;
+    parent.Buffer = Path->Buffer;
+    parent.Length = lastSlash * sizeof(WCHAR);
+    parent.MaximumLength = parent.Length;
+    return AgentFsEnsureDirectoryTree(Instance, &parent);
 }
 
 static NTSTATUS AgentFsCreateEmptyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)

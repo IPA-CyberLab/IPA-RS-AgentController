@@ -35,8 +35,10 @@ $filterctl = Join-Path $binDir "agent-minifilterctl.exe"
 
 try {
     New-Item -ItemType Directory -Force -Path $source | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $source "nested\lower") | Out-Null
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
+    Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
 
     Push-Location $repo
     Invoke-Logged { cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc }
@@ -81,6 +83,9 @@ if ((Get-Location).Path -ne '$source') { throw "cwd was not preserved: `$((Get-L
 if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+Set-Content nested\lower\deep.txt 'deep-modified'
+New-Item -ItemType Directory -Force -Path nested\created\more | Out-Null
+Set-Content nested\created\more\new.txt 'new-deep'
 Remove-Item delete-me.txt
 Rename-Item created.txt renamed.txt
 `$names = Get-ChildItem -Name | Sort-Object
@@ -105,6 +110,12 @@ if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteou
 
     if ((Get-Content (Join-Path $upperSource "host.txt")) -ne "env-modified") {
         throw "modified file was not copied to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "nested\lower\deep.txt")) -ne "deep-modified") {
+        throw "nested lower file was not copied to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "nested\created\more\new.txt")) -ne "new-deep") {
+        throw "nested created file was not written to upper"
     }
     if (-not (Test-Path (Join-Path $upperSource "renamed.txt"))) {
         throw "renamed file was not written to upper"

@@ -1,0 +1,65 @@
+name: Windows minifilter
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-minifilter.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/agent-core/**"
+      - "crates/agent-forkd/**"
+      - "crates/agent-minifilterctl/**"
+      - "crates/agentctl/**"
+      - "drivers/windows-minifilter/**"
+      - "scripts/windows-minifilter-smoke.ps1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build Rust helpers and WDK driver
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows helpers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc
+
+      - name: Install Windows SDK and WDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdk = Join-Path $env:RUNNER_TEMP "winsdksetup.exe"
+          $wdk = Join-Path $env:RUNNER_TEMP "wdksetup.exe"
+          curl.exe -L "https://go.microsoft.com/fwlink/?linkid=2338977" -o $sdk
+          curl.exe -L "https://go.microsoft.com/fwlink/?linkid=2335869" -o $wdk
+          Start-Process -FilePath $sdk -ArgumentList "/quiet", "/norestart" -Wait
+          Start-Process -FilePath $wdk -ArgumentList "/quiet", "/norestart" -Wait
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build minifilter driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          msbuild drivers\windows-minifilter\agentfs.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+
+      - name: Upload driver artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentfs-driver-x64
+          path: |
+            drivers/windows-minifilter/x64/Release/agentfs.sys
+            drivers/windows-minifilter/x64/Release/agentfs.pdb
+            drivers/windows-minifilter/agentfs.inf
