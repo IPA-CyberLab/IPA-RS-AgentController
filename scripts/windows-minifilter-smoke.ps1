@@ -268,6 +268,10 @@ if ((Get-Location).Path -ne '$source') { throw "cwd was not preserved: `$((Get-L
 if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+New-Item -ItemType Directory -Force -Path upper-only-dir | Out-Null
+Set-Content upper-only-dir\child.txt 'upper-only-child'
+if ((Get-Content upper-only-dir\child.txt) -ne 'upper-only-child') { throw 'upper-only directory child read failed' }
+if ((Get-ChildItem upper-only-dir -Name) -notcontains 'child.txt') { throw 'upper-only directory listing lost child' }
 New-Item -ItemType Directory -Force -Path stale-dir | Out-Null
 Set-Content stale-dir\old.txt 'stale-upper-child'
 Remove-Item -Recurse stale-dir
@@ -302,6 +306,7 @@ if (`$names -notcontains 'rename-target.txt') { throw 'directory listing lost up
 if (`$names -notcontains 'moved-lower') { throw 'directory listing lost renamed lower directory' }
 if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
 if (`$names -notcontains 'stale-dir') { throw 'directory listing lost recreated upper directory' }
+if (`$names -notcontains 'upper-only-dir') { throw 'directory listing lost upper-only directory' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
 if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed mixed source' }
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
@@ -371,6 +376,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if (Test-Path (Join-Path $upperSource "stale-dir\old.txt")) {
         throw "deleted upper directory child was left behind"
+    }
+    if ((Get-Content (Join-Path $upperSource "upper-only-dir\child.txt")) -ne "upper-only-child") {
+        throw "upper-only directory child was not written to upper"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"

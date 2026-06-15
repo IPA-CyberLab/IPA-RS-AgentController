@@ -21,6 +21,7 @@ typedef struct _AGENTFS_DIR_CONTEXT {
     UNICODE_STRING LowerPath;
     UNICODE_STRING UpperPath;
     UNICODE_STRING WhiteoutPath;
+    BOOLEAN EnumeratingUpperPath;
 } AGENTFS_DIR_CONTEXT, *PAGENTFS_DIR_CONTEXT;
 
 typedef struct _AGENTFS_DIR_STATE {
@@ -1084,6 +1085,11 @@ static NTSTATUS AgentFsSelectRedirect(
         *Redirect = lower;
         return STATUS_SUCCESS;
     }
+    if (directoryRead && AgentFsPathExists(Instance, &upper)) {
+        AgentFsFreeUnicode(&lower);
+        *Redirect = upper;
+        return STATUS_SUCCESS;
+    }
     AgentFsFreeUnicode(&upper);
     AgentFsFreeUnicode(&lower);
     return STATUS_OBJECT_NAME_NOT_FOUND;
@@ -1443,6 +1449,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     RtlZeroMemory(context, sizeof(*context));
+    context->EnumeratingUpperPath = AgentFsStartsWithPath(&nameInfo->Name, &env->UpperRoot);
     status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &context->VisiblePath);
     FltReleaseFileNameInformation(nameInfo);
     if (NT_SUCCESS(status)) {
@@ -1699,7 +1706,12 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
             ULONG entrySize = AgentFsEntryRecordSize(entry, remaining, nameLengthOffset, nameOffset);
             ULONG nameLength = *(PULONG)((PUCHAR)entry + nameLengthOffset);
             PCWCH name = (PCWCH)((PUCHAR)entry + nameOffset);
-            if (!AgentFsEntryHiddenByUpperOrWhiteout(FltObjects->Instance, context, name, nameLength, TRUE)) {
+            if (!AgentFsEntryHiddenByUpperOrWhiteout(
+                    FltObjects->Instance,
+                    context,
+                    name,
+                    nameLength,
+                    !context->EnumeratingUpperPath)) {
                 if (!NT_SUCCESS(AgentFsAppendDirectoryEntry(output, capacity, &used, &lastOffset, entry, entrySize))) {
                     break;
                 }
@@ -1712,7 +1724,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
         }
     }
 
-    if (AgentFsShouldAppendUpperDirectoryEntries(Data)) {
+    if (!context->EnumeratingUpperPath && AgentFsShouldAppendUpperDirectoryEntries(Data)) {
         if (!AgentFsDirUpperAlreadyMerged(FltObjects->FileObject)) {
             (VOID)AgentFsAppendUpperDirectoryEntries(
                 FltObjects->Instance,
