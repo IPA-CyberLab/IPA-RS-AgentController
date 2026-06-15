@@ -352,6 +352,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $source "nested\lower") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "delete-lower-dir\child") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "move-lower\inside") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $source "metadata-dir") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "mixed-lower") | Out-Null
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
@@ -363,6 +364,8 @@ try {
     Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
     (Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime
+    Set-Content -Path (Join-Path $source "metadata-dir\child.txt") -Value "metadata-dir-child-original"
+    (Get-Item (Join-Path $source "metadata-dir")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2016-01-02T03:04:05Z").UtcDateTime
     Set-Content -Path (Join-Path $source "truncate.txt") -Value "truncate-original"
     Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
@@ -469,6 +472,8 @@ try {
 }
 if (-not `$lockedWriteFailed) { throw 'write to exclusively locked lower file unexpectedly succeeded' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
+(Get-Item metadata-dir).LastWriteTimeUtc = [DateTimeOffset]::Parse('2021-03-04T05:06:07Z').UtcDateTime
+if ((Get-ChildItem metadata-dir -Name) -notcontains 'child.txt') { throw 'directory metadata copy-up hid lower child' }
 `$truncateFile = [IO.File]::Open('truncate.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
 try {
     `$truncateFile.SetLength(8)
@@ -927,6 +932,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime) {
         throw "host metadata.txt timestamp was modified"
     }
+    if ((Get-Item (Join-Path $source "metadata-dir")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2016-01-02T03:04:05Z").UtcDateTime) {
+        throw "host metadata-dir timestamp was modified"
+    }
+    if ((Get-Content (Join-Path $source "metadata-dir\child.txt")) -ne "metadata-dir-child-original") {
+        throw "host metadata-dir child was modified"
+    }
     if ((Get-Content (Join-Path $source "truncate.txt")) -ne "truncate-original") {
         throw "host truncate.txt was modified"
     }
@@ -1071,6 +1082,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ((Get-Item (Join-Path $upperSource "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2020-02-03T04:05:06Z").UtcDateTime) {
         throw "metadata write was not redirected to upper"
+    }
+    if ((Get-Item (Join-Path $upperSource "metadata-dir")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2021-03-04T05:06:07Z").UtcDateTime) {
+        throw "directory metadata write was not redirected to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "metadata-dir\child.txt")) {
+        throw "directory metadata write copied lower child into upper"
     }
     if ([IO.File]::ReadAllText((Join-Path $upperSource "truncate.txt")) -ne "truncate") {
         throw "truncated file was not redirected to upper"
