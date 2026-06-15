@@ -260,6 +260,7 @@ if ((Get-Location).Path -ne '$source') { throw "cwd was not preserved: `$((Get-L
 if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+New-Item -ItemType Directory -Force -Path nested\lower | Out-Null
 Set-Content nested\lower\deep.txt 'deep-modified'
 New-Item -ItemType Directory -Force -Path nested\created\more | Out-Null
 Set-Content nested\created\more\new.txt 'new-deep'

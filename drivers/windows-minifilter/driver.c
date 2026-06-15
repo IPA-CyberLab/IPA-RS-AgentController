@@ -593,6 +593,34 @@ static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STR
     return FALSE;
 }
 
+static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
+{
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle = NULL;
+    InitializeObjectAttributes(&oa, (PUNICODE_STRING)Path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    NTSTATUS status = FltCreateFile(
+        gFilter,
+        Instance,
+        &handle,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        &oa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (NT_SUCCESS(status)) {
+        FltClose(handle);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static BOOLEAN AgentFsDirectoryLayout(
     _In_ FILE_INFORMATION_CLASS InfoClass,
     _Out_ PULONG FileNameLengthOffset,
@@ -758,7 +786,11 @@ static NTSTATUS AgentFsSelectRedirect(
                 return status;
             }
             if (AgentFsPathExists(Instance, &lower)) {
-                status = AgentFsCopyFile(Instance, &lower, &upper);
+                if (AgentFsDirectoryOpen(Options) || AgentFsPathIsDirectory(Instance, &lower)) {
+                    status = AgentFsEnsureDirectoryTree(Instance, &upper);
+                } else {
+                    status = AgentFsCopyFile(Instance, &lower, &upper);
+                }
                 AgentFsFreeUnicode(&lower);
                 if (!NT_SUCCESS(status)) {
                     AgentFsFreeUnicode(&upper);
