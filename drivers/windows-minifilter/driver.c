@@ -100,7 +100,10 @@ static VOID AgentFsProcessNotify(
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static BOOLEAN AgentFsPathIsReparsePoint(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
-static NTSTATUS AgentFsDeleteDirectoryTree(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
+static NTSTATUS AgentFsDeleteDirectoryTree(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING Path,
+    _In_ BOOLEAN IgnoreReadOnly);
 static NTSTATUS AgentFsDupUnicode(_Out_ PUNICODE_STRING Destination, _In_ PCUNICODE_STRING Source);
 static NTSTATUS AgentFsVisiblePathFromName(
     _In_ PAGENTFS_ENV Env,
@@ -1269,7 +1272,7 @@ static NTSTATUS AgentFsCopyDirectoryTree(
         0);
     if (!NT_SUCCESS(status)) {
         if (!targetExisted) {
-            (VOID)AgentFsDeleteDirectoryTree(Instance, Target);
+            (VOID)AgentFsDeleteDirectoryTree(Instance, Target, FALSE);
         }
         return status;
     }
@@ -1278,7 +1281,7 @@ static NTSTATUS AgentFsCopyDirectoryTree(
     if (temp == NULL) {
         FltClose(handle);
         if (!targetExisted) {
-            (VOID)AgentFsDeleteDirectoryTree(Instance, Target);
+            (VOID)AgentFsDeleteDirectoryTree(Instance, Target, FALSE);
         }
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -1349,12 +1352,15 @@ Exit:
     ExFreePoolWithTag(temp, AGENTFS_TAG);
     FltClose(handle);
     if (!NT_SUCCESS(status) && !targetExisted) {
-        (VOID)AgentFsDeleteDirectoryTree(Instance, Target);
+        (VOID)AgentFsDeleteDirectoryTree(Instance, Target, FALSE);
     }
     return status;
 }
 
-static NTSTATUS AgentFsDeleteDirectoryTree(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
+static NTSTATUS AgentFsDeleteDirectoryTree(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING Path,
+    _In_ BOOLEAN IgnoreReadOnly)
 {
     OBJECT_ATTRIBUTES oa;
     IO_STATUS_BLOCK iosb;
@@ -1424,9 +1430,9 @@ static NTSTATUS AgentFsDeleteDirectoryTree(_In_ PFLT_INSTANCE Instance, _In_ PCU
                 status = AgentFsJoinChildPath(&child, Path, entry->FileName, entry->FileNameLength);
                 if (NT_SUCCESS(status)) {
                     if (AgentFsPathIsDirectory(Instance, &child)) {
-                        status = AgentFsDeleteDirectoryTree(Instance, &child);
+                        status = AgentFsDeleteDirectoryTree(Instance, &child, IgnoreReadOnly);
                     } else {
-                        status = AgentFsDeletePath(&child);
+                        status = AgentFsDeletePathForDisposition(Instance, &child, IgnoreReadOnly);
                     }
                 }
                 AgentFsFreeUnicode(&child);
@@ -1448,7 +1454,7 @@ Exit:
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    return AgentFsDeletePath(Path);
+    return AgentFsDeletePathForDisposition(Instance, Path, IgnoreReadOnly);
 }
 
 static ULONG AgentFsCreateDisposition(_In_ ULONG Options)
@@ -2305,7 +2311,12 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     status = AgentFsJoinRedirectPath(&upper, &env->UpperRoot, &env->SourceRoot, &visible);
     if (NT_SUCCESS(status)) {
         if (AgentFsPathIsDirectory(FltObjects->Instance, &upper)) {
-            status = AgentFsDeleteDirectoryTree(FltObjects->Instance, &upper);
+            status = AgentFsDeleteDirectoryTree(
+                FltObjects->Instance,
+                &upper,
+                AgentFsDeleteIgnoresReadOnly(
+                    infoClass,
+                    Data->Iopb->Parameters.SetFileInformation.InfoBuffer));
         } else {
             status = AgentFsDeletePathForDisposition(
                 FltObjects->Instance,

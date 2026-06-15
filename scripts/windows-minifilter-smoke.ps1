@@ -553,6 +553,7 @@ public static class AgentFsNativeMove {
     private const uint FILE_SHARE_DELETE = 0x00000004;
     private const uint OPEN_EXISTING = 3;
     private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
     private const uint FILE_DISPOSITION_DELETE = 0x00000001;
     private const uint FILE_DISPOSITION_ON_CLOSE = 0x00000008;
     private const uint FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE = 0x00000010;
@@ -617,6 +618,27 @@ public static class AgentFsNativeMove {
         }
     }
 
+    public static void DeleteDirectoryOnCloseIgnoreReadonly(string path) {
+        using (SafeFileHandle handle = CreateFile(
+            path,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+            IntPtr.Zero)) {
+            if (handle.IsInvalid) {
+                throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+            }
+
+            FILE_DISPOSITION_INFO_EX info = new FILE_DISPOSITION_INFO_EX();
+            info.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_ON_CLOSE | FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE;
+            if (!SetFileInformationByHandle(handle, FileDispositionInfoEx, ref info, Marshal.SizeOf(typeof(FILE_DISPOSITION_INFO_EX)))) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
+
     public static void RenameReplaceIgnoreReadonly(string sourcePath, string targetPath) {
         using (SafeFileHandle handle = CreateFile(
             sourcePath,
@@ -646,6 +668,12 @@ public static class AgentFsNativeMove {
 '@
 [AgentFsNativeMove]::DeleteOnCloseIgnoreReadonly((Join-Path (Get-Location) 'readonly-delete.txt'))
 if (Test-Path readonly-delete.txt) { throw 'FileDispositionInfoEx delete left readonly lower file visible' }
+New-Item -ItemType Directory -Force -Path readonly-tree | Out-Null
+Set-Content readonly-tree\child.txt 'readonly-tree-child-env'
+`$readonlyTreeChild = Get-Item readonly-tree\child.txt
+`$readonlyTreeChild.Attributes = `$readonlyTreeChild.Attributes -bor [IO.FileAttributes]::ReadOnly
+[AgentFsNativeMove]::DeleteDirectoryOnCloseIgnoreReadonly((Join-Path (Get-Location) 'readonly-tree'))
+if (Test-Path readonly-tree) { throw 'FileDispositionInfoEx delete left readonly upper directory tree visible' }
 Set-Content readonly-replace-source.txt 'readonly-replace-source-env'
 Set-Content readonly-replace-target.txt 'readonly-replace-target-env'
 `$readonlyReplaceTarget = Get-Item readonly-replace-target.txt
@@ -707,6 +735,7 @@ if (`$names -contains 'delete-lower-dir') { throw 'directory listing showed whit
 if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed mixed source' }
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
 if (`$names -contains 'readonly-delete.txt') { throw 'directory listing showed readonly disposition-deleted lower file' }
+if (`$names -contains 'readonly-tree') { throw 'directory listing showed readonly disposition-deleted upper directory tree' }
 if (`$names -contains 'replace-file-source.txt') { throw 'directory listing showed replaced lower file source' }
 if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost upper replacement over lower file' }
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
@@ -755,6 +784,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (Test-Path (Join-Path $source "readonly-replace-source.txt")) {
         throw "host readonly replace source was created"
+    }
+    if (Test-Path (Join-Path $source "readonly-tree")) {
+        throw "host readonly-tree was created"
     }
     if (Test-Path (Join-Path $source "readonly-replace-target.txt")) {
         throw "host readonly replace target was created"
@@ -924,6 +956,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (Test-Path (Join-Path $upperSource "readonly-delete.txt")) {
         throw "readonly disposition-deleted lower file was unexpectedly left in upper"
+    }
+    if (Test-Path (Join-Path $upperSource "readonly-tree")) {
+        throw "readonly disposition-deleted upper directory tree was left in upper"
     }
     if ((Get-Content (Join-Path $upperSource "upper-only-dir\child.txt")) -ne "upper-only-child") {
         throw "upper-only directory child was not written to upper"
