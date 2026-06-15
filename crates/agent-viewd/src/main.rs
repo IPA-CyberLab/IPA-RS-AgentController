@@ -921,6 +921,7 @@ fn direct_mount_sandbox_profile(
 (allow file-read*)
 (allow file-ioctl)
 (allow file-write* (subpath "{view_root}"))
+(allow file-write* (subpath "/dev"))
 {home_write_rule}(deny file-write* (subpath "{source_root}"))
 {network_rule}
 "#
@@ -1502,6 +1503,7 @@ mod tests {
         assert!(profile.contains(
             r#"(allow file-write* (subpath "/Users/me/.agentfs/envs/codex/view-root"))"#
         ));
+        assert!(profile.contains(r#"(allow file-write* (subpath "/dev"))"#));
         assert!(profile.contains(r#"(allow file-write* (subpath "/Users/me"))"#));
         assert!(profile.contains(r#"(deny file-write* (subpath "/Users/me/project"))"#));
         let home_allow = profile.find(r#"(allow file-write* (subpath "/Users/me"))"#);
