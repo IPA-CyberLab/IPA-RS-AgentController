@@ -83,6 +83,10 @@ Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
 Remove-Item delete-me.txt
 Rename-Item created.txt renamed.txt
+`$names = Get-ChildItem -Name | Sort-Object
+if (`$names -notcontains 'host.txt') { throw 'directory listing lost lower file' }
+if (`$names -notcontains 'renamed.txt') { throw 'directory listing lost upper renamed file' }
+if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
 "@
 
     $hostContent = Get-Content (Join-Path $source "host.txt")

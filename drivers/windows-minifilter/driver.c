@@ -16,6 +16,13 @@ typedef struct _AGENTFS_ENV {
     UNICODE_STRING WhiteoutRoot;
 } AGENTFS_ENV, *PAGENTFS_ENV;
 
+typedef struct _AGENTFS_DIR_CONTEXT {
+    UNICODE_STRING VisiblePath;
+    UNICODE_STRING LowerPath;
+    UNICODE_STRING UpperPath;
+    UNICODE_STRING WhiteoutPath;
+} AGENTFS_DIR_CONTEXT, *PAGENTFS_DIR_CONTEXT;
+
 static PFLT_FILTER gFilter;
 static PFLT_PORT gServerPort;
 static PFLT_PORT gClientPort;
@@ -37,6 +44,11 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _Flt_CompletionContext_Outptr_ PVOID *CompletionContext);
+static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _In_opt_ PVOID CompletionContext,
+    _In_ FLT_POST_OPERATION_FLAGS Flags);
 
 static NTSTATUS AgentFsConnect(
     _In_ PFLT_PORT ClientPort,
@@ -60,7 +72,7 @@ static VOID AgentFsProcessNotify(
 CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
     { IRP_MJ_CREATE, 0, AgentFsPreCreate, NULL },
     { IRP_MJ_SET_INFORMATION, 0, AgentFsPreSetInformation, NULL },
-    { IRP_MJ_DIRECTORY_CONTROL, 0, AgentFsPreDirectoryControl, NULL },
+    { IRP_MJ_DIRECTORY_CONTROL, 0, AgentFsPreDirectoryControl, AgentFsPostDirectoryControl },
     { IRP_MJ_OPERATION_END }
 };
 
@@ -98,6 +110,18 @@ static VOID AgentFsFreeEnv(_In_ PAGENTFS_ENV Env)
     AgentFsFreeUnicode(&Env->UpperRoot);
     AgentFsFreeUnicode(&Env->WhiteoutRoot);
     ExFreePoolWithTag(Env, AGENTFS_TAG);
+}
+
+static VOID AgentFsFreeDirContext(_In_opt_ PAGENTFS_DIR_CONTEXT Context)
+{
+    if (Context == NULL) {
+        return;
+    }
+    AgentFsFreeUnicode(&Context->VisiblePath);
+    AgentFsFreeUnicode(&Context->LowerPath);
+    AgentFsFreeUnicode(&Context->UpperPath);
+    AgentFsFreeUnicode(&Context->WhiteoutPath);
+    ExFreePoolWithTag(Context, AGENTFS_TAG);
 }
 
 static NTSTATUS AgentFsDupUserString(
@@ -320,6 +344,27 @@ static NTSTATUS AgentFsSiblingVisiblePath(
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS AgentFsJoinChildPath(
+    _Out_ PUNICODE_STRING Target,
+    _In_ PCUNICODE_STRING Root,
+    _In_reads_bytes_(NameLength) PCWCH Name,
+    _In_ ULONG NameLength)
+{
+    USHORT separatorBytes = sizeof(WCHAR);
+    USHORT totalBytes = Root->Length + separatorBytes + (USHORT)NameLength;
+    Target->Length = totalBytes;
+    Target->MaximumLength = totalBytes + sizeof(WCHAR);
+    Target->Buffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, Target->MaximumLength, AGENTFS_TAG);
+    if (Target->Buffer == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlCopyMemory(Target->Buffer, Root->Buffer, Root->Length);
+    Target->Buffer[Root->Length / sizeof(WCHAR)] = L'\\';
+    RtlCopyMemory((PUCHAR)Target->Buffer + Root->Length + separatorBytes, Name, NameLength);
+    Target->Buffer[totalBytes / sizeof(WCHAR)] = L'\0';
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Source, _In_ PCUNICODE_STRING Target)
 {
     if (AgentFsPathExists(Instance, Target)) {
@@ -445,6 +490,11 @@ static BOOLEAN AgentFsWriteIntent(_In_ ACCESS_MASK DesiredAccess, _In_ ULONG Opt
         disposition == FILE_SUPERSEDE;
 }
 
+static BOOLEAN AgentFsDirectoryOpen(_In_ ULONG Options)
+{
+    return (Options & FILE_DIRECTORY_FILE) != 0;
+}
+
 static BOOLEAN AgentFsDeleteRequested(_In_ PFLT_CALLBACK_DATA Data, _In_ FILE_INFORMATION_CLASS InfoClass)
 {
     PVOID buffer = Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
@@ -488,6 +538,114 @@ static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STR
     return FALSE;
 }
 
+static BOOLEAN AgentFsDirectoryLayout(
+    _In_ FILE_INFORMATION_CLASS InfoClass,
+    _Out_ PULONG FileNameLengthOffset,
+    _Out_ PULONG FileNameOffset)
+{
+    switch (InfoClass) {
+    case FileDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_DIRECTORY_INFORMATION, FileName);
+        return TRUE;
+    case FileFullDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_FULL_DIR_INFORMATION, FileName);
+        return TRUE;
+    case FileBothDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_BOTH_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_BOTH_DIR_INFORMATION, FileName);
+        return TRUE;
+    case FileIdFullDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_ID_FULL_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_ID_FULL_DIR_INFORMATION, FileName);
+        return TRUE;
+    case FileIdBothDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_ID_BOTH_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_ID_BOTH_DIR_INFORMATION, FileName);
+        return TRUE;
+    case FileNamesInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_NAMES_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_NAMES_INFORMATION, FileName);
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+static ULONG AgentFsAlign8(_In_ ULONG Value)
+{
+    return (Value + 7) & ~7UL;
+}
+
+static ULONG AgentFsEntryRecordSize(
+    _In_ PVOID Entry,
+    _In_ ULONG Remaining,
+    _In_ ULONG FileNameLengthOffset,
+    _In_ ULONG FileNameOffset)
+{
+    ULONG next = *(PULONG)Entry;
+    if (next != 0 && next <= Remaining) {
+        return next;
+    }
+    ULONG nameLength = *(PULONG)((PUCHAR)Entry + FileNameLengthOffset);
+    ULONG size = AgentFsAlign8(FileNameOffset + nameLength);
+    return size <= Remaining ? size : Remaining;
+}
+
+static NTSTATUS AgentFsAppendDirectoryEntry(
+    _Inout_updates_bytes_(Capacity) PVOID Output,
+    _In_ ULONG Capacity,
+    _Inout_ PULONG Used,
+    _Inout_ PULONG LastOffset,
+    _In_ PVOID Entry,
+    _In_ ULONG EntrySize)
+{
+    EntrySize = AgentFsAlign8(EntrySize);
+    if (*Used + EntrySize > Capacity) {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    if (*Used != 0) {
+        *(PULONG)((PUCHAR)Output + *LastOffset) = *Used - *LastOffset;
+    }
+    RtlCopyMemory((PUCHAR)Output + *Used, Entry, EntrySize);
+    *(PULONG)((PUCHAR)Output + *Used) = 0;
+    *LastOffset = *Used;
+    *Used += EntrySize;
+    return STATUS_SUCCESS;
+}
+
+static BOOLEAN AgentFsEntryHiddenByUpperOrWhiteout(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PAGENTFS_DIR_CONTEXT Context,
+    _In_reads_bytes_(NameLength) PCWCH Name,
+    _In_ ULONG NameLength,
+    _In_ BOOLEAN CheckUpper)
+{
+    UNICODE_STRING child;
+    RtlZeroMemory(&child, sizeof(child));
+    NTSTATUS status = AgentFsJoinChildPath(&child, &Context->WhiteoutPath, Name, NameLength);
+    if (NT_SUCCESS(status)) {
+        BOOLEAN exists = AgentFsPathExists(Instance, &child);
+        AgentFsFreeUnicode(&child);
+        if (exists) {
+            return TRUE;
+        }
+    }
+    if (!CheckUpper) {
+        return FALSE;
+    }
+    status = AgentFsJoinChildPath(&child, &Context->UpperPath, Name, NameLength);
+    if (NT_SUCCESS(status)) {
+        BOOLEAN exists = AgentFsPathExists(Instance, &child);
+        AgentFsFreeUnicode(&child);
+        if (exists) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static NTSTATUS AgentFsSelectRedirect(
     _In_ PFLT_INSTANCE Instance,
     _In_ PAGENTFS_ENV Env,
@@ -519,6 +677,7 @@ static NTSTATUS AgentFsSelectRedirect(
         return status;
     }
     BOOLEAN writeIntent = AgentFsWriteIntent(DesiredAccess, Options);
+    BOOLEAN directoryRead = AgentFsDirectoryOpen(Options) && !writeIntent;
     if (writeIntent && !AgentFsPathExists(Instance, &upper)) {
         status = AgentFsJoinRedirectPath(&lower, &Env->LowerRoot, &Env->SourceRoot, OriginalPath);
         if (!NT_SUCCESS(status)) {
@@ -541,7 +700,7 @@ static NTSTATUS AgentFsSelectRedirect(
             }
         }
     }
-    if (writeIntent || AgentFsPathExists(Instance, &upper)) {
+    if (!directoryRead && (writeIntent || AgentFsPathExists(Instance, &upper))) {
         *Redirect = upper;
         return STATUS_SUCCESS;
     }
@@ -824,10 +983,259 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _Flt_CompletionContext_Outptr_ PVOID *CompletionContext)
 {
-    UNREFERENCED_PARAMETER(Data);
     UNREFERENCED_PARAMETER(FltObjects);
-    UNREFERENCED_PARAMETER(CompletionContext);
-    return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    *CompletionContext = NULL;
+    if (Data->Iopb->MinorFunction != IRP_MN_QUERY_DIRECTORY) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    HANDLE pid = PsGetCurrentProcessId();
+    PAGENTFS_ENV env;
+    PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
+    PAGENTFS_DIR_CONTEXT context = NULL;
+    NTSTATUS status;
+
+    ExAcquireFastMutex(&gEnvLock);
+    env = AgentFsFindEnvLocked(pid);
+    if (env == NULL) {
+        ExReleaseFastMutex(&gEnvLock);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    status = FltGetFileNameInformation(
+        Data,
+        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
+        &nameInfo);
+    if (!NT_SUCCESS(status)) {
+        ExReleaseFastMutex(&gEnvLock);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    status = FltParseFileNameInformation(nameInfo);
+    if (!NT_SUCCESS(status)) {
+        FltReleaseFileNameInformation(nameInfo);
+        ExReleaseFastMutex(&gEnvLock);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    context = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(AGENTFS_DIR_CONTEXT), AGENTFS_TAG);
+    if (context == NULL) {
+        FltReleaseFileNameInformation(nameInfo);
+        ExReleaseFastMutex(&gEnvLock);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    RtlZeroMemory(context, sizeof(*context));
+    status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &context->VisiblePath);
+    FltReleaseFileNameInformation(nameInfo);
+    if (NT_SUCCESS(status)) {
+        status = AgentFsJoinRedirectPath(&context->LowerPath, &env->LowerRoot, &env->SourceRoot, &context->VisiblePath);
+    }
+    if (NT_SUCCESS(status)) {
+        status = AgentFsJoinRedirectPath(&context->UpperPath, &env->UpperRoot, &env->SourceRoot, &context->VisiblePath);
+    }
+    if (NT_SUCCESS(status)) {
+        status = AgentFsJoinRedirectPath(&context->WhiteoutPath, &env->WhiteoutRoot, &env->SourceRoot, &context->VisiblePath);
+    }
+    ExReleaseFastMutex(&gEnvLock);
+    if (!NT_SUCCESS(status)) {
+        AgentFsFreeDirContext(context);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    *CompletionContext = context;
+    return FLT_PREOP_SUCCESS_WITH_CALLBACK;
+}
+
+static PVOID AgentFsDirectoryBufferAddress(_In_ PFLT_CALLBACK_DATA Data)
+{
+    if (Data->Iopb->Parameters.DirectoryControl.QueryDirectory.MdlAddress != NULL) {
+        return MmGetSystemAddressForMdlSafe(
+            Data->Iopb->Parameters.DirectoryControl.QueryDirectory.MdlAddress,
+            NormalPagePriority | MdlMappingNoExecute);
+    }
+    return Data->Iopb->Parameters.DirectoryControl.QueryDirectory.DirectoryBuffer;
+}
+
+static NTSTATUS AgentFsAppendUpperDirectoryEntries(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PAGENTFS_DIR_CONTEXT Context,
+    _In_ FILE_INFORMATION_CLASS InfoClass,
+    _In_ ULONG FileNameLengthOffset,
+    _In_ ULONG FileNameOffset,
+    _Inout_updates_bytes_(Capacity) PVOID Output,
+    _In_ ULONG Capacity,
+    _Inout_ PULONG Used,
+    _Inout_ PULONG LastOffset)
+{
+    if (!AgentFsPathExists(Instance, &Context->UpperPath)) {
+        return STATUS_SUCCESS;
+    }
+
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle = NULL;
+    InitializeObjectAttributes(&oa, &Context->UpperPath, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    NTSTATUS status = FltCreateFile(
+        gFilter,
+        Instance,
+        &handle,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        &oa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        return STATUS_SUCCESS;
+    }
+
+    PVOID temp = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
+    if (temp == NULL) {
+        FltClose(handle);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    BOOLEAN restartScan = TRUE;
+    for (;;) {
+        IO_STATUS_BLOCK queryStatus;
+        RtlZeroMemory(&queryStatus, sizeof(queryStatus));
+        RtlZeroMemory(temp, 64 * 1024);
+        status = ZwQueryDirectoryFile(
+            handle,
+            NULL,
+            NULL,
+            NULL,
+            &queryStatus,
+            temp,
+            64 * 1024,
+            InfoClass,
+            FALSE,
+            NULL,
+            restartScan);
+        restartScan = FALSE;
+        if (status == STATUS_NO_MORE_FILES || status == STATUS_NO_SUCH_FILE) {
+            status = STATUS_SUCCESS;
+            break;
+        }
+        if (!NT_SUCCESS(status)) {
+            break;
+        }
+        ULONG offset = 0;
+        ULONG returned = (ULONG)queryStatus.Information;
+        while (offset < returned) {
+            PVOID entry = (PUCHAR)temp + offset;
+            ULONG remaining = returned - offset;
+            ULONG entrySize = AgentFsEntryRecordSize(entry, remaining, FileNameLengthOffset, FileNameOffset);
+            ULONG nameLength = *(PULONG)((PUCHAR)entry + FileNameLengthOffset);
+            PCWCH name = (PCWCH)((PUCHAR)entry + FileNameOffset);
+            if (!AgentFsEntryHiddenByUpperOrWhiteout(Instance, Context, name, nameLength, FALSE)) {
+                NTSTATUS appendStatus = AgentFsAppendDirectoryEntry(Output, Capacity, Used, LastOffset, entry, entrySize);
+                if (!NT_SUCCESS(appendStatus)) {
+                    status = STATUS_SUCCESS;
+                    goto Exit;
+                }
+            }
+            ULONG next = *(PULONG)entry;
+            if (next == 0) {
+                break;
+            }
+            offset += next;
+        }
+    }
+
+Exit:
+    ExFreePoolWithTag(temp, AGENTFS_TAG);
+    FltClose(handle);
+    return status;
+}
+
+static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _In_opt_ PVOID CompletionContext,
+    _In_ FLT_POST_OPERATION_FLAGS Flags)
+{
+    UNREFERENCED_PARAMETER(Flags);
+    PAGENTFS_DIR_CONTEXT context = (PAGENTFS_DIR_CONTEXT)CompletionContext;
+    if (context == NULL) {
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+    if (!NT_SUCCESS(Data->IoStatus.Status) && Data->IoStatus.Status != STATUS_NO_MORE_FILES) {
+        AgentFsFreeDirContext(context);
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+
+    FILE_INFORMATION_CLASS infoClass = Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileInformationClass;
+    ULONG nameLengthOffset = 0;
+    ULONG nameOffset = 0;
+    if (!AgentFsDirectoryLayout(infoClass, &nameLengthOffset, &nameOffset)) {
+        AgentFsFreeDirContext(context);
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+
+    ULONG capacity = Data->Iopb->Parameters.DirectoryControl.QueryDirectory.Length;
+    PVOID userBuffer = AgentFsDirectoryBufferAddress(Data);
+    if (userBuffer == NULL || capacity == 0) {
+        AgentFsFreeDirContext(context);
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+
+    PVOID output = ExAllocatePool2(POOL_FLAG_NON_PAGED, capacity, AGENTFS_TAG);
+    if (output == NULL) {
+        AgentFsFreeDirContext(context);
+        return FLT_POSTOP_FINISHED_PROCESSING;
+    }
+    RtlZeroMemory(output, capacity);
+
+    ULONG used = 0;
+    ULONG lastOffset = 0;
+    ULONG inputUsed = (ULONG)Data->IoStatus.Information;
+    if (NT_SUCCESS(Data->IoStatus.Status) && inputUsed > 0) {
+        ULONG offset = 0;
+        while (offset < inputUsed) {
+            PVOID entry = (PUCHAR)userBuffer + offset;
+            ULONG remaining = inputUsed - offset;
+            ULONG entrySize = AgentFsEntryRecordSize(entry, remaining, nameLengthOffset, nameOffset);
+            ULONG nameLength = *(PULONG)((PUCHAR)entry + nameLengthOffset);
+            PCWCH name = (PCWCH)((PUCHAR)entry + nameOffset);
+            if (!AgentFsEntryHiddenByUpperOrWhiteout(FltObjects->Instance, context, name, nameLength, TRUE)) {
+                if (!NT_SUCCESS(AgentFsAppendDirectoryEntry(output, capacity, &used, &lastOffset, entry, entrySize))) {
+                    break;
+                }
+            }
+            ULONG next = *(PULONG)entry;
+            if (next == 0) {
+                break;
+            }
+            offset += next;
+        }
+    }
+
+    (VOID)AgentFsAppendUpperDirectoryEntries(
+        FltObjects->Instance,
+        context,
+        infoClass,
+        nameLengthOffset,
+        nameOffset,
+        output,
+        capacity,
+        &used,
+        &lastOffset);
+
+    if (used == 0) {
+        Data->IoStatus.Status = STATUS_NO_MORE_FILES;
+        Data->IoStatus.Information = 0;
+    } else {
+        RtlCopyMemory(userBuffer, output, used);
+        Data->IoStatus.Status = STATUS_SUCCESS;
+        Data->IoStatus.Information = used;
+    }
+
+    ExFreePoolWithTag(output, AGENTFS_TAG);
+    AgentFsFreeDirContext(context);
+    return FLT_POSTOP_FINISHED_PROCESSING;
 }
 
 static NTSTATUS AgentFsRegister(_In_ PAGENTFS_REQUEST Request)
