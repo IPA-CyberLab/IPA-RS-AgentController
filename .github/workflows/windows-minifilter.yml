@@ -48,6 +48,8 @@ jobs:
 
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: "[17.0,18.0)"
 
       - name: Build minifilter driver
         shell: pwsh
