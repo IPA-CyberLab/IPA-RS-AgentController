@@ -544,9 +544,11 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
 using Microsoft.Win32.SafeHandles;
 
 public static class AgentFsNativeMove {
+    private const uint FILE_LIST_DIRECTORY = 0x00000001;
     private const uint DELETE_ACCESS = 0x00010000;
     private const uint FILE_SHARE_READ = 0x00000001;
     private const uint FILE_SHARE_WRITE = 0x00000002;
@@ -561,10 +563,17 @@ public static class AgentFsNativeMove {
     private const uint FILE_RENAME_IGNORE_READONLY_ATTRIBUTE = 0x00000040;
     private const int FileDispositionInfoEx = 21;
     private const int FileRenameInfoEx = 22;
+    private const int STATUS_NO_MORE_FILES = unchecked((int)0x80000006);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FILE_DISPOSITION_INFO_EX {
         public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_STATUS_BLOCK {
+        public IntPtr Status;
+        public UIntPtr Information;
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -596,6 +605,76 @@ public static class AgentFsNativeMove {
         int fileInformationClass,
         byte[] fileInformation,
         int bufferSize);
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryDirectoryFile(
+        SafeFileHandle fileHandle,
+        IntPtr eventHandle,
+        IntPtr apcRoutine,
+        IntPtr apcContext,
+        out IO_STATUS_BLOCK ioStatusBlock,
+        byte[] fileInformation,
+        uint length,
+        int fileInformationClass,
+        bool returnSingleEntry,
+        IntPtr fileName,
+        bool restartScan);
+
+    public static string[] QueryDirectoryNames(string path, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset) {
+        using (SafeFileHandle handle = CreateFile(
+            path,
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+            IntPtr.Zero)) {
+            if (handle.IsInvalid) {
+                throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+            }
+
+            List<string> names = new List<string>();
+            byte[] buffer = new byte[64 * 1024];
+            bool restartScan = true;
+            for (;;) {
+                Array.Clear(buffer, 0, buffer.Length);
+                IO_STATUS_BLOCK iosb;
+                int status = NtQueryDirectoryFile(
+                    handle,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    out iosb,
+                    buffer,
+                    (uint)buffer.Length,
+                    fileInformationClass,
+                    false,
+                    IntPtr.Zero,
+                    restartScan);
+                restartScan = false;
+                if (status == STATUS_NO_MORE_FILES) {
+                    break;
+                }
+                if (status < 0) {
+                    throw new IOException("NtQueryDirectoryFile failed: 0x" + status.ToString("x8"));
+                }
+
+                int offset = 0;
+                int returned = (int)iosb.Information;
+                while (offset < returned) {
+                    int next = BitConverter.ToInt32(buffer, offset);
+                    int nameLength = BitConverter.ToInt32(buffer, offset + fileNameLengthOffset);
+                    names.Add(System.Text.Encoding.Unicode.GetString(buffer, offset + fileNameOffset, nameLength));
+                    if (next == 0) {
+                        break;
+                    }
+                    offset += next;
+                }
+            }
+            names.Sort(StringComparer.OrdinalIgnoreCase);
+            return names.ToArray();
+        }
+    }
 
     public static void DeleteOnCloseIgnoreReadonly(string path) {
         using (SafeFileHandle handle = CreateFile(
@@ -741,6 +820,14 @@ if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost u
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
 if ((Get-ChildItem -Name delete-lower-dir -ErrorAction SilentlyContinue) -contains 'delete-lower-dir') { throw 'exact listing showed whiteouted lower directory' }
 if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'exact listing lost recreated upper file over lower target' }
+`$fileIdExtdNames = [AgentFsNativeMove]::QueryDirectoryNames((Get-Location).Path, 60, 60, 88)
+if (`$fileIdExtdNames -notcontains 'host.txt') { throw 'FileIdExtdDirectoryInformation lost lower file' }
+if (`$fileIdExtdNames -notcontains 'upper-only-dir') { throw 'FileIdExtdDirectoryInformation lost upper directory' }
+if (`$fileIdExtdNames -contains 'delete-me.txt') { throw 'FileIdExtdDirectoryInformation showed whiteouted lower file' }
+`$fileId64ExtdNames = [AgentFsNativeMove]::QueryDirectoryNames((Get-Location).Path, 78, 60, 80)
+if (`$fileId64ExtdNames -notcontains 'host.txt') { throw 'FileId64ExtdDirectoryInformation lost lower file' }
+if (`$fileId64ExtdNames -notcontains 'upper-only-dir') { throw 'FileId64ExtdDirectoryInformation lost upper directory' }
+if (`$fileId64ExtdNames -contains 'delete-me.txt') { throw 'FileId64ExtdDirectoryInformation showed whiteouted lower file' }
 "@
 
     & $agentctl --agentfs $agentfs session create $EnvId logtest -- powershell.exe -NoProfile -Command "Write-Output 'session-log-stdout'; [Console]::Error.WriteLine('session-log-stderr')"

@@ -1695,6 +1695,22 @@ static BOOLEAN AgentFsDirectoryLayout(
         *FileNameLengthOffset = FIELD_OFFSET(FILE_ID_BOTH_DIR_INFORMATION, FileNameLength);
         *FileNameOffset = FIELD_OFFSET(FILE_ID_BOTH_DIR_INFORMATION, FileName);
         return TRUE;
+    case FileIdExtdDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_ID_EXTD_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_ID_EXTD_DIR_INFORMATION, FileName);
+        return TRUE;
+    case FileIdExtdBothDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_ID_EXTD_BOTH_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_ID_EXTD_BOTH_DIR_INFORMATION, FileName);
+        return TRUE;
+    case FileId64ExtdDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_ID_64_EXTD_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_ID_64_EXTD_DIR_INFORMATION, FileName);
+        return TRUE;
+    case FileId64ExtdBothDirectoryInformation:
+        *FileNameLengthOffset = FIELD_OFFSET(FILE_ID_64_EXTD_BOTH_DIR_INFORMATION, FileNameLength);
+        *FileNameOffset = FIELD_OFFSET(FILE_ID_64_EXTD_BOTH_DIR_INFORMATION, FileName);
+        return TRUE;
     case FileNamesInformation:
         *FileNameLengthOffset = FIELD_OFFSET(FILE_NAMES_INFORMATION, FileNameLength);
         *FileNameOffset = FIELD_OFFSET(FILE_NAMES_INFORMATION, FileName);
