@@ -172,16 +172,24 @@ fn enter_and_run(
     let (program, args) = split_command(&command)?;
     validate_network_mode(&network)?;
     if let Some(source_root) = source_root {
-        let mount = ensure_source_overlay_mounted(&source_root, &lower, &upper, &whiteouts)?;
+        let mount =
+            ensure_source_overlay_mounted(&view_root, &source_root, &lower, &upper, &whiteouts)?;
         validate_direct_runtime(&source_root, &cwd, program)?;
-        let mut command = command_for_direct_mount(program, args, &network, &source_root);
-        prepare_direct_child(&mut command, &cwd);
-        let status = command.env("PWD", &cwd).status().with_context(|| {
-            format!(
-                "failed to execute {program} inside path-preserving source {}",
-                source_root.display()
-            )
-        })?;
+        let mounted_cwd = source_view_path(&view_root, &source_root, &cwd)?;
+        prepare_source_view_workspace(&view_root, &mounted_cwd)?;
+        let mut command = command_for_direct_mount(program, args, &network, &view_root);
+        prepare_direct_child(&mut command, &mounted_cwd);
+        let status = command
+            .env("PWD", &cwd)
+            .env("AGENT_SOURCE_ROOT", &source_root)
+            .env("AGENT_VIEW_ROOT", &view_root)
+            .status()
+            .with_context(|| {
+                format!(
+                    "failed to execute {program} inside path-preserving source {}",
+                    source_root.display()
+                )
+            })?;
         drop(mount);
         return Ok(status.code().unwrap_or(128));
     }
@@ -199,18 +207,28 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
     validate_network_mode(&args.network)?;
     if let Some(source_root) = args.source_root.as_ref() {
-        let _mount =
-            ensure_source_overlay_mounted(source_root, &args.lower, &args.upper, &args.whiteouts)?;
+        let _mount = ensure_source_overlay_mounted(
+            &args.view_root,
+            source_root,
+            &args.lower,
+            &args.upper,
+            &args.whiteouts,
+        )?;
         validate_direct_runtime(source_root, &args.cwd, program)?;
+        validate_session_log_path(&args.view_root, &args.log_path)?;
+        let mounted_cwd = source_view_path(&args.view_root, source_root, &args.cwd)?;
+        prepare_source_view_workspace(&args.view_root, &mounted_cwd)?;
         let stdout = open_session_log(&args.log_path)?;
         let stderr = stdout
             .try_clone()
             .with_context(|| format!("failed to clone log {}", args.log_path.display()))?;
         let mut command =
-            command_for_direct_mount(program, command_args, &args.network, source_root);
-        prepare_direct_child(&mut command, &args.cwd);
+            command_for_direct_mount(program, command_args, &args.network, &args.view_root);
+        prepare_direct_child(&mut command, &mounted_cwd);
         command
             .env("PWD", &args.cwd)
+            .env("AGENT_SOURCE_ROOT", source_root)
+            .env("AGENT_VIEW_ROOT", &args.view_root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
@@ -398,6 +416,7 @@ fn ensure_overlay_mounted(
 
 #[cfg(target_os = "macos")]
 fn ensure_source_overlay_mounted(
+    view_root: &Path,
     source_root: &Path,
     lower: &Path,
     upper: &Path,
@@ -405,12 +424,13 @@ fn ensure_source_overlay_mounted(
 ) -> Result<MountedOverlay> {
     if overlay_mount_is_active(source_root) {
         bail!(
-            "source-root {} is already mounted by an active macOS path-preserving env; exit that shell or remove the env before starting another env for the same source",
+            "source-root {} is still mounted directly by an active legacy macOS path-preserving env; exit that shell before starting another env for the same source",
             source_root.display()
         );
     }
+    validate_overlay_paths(view_root, lower, upper, whiteouts)?;
     validate_source_overlay_paths(source_root, lower, upper, whiteouts)?;
-    ensure_overlay_mounted_at(source_root, Some(source_root), lower, upper, whiteouts)
+    ensure_overlay_mounted_at(view_root, Some(source_root), lower, upper, whiteouts)
 }
 
 #[cfg(target_os = "macos")]
@@ -786,6 +806,31 @@ fn system_fallback_root_candidates() -> &'static [&'static str] {
     ]
 }
 
+fn source_view_path(view_root: &Path, source_root: &Path, path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("preserved cwd must be absolute: {}", path.display());
+    }
+    let relative = path.strip_prefix(source_root).with_context(|| {
+        format!(
+            "preserved cwd {} must be inside source-root {}",
+            path.display(),
+            source_root.display()
+        )
+    })?;
+    Ok(view_root.join(relative))
+}
+
+fn prepare_source_view_workspace(view_root: &Path, mounted_cwd: &Path) -> Result<()> {
+    if !mounted_cwd.is_dir() {
+        bail!(
+            "path-preserving view at {} is missing cwd {}",
+            view_root.display(),
+            mounted_cwd.display()
+        );
+    }
+    Ok(())
+}
+
 fn command_for_chroot_network(program: &str, args: &[String], network: &str) -> Command {
     let mut command = if network == "none" {
         let mut command = Command::new("/usr/bin/sandbox-exec");
@@ -812,20 +857,20 @@ fn command_for_direct_mount(
     program: &str,
     args: &[String],
     network: &str,
-    source_root: &Path,
+    view_root: &Path,
 ) -> Command {
     let mut command = Command::new("/usr/bin/sandbox-exec");
     command
         .arg("-p")
-        .arg(direct_mount_sandbox_profile(source_root, network))
+        .arg(direct_mount_sandbox_profile(view_root, network))
         .arg(program)
         .args(args)
         .env("AGENT_NETWORK", network)
-        .env("HOME", source_root)
-        .env("ZDOTDIR", source_root)
-        .env("TMPDIR", source_root)
-        .env("TMP", source_root)
-        .env("TEMP", source_root);
+        .env("HOME", view_root)
+        .env("ZDOTDIR", view_root)
+        .env("TMPDIR", view_root)
+        .env("TMP", view_root)
+        .env("TEMP", view_root);
     if let Ok(host_home) = std::env::var("HOME") {
         command.env("HOST_HOME", host_home);
     }
@@ -833,8 +878,8 @@ fn command_for_direct_mount(
 }
 
 #[cfg(target_os = "macos")]
-fn direct_mount_sandbox_profile(source_root: &Path, network: &str) -> String {
-    let source_root = scheme_string(&source_root.display().to_string());
+fn direct_mount_sandbox_profile(view_root: &Path, network: &str) -> String {
+    let view_root = scheme_string(&view_root.display().to_string());
     let network_rule = if network == "none" {
         "(deny network*)"
     } else {
@@ -847,14 +892,14 @@ fn direct_mount_sandbox_profile(source_root: &Path, network: &str) -> String {
 (allow sysctl-read)
 (allow file-read*)
 (allow file-ioctl)
-(allow file-write* (subpath "{source_root}"))
+(allow file-write* (subpath "{view_root}"))
 {network_rule}
 "#
     )
 }
 
 #[cfg(not(target_os = "macos"))]
-fn direct_mount_sandbox_profile(_source_root: &Path, _network: &str) -> String {
+fn direct_mount_sandbox_profile(_view_root: &Path, _network: &str) -> String {
     String::new()
 }
 
@@ -883,6 +928,7 @@ struct MountedOverlay;
 
 #[cfg(not(target_os = "macos"))]
 fn ensure_source_overlay_mounted(
+    _view_root: &Path,
     _source_root: &Path,
     _lower: &Path,
     _upper: &Path,
@@ -935,6 +981,9 @@ fn prepare_direct_child(command: &mut Command, cwd: &Path) {
 
 #[cfg(target_os = "macos")]
 fn drop_to_target_user() -> Result<()> {
+    if unsafe { geteuid() } != 0 {
+        return Ok(());
+    }
     let uid = target_uid();
     let gid = target_gid();
     unsafe {

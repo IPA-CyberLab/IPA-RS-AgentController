@@ -169,24 +169,11 @@ fn validate_mount_layout(
         }
         reject_dot_components("visible-root", visible_root)?;
         reject_existing_symlink_components("visible-root", visible_root)?;
-        if visible_root != mount_point {
-            bail!(
-                "visible-root must match mount-point for host path mounts: {} != {}",
-                visible_root.display(),
-                mount_point.display()
-            );
-        }
     }
 
-    let env_dir = if visible_root.is_some() {
-        lower
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("lower must be inside an env directory"))?
-    } else {
-        mount_point
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("mount-point must be inside an env directory"))?
-    };
+    let env_dir = lower
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("lower must be inside an env directory"))?;
     let envs_dir = env_dir
         .parent()
         .ok_or_else(|| anyhow::anyhow!("mount-point env directory must be inside envs"))?;
@@ -215,20 +202,33 @@ fn validate_mount_layout(
             );
         }
     }
-    if visible_root.is_none() {
-        if mount_point.parent() != Some(env_dir) {
-            bail!(
-                "mount-point must be a sibling inside {}, got {}",
-                env_dir.display(),
-                mount_point.display()
-            );
+    let is_env_view_root = mount_point.parent() == Some(env_dir)
+        && mount_point.file_name().and_then(|name| name.to_str()) == Some("view-root");
+    if is_env_view_root {
+        return Ok(());
+    }
+    if let Some(visible_root) = visible_root {
+        if visible_root == mount_point {
+            return Ok(());
         }
-        if mount_point.file_name().and_then(|name| name.to_str()) != Some("view-root") {
-            bail!(
-                "mount-point must be named view-root, got {}",
-                mount_point.display()
-            );
-        }
+        bail!(
+            "mount-point must be env view-root or match visible-root for host path mounts: {} != {}",
+            mount_point.display(),
+            visible_root.display()
+        );
+    }
+    if mount_point.parent() != Some(env_dir) {
+        bail!(
+            "mount-point must be a sibling inside {}, got {}",
+            env_dir.display(),
+            mount_point.display()
+        );
+    }
+    if mount_point.file_name().and_then(|name| name.to_str()) != Some("view-root") {
+        bail!(
+            "mount-point must be named view-root, got {}",
+            mount_point.display()
+        );
     }
     Ok(())
 }
@@ -1418,16 +1418,36 @@ mod tests {
 
         assert!(validate_mount_layout(
             &workspace,
-            Some(&root.join("different")),
-            &env_dir.join("lower"),
+            Some(&workspace),
+            &root.join("not-agentfs/lower"),
             &env_dir.join("upper"),
             &env_dir.join("whiteouts"),
         )
         .is_err());
-        assert!(validate_mount_layout(
-            &workspace,
+    }
+
+    #[test]
+    fn mount_layout_accepts_env_view_root_with_source_visible_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = canonical_temp_root(&temp);
+        let env_dir = root.join("agentfs/envs/codex-1");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+
+        validate_mount_layout(
+            &env_dir.join("view-root"),
             Some(&workspace),
-            &root.join("not-agentfs/lower"),
+            &env_dir.join("lower"),
+            &env_dir.join("upper"),
+            &env_dir.join("whiteouts"),
+        )
+        .unwrap();
+
+        assert!(validate_mount_layout(
+            &env_dir.join("mount"),
+            Some(&workspace),
+            &env_dir.join("lower"),
             &env_dir.join("upper"),
             &env_dir.join("whiteouts"),
         )

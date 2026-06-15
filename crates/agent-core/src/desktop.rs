@@ -13,7 +13,7 @@ use crate::path_overlay::absolute_path_as_overlay_relative;
 use crate::protocol::{Request, Response};
 use crate::reflink;
 use crate::storage::{validate_id, write_text_file, Layout};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
 
@@ -378,6 +378,9 @@ impl DesktopService {
     pub async fn env_destroy(&self, id: &str) -> Result<()> {
         let env = self.layout.read_env(id).await?;
         ensure_desktop_backend(&env)?;
+        if env.backend == RootfsBackend::PathPreservingOverlay {
+            unmount_macos_overlay_if_active(&env.rootfs_path)?;
+        }
         remove_dir_all_if_exists(&self.layout.env_dir(id)).await
     }
 
@@ -1143,6 +1146,51 @@ fn desktop_base_clone_target(
     } else {
         Ok(rootfs.to_path_buf())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn unmount_macos_overlay_if_active(path: &Path) -> Result<()> {
+    if !macos_overlay_mount_is_active(path) {
+        return Ok(());
+    }
+    let _ = std::process::Command::new("/sbin/umount")
+        .arg(path)
+        .status();
+    if macos_overlay_mount_is_active(path) {
+        let _ = std::process::Command::new("diskutil")
+            .arg("unmount")
+            .arg("force")
+            .arg(path)
+            .status();
+    }
+    if macos_overlay_mount_is_active(path) {
+        bail!(
+            "failed to unmount active macOS path-preserving overlay at {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unmount_macos_overlay_if_active(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_overlay_mount_is_active(path: &Path) -> bool {
+    let Ok(output) = std::process::Command::new("/sbin/mount").output() else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let mount_point = path.display().to_string();
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.contains("agent-overlayfs")
+            && (line.contains(&format!(" on {mount_point} ("))
+                || line.contains(&format!(" on {} (", mount_point.replace(' ', "\\040"))))
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
