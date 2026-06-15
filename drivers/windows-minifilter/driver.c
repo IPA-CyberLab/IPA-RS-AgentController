@@ -22,6 +22,7 @@ typedef struct _AGENTFS_DIR_CONTEXT {
     UNICODE_STRING UpperPath;
     UNICODE_STRING WhiteoutPath;
     BOOLEAN EnumeratingUpperPath;
+    BOOLEAN ReturnSingleEntry;
 } AGENTFS_DIR_CONTEXT, *PAGENTFS_DIR_CONTEXT;
 
 typedef struct _AGENTFS_DIR_STATE {
@@ -2026,6 +2027,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     }
     RtlZeroMemory(context, sizeof(*context));
     context->EnumeratingUpperPath = AgentFsStartsWithPath(&nameInfo->Name, &env->UpperRoot);
+    context->ReturnSingleEntry = (Data->Iopb->OperationFlags & SL_RETURN_SINGLE_ENTRY) != 0;
     status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &context->VisiblePath);
     FltReleaseFileNameInformation(nameInfo);
     if (NT_SUCCESS(status)) {
@@ -2228,8 +2230,13 @@ Exit:
     return status;
 }
 
-static BOOLEAN AgentFsShouldAppendUpperDirectoryEntries(_In_ PFLT_CALLBACK_DATA Data)
+static BOOLEAN AgentFsShouldAppendUpperDirectoryEntries(
+    _In_ PFLT_CALLBACK_DATA Data,
+    _In_ PAGENTFS_DIR_CONTEXT Context)
 {
+    if (Context->ReturnSingleEntry) {
+        return FALSE;
+    }
     return Data->IoStatus.Status == STATUS_NO_MORE_FILES;
 }
 
@@ -2300,7 +2307,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
         }
     }
 
-    if (!context->EnumeratingUpperPath && AgentFsShouldAppendUpperDirectoryEntries(Data)) {
+    if (!context->EnumeratingUpperPath && AgentFsShouldAppendUpperDirectoryEntries(Data, context)) {
         if (!AgentFsDirUpperAlreadyMerged(FltObjects->FileObject)) {
             (VOID)AgentFsAppendUpperDirectoryEntries(
                 FltObjects->Instance,
