@@ -437,7 +437,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
         gFilter,
         Instance,
         &sourceHandle,
-        FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
         &sourceOa,
         &iosb,
         NULL,
@@ -451,11 +451,41 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     if (!NT_SUCCESS(status)) {
         return status;
     }
+
+    PSECURITY_DESCRIPTOR securityDescriptor = NULL;
+    ULONG securityDescriptorLength = 0;
+    SECURITY_INFORMATION securityInformation =
+        OWNER_SECURITY_INFORMATION |
+        GROUP_SECURITY_INFORMATION |
+        DACL_SECURITY_INFORMATION;
+    status = ZwQuerySecurityObject(
+        sourceHandle,
+        securityInformation,
+        NULL,
+        0,
+        &securityDescriptorLength);
+    if ((status == STATUS_BUFFER_TOO_SMALL || status == STATUS_BUFFER_OVERFLOW) &&
+        securityDescriptorLength != 0) {
+        securityDescriptor = ExAllocatePool2(POOL_FLAG_NON_PAGED, securityDescriptorLength, AGENTFS_TAG);
+        if (securityDescriptor != NULL) {
+            status = ZwQuerySecurityObject(
+                sourceHandle,
+                securityInformation,
+                securityDescriptor,
+                securityDescriptorLength,
+                &securityDescriptorLength);
+            if (!NT_SUCCESS(status)) {
+                ExFreePoolWithTag(securityDescriptor, AGENTFS_TAG);
+                securityDescriptor = NULL;
+            }
+        }
+    }
+
     status = FltCreateFile(
         gFilter,
         Instance,
         &targetHandle,
-        FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+        FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE,
         &targetOa,
         &iosb,
         NULL,
@@ -467,6 +497,9 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
         0,
         0);
     if (!NT_SUCCESS(status)) {
+        if (securityDescriptor != NULL) {
+            ExFreePoolWithTag(securityDescriptor, AGENTFS_TAG);
+        }
         FltClose(sourceHandle);
         return status;
     }
@@ -538,6 +571,16 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
                 sizeof(basicInfo),
                 FileBasicInformation);
         }
+    }
+    if (NT_SUCCESS(status) && securityDescriptor != NULL) {
+        NTSTATUS securityStatus = ZwSetSecurityObject(
+            targetHandle,
+            securityInformation,
+            securityDescriptor);
+        UNREFERENCED_PARAMETER(securityStatus);
+    }
+    if (securityDescriptor != NULL) {
+        ExFreePoolWithTag(securityDescriptor, AGENTFS_TAG);
     }
     ExFreePoolWithTag(buffer, AGENTFS_TAG);
     FltClose(targetHandle);

@@ -216,6 +216,18 @@ try {
     Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
     Set-Content -Path (Join-Path $source "stream-source.txt") -Value "stream-main-original"
     Set-Content -Path (Join-Path $source "stream-source.txt") -Stream lower -Value "lower-stream-original"
+    $aclSource = Join-Path $source "acl-source.txt"
+    Set-Content -Path $aclSource -Value "acl-original"
+    $acl = Get-Acl $aclSource
+    $acl.SetAccessRuleProtection($true, $false)
+    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $administrators = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+    $acl.SetOwner($currentUser)
+    $acl.SetGroup($currentUser)
+    $acl.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($currentUser, "FullControl", "Allow"))
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($administrators, "FullControl", "Allow")) | Out-Null
+    Set-Acl -Path $aclSource -AclObject $acl
+    $aclSourceSddl = (Get-Acl $aclSource).Sddl
     Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
@@ -275,6 +287,7 @@ if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+Set-Content acl-source.txt 'acl-env'
 `$mappedBytes = [Text.Encoding]::UTF8.GetBytes('mapped-env')
 `$mappedFile = [IO.File]::Open('mapped.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
 try {
@@ -378,6 +391,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
     }
+    if ((Get-Content (Join-Path $source "acl-source.txt")) -ne "acl-original") {
+        throw "host acl-source.txt was modified"
+    }
+    if ((Get-Acl (Join-Path $source "acl-source.txt")).Sddl -ne $aclSourceSddl) {
+        throw "host acl-source.txt security descriptor was modified"
+    }
     if ((Get-Content (Join-Path $source "stream-source.txt") -Stream lower) -ne "lower-stream-original") {
         throw "host lower ADS was modified"
     }
@@ -447,6 +466,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $upperSource "mapped.txt")) -ne "mapped-env") {
         throw "memory-mapped write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "acl-source.txt")) -ne "acl-env") {
+        throw "ACL source write was not redirected to upper"
+    }
+    if ((Get-Acl (Join-Path $upperSource "acl-source.txt")).Sddl -ne $aclSourceSddl) {
+        throw "copy-up did not preserve security descriptor"
     }
     if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream env) -ne "env-stream") {
         throw "ADS write was not redirected to upper"
