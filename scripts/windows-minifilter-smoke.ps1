@@ -167,6 +167,91 @@ function Get-TestSigningState {
     return "off"
 }
 
+function Add-AgentFsEaType {
+    if ("AgentFsEa" -as [type]) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class AgentFsEa {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_STATUS_BLOCK {
+        public IntPtr Status;
+        public UIntPtr Information;
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtSetEaFile(SafeFileHandle fileHandle, out IO_STATUS_BLOCK ioStatusBlock, byte[] buffer, uint length);
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryEaFile(
+        SafeFileHandle fileHandle,
+        out IO_STATUS_BLOCK ioStatusBlock,
+        byte[] buffer,
+        uint length,
+        bool returnSingleEntry,
+        IntPtr eaList,
+        uint eaListLength,
+        IntPtr eaIndex,
+        bool restartScan);
+
+    public static void SetEa(string path, string name, string value) {
+        byte[] nameBytes = Encoding.ASCII.GetBytes(name);
+        byte[] valueBytes = Encoding.UTF8.GetBytes(value);
+        byte[] buffer = new byte[8 + nameBytes.Length + 1 + valueBytes.Length];
+        buffer[5] = checked((byte)nameBytes.Length);
+        BitConverter.GetBytes((ushort)valueBytes.Length).CopyTo(buffer, 6);
+        Buffer.BlockCopy(nameBytes, 0, buffer, 8, nameBytes.Length);
+        Buffer.BlockCopy(valueBytes, 0, buffer, 8 + nameBytes.Length + 1, valueBytes.Length);
+
+        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Read | FileShare.Delete)) {
+            IO_STATUS_BLOCK iosb;
+            int status = NtSetEaFile(stream.SafeFileHandle, out iosb, buffer, (uint)buffer.Length);
+            if (status < 0) {
+                throw new InvalidOperationException("NtSetEaFile failed: 0x" + status.ToString("X8"));
+            }
+        }
+    }
+
+    public static string GetEa(string path, string name) {
+        byte[] buffer = new byte[65536];
+        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Read | FileShare.Delete)) {
+            IO_STATUS_BLOCK iosb;
+            int status = NtQueryEaFile(stream.SafeFileHandle, out iosb, buffer, (uint)buffer.Length, false, IntPtr.Zero, 0, IntPtr.Zero, true);
+            if (status < 0) {
+                return null;
+            }
+        }
+
+        int offset = 0;
+        while (offset + 8 <= buffer.Length) {
+            int next = BitConverter.ToInt32(buffer, offset);
+            int nameLength = buffer[offset + 5];
+            int valueLength = BitConverter.ToUInt16(buffer, offset + 6);
+            if (nameLength == 0 || offset + 8 + nameLength + 1 + valueLength > buffer.Length) {
+                return null;
+            }
+            string entryName = Encoding.ASCII.GetString(buffer, offset + 8, nameLength);
+            if (String.Equals(entryName, name, StringComparison.OrdinalIgnoreCase)) {
+                return Encoding.UTF8.GetString(buffer, offset + 8 + nameLength + 1, valueLength);
+            }
+            if (next == 0) {
+                break;
+            }
+            offset += next;
+        }
+        return null;
+    }
+}
+'@
+}
+
 function Invoke-AgentFsLoad {
     Write-Host ">> fltmc load agentfs"
     $output = & fltmc load agentfs 2>&1
@@ -188,6 +273,7 @@ function Invoke-AgentFsLoad {
 }
 
 Assert-Admin
+Add-AgentFsEaType
 
 $repo = Resolve-Path (Join-Path $PSScriptRoot "..")
 $agentfs = Join-Path $env:TEMP ("agentfs-minifilter-" + [Guid]::NewGuid().ToString("N"))
@@ -217,6 +303,8 @@ try {
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
     (Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime
     Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
+    Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
+    [AgentFsEa]::SetEa((Join-Path $source "ea-source.txt"), "agentfs.ea", "lower-ea-original")
     Set-Content -Path (Join-Path $source "stream-source.txt") -Value "stream-main-original"
     Set-Content -Path (Join-Path $source "stream-source.txt") -Stream lower -Value "lower-stream-original"
     $aclSource = Join-Path $source "acl-source.txt"
@@ -328,6 +416,7 @@ try {
 } finally {
     `$mappedFile.Dispose()
 }
+Set-Content ea-source.txt 'ea-main-env'
 if ((Get-Content stream-source.txt -Stream lower) -ne 'lower-stream-original') { throw 'lower ADS read failed' }
 Set-Content stream-source.txt 'stream-main-env'
 Set-Content stream-source.txt -Stream env 'env-stream'
@@ -515,6 +604,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
     }
+    if ((Get-Content (Join-Path $source "ea-source.txt")) -ne "ea-main-original") {
+        throw "host ea-source.txt was modified"
+    }
+    if ([AgentFsEa]::GetEa((Join-Path $source "ea-source.txt"), "agentfs.ea") -ne "lower-ea-original") {
+        throw "host ea-source.txt EA was modified"
+    }
     if ((Get-Content (Join-Path $source "acl-source.txt")) -ne "acl-original") {
         throw "host acl-source.txt was modified"
     }
@@ -626,6 +721,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if ((Get-Content (Join-Path $upperSource "mapped.txt")) -ne "mapped-env") {
         throw "memory-mapped write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "ea-source.txt")) -ne "ea-main-env") {
+        throw "EA source main stream write was not redirected to upper"
+    }
+    if ([AgentFsEa]::GetEa((Join-Path $upperSource "ea-source.txt"), "agentfs.ea") -ne "lower-ea-original") {
+        throw "copy-up did not preserve lower EA"
     }
     if ((Get-Content (Join-Path $upperSource "acl-source.txt")) -ne "acl-env") {
         throw "ACL source write was not redirected to upper"

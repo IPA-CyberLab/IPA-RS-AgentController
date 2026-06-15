@@ -835,6 +835,57 @@ static VOID AgentFsCopyAlternateDataStreams(
     ExFreePoolWithTag(streamInfo, AGENTFS_TAG);
 }
 
+static VOID AgentFsCopyExtendedAttributes(_In_ HANDLE SourceHandle, _In_ HANDLE TargetHandle)
+{
+    PVOID eaInfo = NULL;
+    ULONG eaInfoLength = 64 * 1024;
+    ULONG returned = 0;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status;
+
+    for (;;) {
+        eaInfo = ExAllocatePool2(POOL_FLAG_NON_PAGED, eaInfoLength, AGENTFS_TAG);
+        if (eaInfo == NULL) {
+            return;
+        }
+
+        RtlZeroMemory(&iosb, sizeof(iosb));
+        RtlZeroMemory(eaInfo, eaInfoLength);
+        status = ZwQueryEaFile(
+            SourceHandle,
+            &iosb,
+            eaInfo,
+            eaInfoLength,
+            FALSE,
+            NULL,
+            0,
+            NULL,
+            TRUE);
+        returned = (ULONG)iosb.Information;
+        if (NT_SUCCESS(status)) {
+            break;
+        }
+
+        ExFreePoolWithTag(eaInfo, AGENTFS_TAG);
+        eaInfo = NULL;
+        if (status == STATUS_NO_EAS_ON_FILE || status == STATUS_NO_MORE_EAS) {
+            return;
+        }
+        if ((status != STATUS_BUFFER_OVERFLOW && status != STATUS_BUFFER_TOO_SMALL) ||
+            eaInfoLength >= 1024 * 1024) {
+            return;
+        }
+        eaInfoLength *= 2;
+    }
+
+    if (returned != 0) {
+        RtlZeroMemory(&iosb, sizeof(iosb));
+        (VOID)ZwSetEaFile(TargetHandle, &iosb, eaInfo, returned);
+    }
+
+    ExFreePoolWithTag(eaInfo, AGENTFS_TAG);
+}
+
 static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Source, _In_ PCUNICODE_STRING Target)
 {
     if (AgentFsPathExists(Instance, Target)) {
@@ -859,7 +910,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
         gFilter,
         Instance,
         &sourceHandle,
-        FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | READ_CONTROL | SYNCHRONIZE,
         &sourceOa,
         &iosb,
         NULL,
@@ -878,7 +929,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
         gFilter,
         Instance,
         &targetHandle,
-        FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+        FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | SYNCHRONIZE,
         &targetOa,
         &iosb,
         NULL,
@@ -963,6 +1014,7 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
         }
     }
     if (NT_SUCCESS(status)) {
+        AgentFsCopyExtendedAttributes(sourceHandle, targetHandle);
         AgentFsCopySecurityDescriptor(Instance, sourceHandle, Target, 0);
         AgentFsCopyAlternateDataStreams(Instance, sourceHandle, Source, Target);
     }
@@ -1049,7 +1101,7 @@ static VOID AgentFsCopyDirectoryMetadata(
         gFilter,
         Instance,
         &sourceHandle,
-        FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_READ_ATTRIBUTES | FILE_READ_EA | READ_CONTROL | SYNCHRONIZE,
         &sourceOa,
         &iosb,
         NULL,
@@ -1067,7 +1119,7 @@ static VOID AgentFsCopyDirectoryMetadata(
         gFilter,
         Instance,
         &targetHandle,
-        FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+        FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | SYNCHRONIZE,
         &targetOa,
         &iosb,
         NULL,
@@ -1100,6 +1152,7 @@ static VOID AgentFsCopyDirectoryMetadata(
             FileBasicInformation);
     }
 
+    AgentFsCopyExtendedAttributes(sourceHandle, targetHandle);
     AgentFsCopySecurityDescriptor(Instance, sourceHandle, Target, FILE_DIRECTORY_FILE);
 
     FltClose(targetHandle);
