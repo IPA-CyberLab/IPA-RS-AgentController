@@ -233,6 +233,16 @@ try {
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
     (Get-Item (Join-Path $source "move-lower\inside\lower-file.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime
+    $moveLower = Join-Path $source "move-lower"
+    $moveLowerAcl = Get-Acl $moveLower
+    $moveLowerAcl.SetAccessRuleProtection($true, $false)
+    $moveLowerAcl.SetOwner($currentUser)
+    $moveLowerAcl.SetGroup($currentUser)
+    $moveLowerAcl.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($currentUser, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"))
+    $moveLowerAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($administrators, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")) | Out-Null
+    Set-Acl -Path $moveLower -AclObject $moveLowerAcl
+    (Get-Item $moveLower).LastWriteTimeUtc = [DateTimeOffset]::Parse("2017-06-05T04:03:02Z").UtcDateTime
+    $moveLowerSddl = (Get-Acl $moveLower).Sddl
     Set-Content -Path (Join-Path $source "mixed-lower\upper-changed.txt") -Value "mixed-lower-original"
     Set-Content -Path (Join-Path $source "mixed-lower\lower-only.txt") -Value "mixed-lower-only"
 
@@ -412,6 +422,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     if ((Get-Content (Join-Path $source "move-lower\inside\lower-file.txt")) -ne "lower-tree-original") {
         throw "host move-lower tree was modified"
     }
+    if ((Get-Item (Join-Path $source "move-lower")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2017-06-05T04:03:02Z").UtcDateTime) {
+        throw "host move-lower directory timestamp was modified"
+    }
+    if ((Get-Acl (Join-Path $source "move-lower")).Sddl -ne $moveLowerSddl) {
+        throw "host move-lower directory security descriptor was modified"
+    }
     if ((Get-Content (Join-Path $source "mixed-lower\upper-changed.txt")) -ne "mixed-lower-original") {
         throw "host mixed-lower upper-changed.txt was modified"
     }
@@ -436,6 +452,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $upperSource "moved-lower\inside\lower-file.txt")) -ne "lower-tree-original") {
         throw "renamed lower directory tree was not copied to upper"
+    }
+    if ((Get-Item (Join-Path $upperSource "moved-lower")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2017-06-05T04:03:02Z").UtcDateTime) {
+        throw "renamed lower directory did not preserve timestamp"
+    }
+    if ((Get-Acl (Join-Path $upperSource "moved-lower")).Sddl -ne $moveLowerSddl) {
+        throw "renamed lower directory did not preserve security descriptor"
     }
     if ((Get-Item (Join-Path $upperSource "moved-lower\inside\lower-file.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime) {
         throw "renamed lower directory tree did not preserve file timestamp"

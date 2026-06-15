@@ -648,6 +648,107 @@ static BOOLEAN AgentFsIsDotDirectoryName(_In_reads_bytes_(NameLength) PCWCH Name
     return NameLength == 2 * sizeof(WCHAR) && Name[0] == L'.' && Name[1] == L'.';
 }
 
+static VOID AgentFsCopyDirectoryMetadata(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING Source,
+    _In_ PCUNICODE_STRING Target)
+{
+    OBJECT_ATTRIBUTES sourceOa;
+    OBJECT_ATTRIBUTES targetOa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE sourceHandle = NULL;
+    HANDLE targetHandle = NULL;
+    InitializeObjectAttributes(&sourceOa, (PUNICODE_STRING)Source, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    InitializeObjectAttributes(&targetOa, (PUNICODE_STRING)Target, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    NTSTATUS status = FltCreateFile(
+        gFilter,
+        Instance,
+        &sourceHandle,
+        FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        &sourceOa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        return;
+    }
+    status = FltCreateFile(
+        gFilter,
+        Instance,
+        &targetHandle,
+        FILE_WRITE_ATTRIBUTES | WRITE_DAC | WRITE_OWNER | SYNCHRONIZE,
+        &targetOa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        FltClose(sourceHandle);
+        return;
+    }
+
+    FILE_BASIC_INFORMATION basicInfo;
+    RtlZeroMemory(&basicInfo, sizeof(basicInfo));
+    status = ZwQueryInformationFile(
+        sourceHandle,
+        &iosb,
+        &basicInfo,
+        sizeof(basicInfo),
+        FileBasicInformation);
+    if (NT_SUCCESS(status)) {
+        (VOID)ZwSetInformationFile(
+            targetHandle,
+            &iosb,
+            &basicInfo,
+            sizeof(basicInfo),
+            FileBasicInformation);
+    }
+
+    ULONG securityDescriptorLength = 0;
+    SECURITY_INFORMATION securityInformation =
+        OWNER_SECURITY_INFORMATION |
+        GROUP_SECURITY_INFORMATION |
+        DACL_SECURITY_INFORMATION;
+    status = ZwQuerySecurityObject(
+        sourceHandle,
+        securityInformation,
+        NULL,
+        0,
+        &securityDescriptorLength);
+    if ((status == STATUS_BUFFER_TOO_SMALL || status == STATUS_BUFFER_OVERFLOW) &&
+        securityDescriptorLength != 0) {
+        PSECURITY_DESCRIPTOR securityDescriptor =
+            ExAllocatePool2(POOL_FLAG_NON_PAGED, securityDescriptorLength, AGENTFS_TAG);
+        if (securityDescriptor != NULL) {
+            status = ZwQuerySecurityObject(
+                sourceHandle,
+                securityInformation,
+                securityDescriptor,
+                securityDescriptorLength,
+                &securityDescriptorLength);
+            if (NT_SUCCESS(status)) {
+                (VOID)ZwSetSecurityObject(targetHandle, securityInformation, securityDescriptor);
+            }
+            ExFreePoolWithTag(securityDescriptor, AGENTFS_TAG);
+        }
+    }
+
+    FltClose(targetHandle);
+    FltClose(sourceHandle);
+}
+
 static NTSTATUS AgentFsCopyDirectoryTree(
     _In_ PFLT_INSTANCE Instance,
     _In_ PCUNICODE_STRING Source,
@@ -657,6 +758,7 @@ static NTSTATUS AgentFsCopyDirectoryTree(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    AgentFsCopyDirectoryMetadata(Instance, Source, Target);
 
     OBJECT_ATTRIBUTES oa;
     IO_STATUS_BLOCK iosb;
