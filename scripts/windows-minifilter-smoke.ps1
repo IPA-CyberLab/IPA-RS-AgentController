@@ -207,6 +207,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $source "nested\lower") | Out-Null
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
+    Set-Content -Path (Join-Path $source "recreate-me.txt") -Value "recreate-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
 
     Push-Location $repo
@@ -263,10 +264,13 @@ Set-Content nested\lower\deep.txt 'deep-modified'
 New-Item -ItemType Directory -Force -Path nested\created\more | Out-Null
 Set-Content nested\created\more\new.txt 'new-deep'
 Remove-Item delete-me.txt
+Remove-Item recreate-me.txt
+Set-Content recreate-me.txt 'recreated-in-env'
 Rename-Item created.txt renamed.txt
 `$names = Get-ChildItem -Name | Sort-Object
 if (`$names -notcontains 'host.txt') { throw 'directory listing lost lower file' }
 if (`$names -notcontains 'renamed.txt') { throw 'directory listing lost upper renamed file' }
+if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
 "@
 
@@ -276,6 +280,9 @@ if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteou
     }
     if (-not (Test-Path (Join-Path $source "delete-me.txt"))) {
         throw "host delete-me.txt was removed"
+    }
+    if ((Get-Content (Join-Path $source "recreate-me.txt")) -ne "recreate-original") {
+        throw "host recreate-me.txt was modified"
     }
 
     $upperRoot = Join-Path $agentfs "envs\$EnvId\upper"
@@ -296,8 +303,14 @@ if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteou
     if (-not (Test-Path (Join-Path $upperSource "renamed.txt"))) {
         throw "renamed file was not written to upper"
     }
+    if ((Get-Content (Join-Path $upperSource "recreate-me.txt")) -ne "recreated-in-env") {
+        throw "recreated file was not written to upper"
+    }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "recreate-me.txt")) {
+        throw "recreated file still has a whiteout"
     }
 
     Write-Host "Windows minifilter smoke passed"

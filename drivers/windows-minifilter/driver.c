@@ -503,9 +503,22 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     return status;
 }
 
+static ULONG AgentFsCreateDisposition(_In_ ULONG Options)
+{
+    return (Options >> 24) & 0xff;
+}
+
+static BOOLEAN AgentFsDispositionCanCreate(_In_ ULONG Disposition)
+{
+    return Disposition == FILE_CREATE ||
+        Disposition == FILE_OPEN_IF ||
+        Disposition == FILE_OVERWRITE_IF ||
+        Disposition == FILE_SUPERSEDE;
+}
+
 static BOOLEAN AgentFsWriteIntent(_In_ ACCESS_MASK DesiredAccess, _In_ ULONG Options)
 {
-    ULONG disposition = (Options >> 24) & 0xff;
+    ULONG disposition = AgentFsCreateDisposition(Options);
     if ((DesiredAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC | WRITE_OWNER)) != 0) {
         return TRUE;
     }
@@ -691,37 +704,56 @@ static NTSTATUS AgentFsSelectRedirect(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    ULONG disposition = AgentFsCreateDisposition(Options);
+    BOOLEAN writeIntent = AgentFsWriteIntent(DesiredAccess, Options);
+    BOOLEAN deletedCreate = FALSE;
     if (AgentFsPathExists(Instance, &whiteout)) {
+        if (!writeIntent || !AgentFsDispositionCanCreate(disposition)) {
+            AgentFsFreeUnicode(&whiteout);
+            return STATUS_OBJECT_NAME_NOT_FOUND;
+        }
+        status = AgentFsDeletePath(&whiteout);
         AgentFsFreeUnicode(&whiteout);
-        return STATUS_OBJECT_NAME_NOT_FOUND;
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+        deletedCreate = TRUE;
+    } else {
+        AgentFsFreeUnicode(&whiteout);
     }
-    AgentFsFreeUnicode(&whiteout);
 
     status = AgentFsJoinRedirectPath(&upper, &Env->UpperRoot, &Env->SourceRoot, OriginalPath);
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    BOOLEAN writeIntent = AgentFsWriteIntent(DesiredAccess, Options);
     BOOLEAN directoryRead = AgentFsDirectoryOpen(Options) && !writeIntent;
     if (writeIntent && !AgentFsPathExists(Instance, &upper)) {
-        status = AgentFsJoinRedirectPath(&lower, &Env->LowerRoot, &Env->SourceRoot, OriginalPath);
-        if (!NT_SUCCESS(status)) {
-            AgentFsFreeUnicode(&upper);
-            return status;
-        }
-        if (AgentFsPathExists(Instance, &lower)) {
-            status = AgentFsCopyFile(Instance, &lower, &upper);
-            AgentFsFreeUnicode(&lower);
+        if (deletedCreate) {
+            status = AgentFsEnsureParentDirectory(Instance, &upper);
             if (!NT_SUCCESS(status)) {
                 AgentFsFreeUnicode(&upper);
                 return status;
             }
         } else {
-            AgentFsFreeUnicode(&lower);
-            status = AgentFsEnsureParentDirectory(Instance, &upper);
+            status = AgentFsJoinRedirectPath(&lower, &Env->LowerRoot, &Env->SourceRoot, OriginalPath);
             if (!NT_SUCCESS(status)) {
                 AgentFsFreeUnicode(&upper);
                 return status;
+            }
+            if (AgentFsPathExists(Instance, &lower)) {
+                status = AgentFsCopyFile(Instance, &lower, &upper);
+                AgentFsFreeUnicode(&lower);
+                if (!NT_SUCCESS(status)) {
+                    AgentFsFreeUnicode(&upper);
+                    return status;
+                }
+            } else {
+                AgentFsFreeUnicode(&lower);
+                status = AgentFsEnsureParentDirectory(Instance, &upper);
+                if (!NT_SUCCESS(status)) {
+                    AgentFsFreeUnicode(&upper);
+                    return status;
+                }
             }
         }
     }
