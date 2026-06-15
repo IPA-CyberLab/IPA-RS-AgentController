@@ -289,6 +289,7 @@ $agentctl = Join-Path $binDir "agentctl.exe"
 $daemon = Join-Path $binDir "agent-forkd.exe"
 $filterctl = Join-Path $binDir "agent-minifilterctl.exe"
 $wdkVersion = Get-WdkBuildVersion
+$lockedStream = $null
 
 try {
     New-Item -ItemType Directory -Force -Path $source | Out-Null
@@ -303,6 +304,7 @@ try {
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
     (Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime
     Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
+    Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
     Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
     [AgentFsEa]::SetEa((Join-Path $source "ea-source.txt"), "agentfs.ea", "lower-ea-original")
     Set-Content -Path (Join-Path $source "stream-source.txt") -Value "stream-main-original"
@@ -390,10 +392,20 @@ try {
         throw "agent-forkd did not become ready"
     }
 
+    $lockedPath = Join-Path $source "locked.txt"
+    $lockedStream = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+
     & $agentctl --agentfs $agentfs new -t $EnvId --from $source -- powershell.exe -NoProfile -Command @"
 `$ErrorActionPreference = 'Stop'
 if ((Get-Location).Path -ne '$source') { throw "cwd was not preserved: `$((Get-Location).Path)" }
 if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
+`$lockedWriteFailed = `$false
+try {
+    Set-Content locked.txt 'locked-env'
+} catch {
+    `$lockedWriteFailed = `$true
+}
+if (-not `$lockedWriteFailed) { throw 'write to exclusively locked lower file unexpectedly succeeded' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
@@ -604,6 +616,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
     }
+    if ((Get-Content (Join-Path $source "locked.txt")) -ne "locked-original") {
+        throw "host locked.txt was modified"
+    }
     if ((Get-Content (Join-Path $source "ea-source.txt")) -ne "ea-main-original") {
         throw "host ea-source.txt was modified"
     }
@@ -722,6 +737,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if ((Get-Content (Join-Path $upperSource "mapped.txt")) -ne "mapped-env") {
         throw "memory-mapped write was not redirected to upper"
     }
+    if (Test-Path (Join-Path $upperSource "locked.txt")) {
+        throw "locked lower file was unexpectedly copied to upper"
+    }
     if ((Get-Content (Join-Path $upperSource "ea-source.txt")) -ne "ea-main-env") {
         throw "EA source main stream write was not redirected to upper"
     }
@@ -798,6 +816,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
 
     Write-Host "Windows minifilter smoke passed"
 } finally {
+    if ($lockedStream) {
+        $lockedStream.Dispose()
+    }
     if ($daemonProcess -and -not $daemonProcess.HasExited) {
         Stop-Process -Id $daemonProcess.Id -Force -ErrorAction SilentlyContinue
     }
