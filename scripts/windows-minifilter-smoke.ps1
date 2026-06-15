@@ -180,11 +180,30 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 public static class AgentFsEa {
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint GENERIC_WRITE = 0x40000000;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint FILE_SHARE_DELETE = 0x00000004;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct IO_STATUS_BLOCK {
         public IntPtr Status;
         public UIntPtr Information;
     }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
 
     [DllImport("ntdll.dll")]
     private static extern int NtSetEaFile(SafeFileHandle fileHandle, out IO_STATUS_BLOCK ioStatusBlock, byte[] buffer, uint length);
@@ -201,7 +220,28 @@ public static class AgentFsEa {
         IntPtr eaIndex,
         bool restartScan);
 
-    public static void SetEa(string path, string name, string value) {
+    private static SafeFileHandle OpenEaHandle(string path, bool writable, bool directory) {
+        uint access = writable ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_READ;
+        uint flags = FILE_ATTRIBUTE_NORMAL;
+        if (directory) {
+            flags |= FILE_FLAG_BACKUP_SEMANTICS;
+        }
+
+        SafeFileHandle handle = CreateFile(
+            path,
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            flags,
+            IntPtr.Zero);
+        if (handle.IsInvalid) {
+            throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+        }
+        return handle;
+    }
+
+    private static void SetEaInternal(string path, string name, string value, bool directory) {
         byte[] nameBytes = Encoding.ASCII.GetBytes(name);
         byte[] valueBytes = Encoding.UTF8.GetBytes(value);
         byte[] buffer = new byte[8 + nameBytes.Length + 1 + valueBytes.Length];
@@ -210,20 +250,20 @@ public static class AgentFsEa {
         Buffer.BlockCopy(nameBytes, 0, buffer, 8, nameBytes.Length);
         Buffer.BlockCopy(valueBytes, 0, buffer, 8 + nameBytes.Length + 1, valueBytes.Length);
 
-        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Read | FileShare.Delete)) {
+        using (SafeFileHandle handle = OpenEaHandle(path, true, directory)) {
             IO_STATUS_BLOCK iosb;
-            int status = NtSetEaFile(stream.SafeFileHandle, out iosb, buffer, (uint)buffer.Length);
+            int status = NtSetEaFile(handle, out iosb, buffer, (uint)buffer.Length);
             if (status < 0) {
                 throw new InvalidOperationException("NtSetEaFile failed: 0x" + status.ToString("X8"));
             }
         }
     }
 
-    public static string GetEa(string path, string name) {
+    private static string GetEaInternal(string path, string name, bool directory) {
         byte[] buffer = new byte[65536];
-        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Read | FileShare.Delete)) {
+        using (SafeFileHandle handle = OpenEaHandle(path, false, directory)) {
             IO_STATUS_BLOCK iosb;
-            int status = NtQueryEaFile(stream.SafeFileHandle, out iosb, buffer, (uint)buffer.Length, false, IntPtr.Zero, 0, IntPtr.Zero, true);
+            int status = NtQueryEaFile(handle, out iosb, buffer, (uint)buffer.Length, false, IntPtr.Zero, 0, IntPtr.Zero, true);
             if (status < 0) {
                 return null;
             }
@@ -247,6 +287,22 @@ public static class AgentFsEa {
             offset += next;
         }
         return null;
+    }
+
+    public static void SetEa(string path, string name, string value) {
+        SetEaInternal(path, name, value, false);
+    }
+
+    public static string GetEa(string path, string name) {
+        return GetEaInternal(path, name, false);
+    }
+
+    public static void SetDirectoryEa(string path, string name, string value) {
+        SetEaInternal(path, name, value, true);
+    }
+
+    public static string GetDirectoryEa(string path, string name) {
+        return GetEaInternal(path, name, true);
     }
 }
 '@
@@ -334,6 +390,7 @@ try {
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
     (Get-Item (Join-Path $source "move-lower\inside\lower-file.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime
     $moveLower = Join-Path $source "move-lower"
+    [AgentFsEa]::SetDirectoryEa($moveLower, "agentfs.dir.ea", "lower-dir-ea-original")
     $moveLowerAcl = Get-Acl $moveLower
     $moveLowerAcl.SetAccessRuleProtection($true, $false)
     $moveLowerAcl.SetOwner($currentUser)
@@ -667,6 +724,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if ((Get-Acl (Join-Path $source "move-lower")).Sddl -ne $moveLowerSddl) {
         throw "host move-lower directory security descriptor was modified"
     }
+    if ([AgentFsEa]::GetDirectoryEa((Join-Path $source "move-lower"), "agentfs.dir.ea") -ne "lower-dir-ea-original") {
+        throw "host move-lower directory EA was modified"
+    }
     if ((Get-Content (Join-Path $source "mixed-lower\upper-changed.txt")) -ne "mixed-lower-original") {
         throw "host mixed-lower upper-changed.txt was modified"
     }
@@ -697,6 +757,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if ((Get-Acl (Join-Path $upperSource "moved-lower")).Sddl -ne $moveLowerSddl) {
         throw "renamed lower directory did not preserve security descriptor"
+    }
+    if ([AgentFsEa]::GetDirectoryEa((Join-Path $upperSource "moved-lower"), "agentfs.dir.ea") -ne "lower-dir-ea-original") {
+        throw "renamed lower directory did not preserve EA"
     }
     if ((Get-Item (Join-Path $upperSource "moved-lower\inside\lower-file.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime) {
         throw "renamed lower directory tree did not preserve file timestamp"
