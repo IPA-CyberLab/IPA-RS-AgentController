@@ -2427,13 +2427,14 @@ Exit:
 static BOOLEAN AgentFsShouldAppendUpperDirectoryEntries(
     _In_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _In_ PAGENTFS_DIR_CONTEXT Context)
+    _In_ PAGENTFS_DIR_CONTEXT Context,
+    _In_ BOOLEAN LowerEntriesFiltered)
 {
     if (Context->ReturnSingleEntry) {
-        return Data->IoStatus.Status == STATUS_NO_MORE_FILES &&
+        return (Data->IoStatus.Status == STATUS_NO_MORE_FILES || LowerEntriesFiltered) &&
             !AgentFsDirUpperSingleExhausted(FltObjects->FileObject);
     }
-    return Data->IoStatus.Status == STATUS_NO_MORE_FILES;
+    return Data->IoStatus.Status == STATUS_NO_MORE_FILES || LowerEntriesFiltered;
 }
 
 static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
@@ -2477,6 +2478,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     ULONG used = 0;
     ULONG lastOffset = 0;
     ULONG inputUsed = (ULONG)Data->IoStatus.Information;
+    BOOLEAN lowerEntryFiltered = FALSE;
     if (NT_SUCCESS(Data->IoStatus.Status) && inputUsed > 0) {
         ULONG offset = 0;
         while (offset < inputUsed) {
@@ -2494,6 +2496,8 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
                 if (!NT_SUCCESS(AgentFsAppendDirectoryEntry(output, capacity, &used, &lastOffset, entry, entrySize))) {
                     break;
                 }
+            } else {
+                lowerEntryFiltered = TRUE;
             }
             ULONG next = *(PULONG)entry;
             if (next == 0) {
@@ -2503,7 +2507,9 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
         }
     }
 
-    if (!context->EnumeratingUpperPath && AgentFsShouldAppendUpperDirectoryEntries(Data, FltObjects, context)) {
+    BOOLEAN lowerEntriesAllFiltered = lowerEntryFiltered && used == 0;
+    if (!context->EnumeratingUpperPath &&
+        AgentFsShouldAppendUpperDirectoryEntries(Data, FltObjects, context, lowerEntriesAllFiltered)) {
         if (context->ReturnSingleEntry) {
             UNICODE_STRING cursor;
             UNICODE_STRING lastEmitted;
