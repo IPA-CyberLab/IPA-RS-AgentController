@@ -150,7 +150,7 @@ fn apply_prompt_env(command: &mut [String], env_id: &str) {
         .and_then(|name| name.to_str())
         .unwrap_or(shell);
     if shell_name.contains("zsh") {
-        std::env::set_var("PROMPT", format!("%F{{green}}{env_id}%f@%m %~ %# "));
+        std::env::set_var("PROMPT", format!("%F{{green}}{env_id}%f@%m %1~ %# "));
     } else {
         std::env::set_var(
             "PS1",
@@ -172,24 +172,16 @@ fn enter_and_run(
     let (program, args) = split_command(&command)?;
     validate_network_mode(&network)?;
     if let Some(source_root) = source_root {
-        let visible_root = source_visible_root(&source_root);
-        let mount = ensure_source_overlay_mounted(
-            &view_root,
-            &visible_root,
-            &source_root,
-            &lower,
-            &upper,
-            &whiteouts,
-        )?;
+        let mount =
+            ensure_source_overlay_mounted(&view_root, &source_root, &lower, &upper, &whiteouts)?;
         validate_direct_runtime(&source_root, &cwd, program)?;
-        let mounted_cwd = source_view_path(&view_root, &visible_root, &cwd)?;
+        let mounted_cwd = source_view_path(&view_root, &source_root, &cwd)?;
         prepare_source_view_workspace(&view_root, &mounted_cwd)?;
         let mut command = command_for_direct_mount(program, args, &network, &view_root);
         prepare_direct_child(&mut command, &mounted_cwd);
         let status = command
             .env("PWD", &cwd)
             .env("AGENT_SOURCE_ROOT", &source_root)
-            .env("AGENT_VISIBLE_ROOT", &visible_root)
             .env("AGENT_VIEW_ROOT", &view_root)
             .status()
             .with_context(|| {
@@ -215,10 +207,8 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
     let (program, command_args) = split_command(&args.command)?;
     validate_network_mode(&args.network)?;
     if let Some(source_root) = args.source_root.as_ref() {
-        let visible_root = source_visible_root(source_root);
         let _mount = ensure_source_overlay_mounted(
             &args.view_root,
-            &visible_root,
             source_root,
             &args.lower,
             &args.upper,
@@ -226,7 +216,7 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
         )?;
         validate_direct_runtime(source_root, &args.cwd, program)?;
         validate_session_log_path(&args.view_root, &args.log_path)?;
-        let mounted_cwd = source_view_path(&args.view_root, &visible_root, &args.cwd)?;
+        let mounted_cwd = source_view_path(&args.view_root, source_root, &args.cwd)?;
         prepare_source_view_workspace(&args.view_root, &mounted_cwd)?;
         let stdout = open_session_log(&args.log_path)?;
         let stderr = stdout
@@ -238,7 +228,6 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
         command
             .env("PWD", &args.cwd)
             .env("AGENT_SOURCE_ROOT", source_root)
-            .env("AGENT_VISIBLE_ROOT", &visible_root)
             .env("AGENT_VIEW_ROOT", &args.view_root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
@@ -428,7 +417,6 @@ fn ensure_overlay_mounted(
 #[cfg(target_os = "macos")]
 fn ensure_source_overlay_mounted(
     view_root: &Path,
-    visible_root: &Path,
     source_root: &Path,
     lower: &Path,
     upper: &Path,
@@ -442,7 +430,7 @@ fn ensure_source_overlay_mounted(
     }
     validate_overlay_paths(view_root, lower, upper, whiteouts)?;
     validate_source_overlay_paths(source_root, lower, upper, whiteouts)?;
-    ensure_overlay_mounted_at(view_root, Some(visible_root), lower, upper, whiteouts)
+    ensure_overlay_mounted_at(view_root, Some(source_root), lower, upper, whiteouts)
 }
 
 #[cfg(target_os = "macos")]
@@ -818,47 +806,15 @@ fn system_fallback_root_candidates() -> &'static [&'static str] {
     ]
 }
 
-fn source_visible_root(source_root: &Path) -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    source_visible_root_with_home(source_root, home.as_deref())
-}
-
-fn source_visible_root_with_home(source_root: &Path, home: Option<&Path>) -> PathBuf {
-    if let Some(home) = home {
-        if home.is_absolute() && source_root.starts_with(home) {
-            return home.to_path_buf();
-        }
-    }
-    if let Some(home) = home_like_visible_root_from_source(source_root) {
-        return home;
-    }
-    source_root.to_path_buf()
-}
-
-fn home_like_visible_root_from_source(source_root: &Path) -> Option<PathBuf> {
-    let mut components = source_root.components();
-    match (components.next()?, components.next()?, components.next()?) {
-        (std::path::Component::RootDir, std::path::Component::Normal(parent), user)
-            if parent == "Users" || parent == "home" =>
-        {
-            let mut home = PathBuf::from("/");
-            home.push(parent);
-            home.push(user.as_os_str());
-            Some(home)
-        }
-        _ => None,
-    }
-}
-
-fn source_view_path(view_root: &Path, visible_root: &Path, path: &Path) -> Result<PathBuf> {
+fn source_view_path(view_root: &Path, source_root: &Path, path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!("preserved cwd must be absolute: {}", path.display());
     }
-    let relative = path.strip_prefix(visible_root).with_context(|| {
+    let relative = path.strip_prefix(source_root).with_context(|| {
         format!(
-            "preserved cwd {} must be inside visible-root {}",
+            "preserved cwd {} must be inside source-root {}",
             path.display(),
-            visible_root.display()
+            source_root.display()
         )
     })?;
     Ok(view_root.join(relative))
@@ -973,7 +929,6 @@ struct MountedOverlay;
 #[cfg(not(target_os = "macos"))]
 fn ensure_source_overlay_mounted(
     _view_root: &Path,
-    _visible_root: &Path,
     _source_root: &Path,
     _lower: &Path,
     _upper: &Path,
@@ -1449,67 +1404,28 @@ mod tests {
     }
 
     #[test]
-    fn source_visible_root_uses_home_when_source_is_under_home() {
-        assert_eq!(
-            super::source_visible_root_with_home(
-                Path::new("/Users/me/Desktop/project"),
-                Some(Path::new("/Users/me"))
-            ),
-            PathBuf::from("/Users/me")
-        );
-        assert_eq!(
-            super::source_visible_root_with_home(
-                Path::new("/private/tmp/project"),
-                Some(Path::new("/Users/me"))
-            ),
-            PathBuf::from("/private/tmp/project")
-        );
-    }
-
-    #[test]
-    fn source_visible_root_infers_home_from_user_path_without_home_env() {
-        assert_eq!(
-            super::source_visible_root_with_home(Path::new("/Users/me/Desktop/project"), None),
-            PathBuf::from("/Users/me")
-        );
-        assert_eq!(
-            super::source_visible_root_with_home(Path::new("/home/me/project"), None),
-            PathBuf::from("/home/me")
-        );
-        assert_eq!(
-            super::source_visible_root_with_home(Path::new("/private/tmp/project"), None),
-            PathBuf::from("/private/tmp/project")
-        );
-    }
-
-    #[test]
-    fn source_view_path_maps_preserved_cwd_inside_home_shaped_view_root() {
+    fn source_view_path_maps_preserved_cwd_inside_private_view_root() {
         let view_root = PathBuf::from("/Users/me/.agentfs/envs/codex/view-root");
-        let visible_root = PathBuf::from("/Users/me");
+        let source_root = PathBuf::from("/Users/me/project");
 
         assert_eq!(
-            super::source_view_path(
-                &view_root,
-                &visible_root,
-                Path::new("/Users/me/Desktop/project")
-            )
-            .unwrap(),
-            PathBuf::from("/Users/me/.agentfs/envs/codex/view-root/Desktop/project")
+            super::source_view_path(&view_root, &source_root, &source_root).unwrap(),
+            view_root
         );
         assert_eq!(
             super::source_view_path(
                 &view_root,
-                &visible_root,
-                Path::new("/Users/me/Desktop/project/crates")
+                &source_root,
+                Path::new("/Users/me/project/crates")
             )
             .unwrap(),
-            PathBuf::from("/Users/me/.agentfs/envs/codex/view-root/Desktop/project/crates")
+            PathBuf::from("/Users/me/.agentfs/envs/codex/view-root/crates")
         );
 
-        let error = super::source_view_path(&view_root, &visible_root, Path::new("/Users/other"))
+        let error = super::source_view_path(&view_root, &source_root, Path::new("/Users/me/other"))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("must be inside visible-root"));
+        assert!(error.contains("must be inside source-root"));
     }
 
     #[cfg(target_os = "macos")]
