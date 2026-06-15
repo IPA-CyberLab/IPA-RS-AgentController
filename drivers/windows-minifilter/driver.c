@@ -1124,6 +1124,7 @@ static NTSTATUS AgentFsAppendUpperDirectoryEntries(
     _In_ PFLT_INSTANCE Instance,
     _In_ PAGENTFS_DIR_CONTEXT Context,
     _In_ FILE_INFORMATION_CLASS InfoClass,
+    _In_opt_ PUNICODE_STRING SearchPattern,
     _In_ ULONG FileNameLengthOffset,
     _In_ ULONG FileNameOffset,
     _Inout_updates_bytes_(Capacity) PVOID Output,
@@ -1179,7 +1180,7 @@ static NTSTATUS AgentFsAppendUpperDirectoryEntries(
             64 * 1024,
             InfoClass,
             FALSE,
-            NULL,
+            SearchPattern,
             restartScan);
         restartScan = FALSE;
         if (status == STATUS_NO_MORE_FILES || status == STATUS_NO_SUCH_FILE) {
@@ -1220,19 +1221,7 @@ Exit:
 
 static BOOLEAN AgentFsShouldAppendUpperDirectoryEntries(_In_ PFLT_CALLBACK_DATA Data)
 {
-    if (NT_SUCCESS(Data->IoStatus.Status)) {
-        return TRUE;
-    }
-
-    if (Data->IoStatus.Status != STATUS_NO_MORE_FILES) {
-        return FALSE;
-    }
-
-    if ((Data->Iopb->OperationFlags & SL_RESTART_SCAN) != 0) {
-        return TRUE;
-    }
-
-    return Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName != NULL;
+    return Data->IoStatus.Status == STATUS_NO_MORE_FILES;
 }
 
 static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
@@ -1302,6 +1291,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
             FltObjects->Instance,
             context,
             infoClass,
+            Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName,
             nameLengthOffset,
             nameOffset,
             output,
