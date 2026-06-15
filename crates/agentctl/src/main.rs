@@ -72,8 +72,8 @@ struct InitArgs {
 struct NewArgs {
     #[arg(short = 't', long = "target")]
     target: String,
-    #[arg(long, default_value = "base-001")]
-    base: String,
+    #[arg(long)]
+    base: Option<String>,
     #[arg(long = "from", default_value_os_t = default_new_source())]
     from: PathBuf,
     #[arg(long)]
@@ -122,6 +122,21 @@ fn host_current_dir() -> Result<PathBuf> {
 fn host_current_dir_from_env() -> Option<PathBuf> {
     let path = PathBuf::from(std::env::var_os("AGENT_HOST_CWD")?);
     path.is_absolute().then_some(path)
+}
+
+#[cfg(target_os = "linux")]
+fn default_base_for_source(_source: &Path) -> String {
+    "base-001".to_string()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_base_for_source(source: &Path) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in source.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("base-{hash:016x}")
 }
 
 #[derive(Debug, Subcommand)]
@@ -307,7 +322,7 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
             args.push("new".to_string());
             args.push("-t".to_string());
             args.push(new.target.clone());
-            push_opt(args, "--base", Some(&new.base));
+            push_opt(args, "--base", new.base.as_ref());
             push_path(args, "--from", Some(&new.from));
             push_opt(args, "--profile", new.profile.as_ref());
             push_opt(args, "--cpu-max", new.cpu_max.as_ref());
@@ -462,7 +477,10 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
         Command::Rm { env_id } => Ok(Request::EnvDestroy { id: env_id.clone() }),
         Command::New(args) => Ok(Request::New {
             target: args.target.clone(),
-            base: args.base.clone(),
+            base: args
+                .base
+                .clone()
+                .unwrap_or_else(|| default_base_for_source(&args.from)),
             from: args.from.clone(),
             profile: args
                 .profile
@@ -1018,7 +1036,7 @@ mod tests {
             remote_agentctl: "agentctl".to_string(),
             command: Command::New(NewArgs {
                 target: "codex".to_string(),
-                base: "base-001".to_string(),
+                base: Some("base-001".to_string()),
                 from: PathBuf::from("/"),
                 profile: None,
                 cpu_max: None,
@@ -1072,7 +1090,7 @@ mod tests {
             remote_agentctl: "agentctl".to_string(),
             command: Command::New(NewArgs {
                 target: "codex".to_string(),
-                base: "base-dev".to_string(),
+                base: Some("base-dev".to_string()),
                 from: PathBuf::from("/"),
                 profile: Some("privileged-dev".to_string()),
                 cpu_max: Some("800%".to_string()),
@@ -1512,7 +1530,7 @@ mod tests {
             remote_agentctl: "/usr/local/bin/agentctl".to_string(),
             command: Command::New(NewArgs {
                 target: "codex".to_string(),
-                base: "base-001".to_string(),
+                base: Some("base-001".to_string()),
                 from: PathBuf::from("/"),
                 profile: Some("privileged-dev".to_string()),
                 cpu_max: None,
@@ -1605,7 +1623,7 @@ mod tests {
     fn remote_interactive_commands_request_tty() {
         let new_shell = Command::New(NewArgs {
             target: "codex".to_string(),
-            base: "base-001".to_string(),
+            base: Some("base-001".to_string()),
             from: PathBuf::from("/"),
             profile: None,
             cpu_max: None,

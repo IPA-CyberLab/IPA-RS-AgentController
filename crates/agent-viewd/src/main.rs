@@ -403,6 +403,12 @@ fn ensure_source_overlay_mounted(
     upper: &Path,
     whiteouts: &Path,
 ) -> Result<MountedOverlay> {
+    if overlay_mount_is_active(source_root) {
+        bail!(
+            "source-root {} is already mounted by an active macOS path-preserving env; exit that shell or remove the env before starting another env for the same source",
+            source_root.display()
+        );
+    }
     validate_source_overlay_paths(source_root, lower, upper, whiteouts)?;
     ensure_overlay_mounted_at(source_root, Some(source_root), lower, upper, whiteouts)
 }

@@ -604,7 +604,17 @@ impl DesktopService {
         validate_id(base_id)?;
         let manifest = self.layout.base_dir(base_id).join("manifest.json");
         if tokio::fs::try_exists(&manifest).await? {
-            return self.layout.read_base(base_id).await;
+            let base = self.layout.read_base(base_id).await?;
+            if base.backend == RootfsBackend::PathPreservingOverlay
+                && base.source != from.display().to_string()
+            {
+                return Err(anyhow!(
+                    "base {base_id} was created from {}; requested source is {}; use a different --base or omit --base for the source-specific default",
+                    base.source,
+                    from.display()
+                ));
+            }
+            return Ok(base);
         }
         self.base_freeze(base_id, from).await
     }
