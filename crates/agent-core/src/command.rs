@@ -249,6 +249,8 @@ async fn run_windows_minifilter_overlay(
         .arg(preserved_cwd)
         .arg("--network")
         .arg(&limits.network)
+        .arg("--pids-max")
+        .arg(limits.pids_max.to_string())
         .arg("--")
         .arg(program)
         .args(args);
@@ -310,6 +312,8 @@ fn spawn_windows_minifilter_overlay_session(
         .arg(preserved_cwd)
         .arg("--network")
         .arg(&limits.network)
+        .arg("--pids-max")
+        .arg(limits.pids_max.to_string())
         .arg("--log-path")
         .arg(log_path)
         .arg("--")

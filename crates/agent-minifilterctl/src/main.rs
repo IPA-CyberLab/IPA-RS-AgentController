@@ -17,7 +17,7 @@ mod windows_app {
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, GetExitCodeProcess, ResumeThread, WaitForSingleObject, CREATE_SUSPENDED,
@@ -83,6 +83,8 @@ mod windows_app {
         cwd: PathBuf,
         #[arg(long, default_value = "host")]
         network: String,
+        #[arg(long, default_value_t = 0)]
+        pids_max: u32,
         #[arg(long)]
         log_path: Option<PathBuf>,
         #[arg(last = true)]
@@ -247,7 +249,7 @@ mod windows_app {
             let error = unsafe { GetLastError() };
             return Err(anyhow!("CreateJobObjectW failed with {error}"));
         }
-        apply_job_limits(job)?;
+        apply_job_limits(job, args.pids_max)?;
         let assigned = unsafe { AssignProcessToJobObject(job, process_info.hProcess) };
         if assigned == 0 {
             unsafe {
@@ -389,9 +391,13 @@ mod windows_app {
         }
     }
 
-    fn apply_job_limits(job: HANDLE) -> Result<()> {
+    fn apply_job_limits(job: HANDLE, pids_max: u32) -> Result<()> {
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if pids_max > 0 {
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            info.BasicLimitInformation.ActiveProcessLimit = pids_max;
+        }
         let ok = unsafe {
             SetInformationJobObject(
                 job,
