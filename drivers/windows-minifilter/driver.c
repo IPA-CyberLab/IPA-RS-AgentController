@@ -1186,6 +1186,23 @@ Exit:
     return status;
 }
 
+static BOOLEAN AgentFsShouldAppendUpperDirectoryEntries(_In_ PFLT_CALLBACK_DATA Data)
+{
+    if (NT_SUCCESS(Data->IoStatus.Status)) {
+        return TRUE;
+    }
+
+    if (Data->IoStatus.Status != STATUS_NO_MORE_FILES) {
+        return FALSE;
+    }
+
+    if ((Data->Iopb->OperationFlags & SL_RESTART_SCAN) != 0) {
+        return TRUE;
+    }
+
+    return Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName != NULL;
+}
+
 static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
@@ -1248,16 +1265,18 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
         }
     }
 
-    (VOID)AgentFsAppendUpperDirectoryEntries(
-        FltObjects->Instance,
-        context,
-        infoClass,
-        nameLengthOffset,
-        nameOffset,
-        output,
-        capacity,
-        &used,
-        &lastOffset);
+    if (AgentFsShouldAppendUpperDirectoryEntries(Data)) {
+        (VOID)AgentFsAppendUpperDirectoryEntries(
+            FltObjects->Instance,
+            context,
+            infoClass,
+            nameLengthOffset,
+            nameOffset,
+            output,
+            capacity,
+            &used,
+            &lastOffset);
+    }
 
     if (used == 0) {
         Data->IoStatus.Status = STATUS_NO_MORE_FILES;
