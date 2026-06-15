@@ -230,6 +230,7 @@ try {
     $aclSourceSddl = (Get-Acl $aclSource).Sddl
     Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
+    New-Item -ItemType SymbolicLink -Path (Join-Path $source "lower-symlink.txt") -Target (Join-Path $source "host.txt") | Out-Null
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
     (Get-Item (Join-Path $source "move-lower\inside\lower-file.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime
@@ -333,6 +334,20 @@ try {
     `$symlinkFailed = `$true
 }
 if (-not `$symlinkFailed) { throw 'symlink creation unexpectedly succeeded inside overlay' }
+`$lowerSymlinkWriteFailed = `$false
+try {
+    Set-Content lower-symlink.txt 'lower-symlink-env'
+} catch {
+    `$lowerSymlinkWriteFailed = `$true
+}
+if (-not `$lowerSymlinkWriteFailed) { throw 'lower symlink write unexpectedly succeeded inside overlay' }
+`$lowerSymlinkRenameFailed = `$false
+try {
+    Rename-Item lower-symlink.txt moved-lower-symlink.txt
+} catch {
+    `$lowerSymlinkRenameFailed = `$true
+}
+if (-not `$lowerSymlinkRenameFailed) { throw 'lower symlink rename unexpectedly succeeded inside overlay' }
 New-Item -ItemType Directory -Force -Path upper-only-dir | Out-Null
 Set-Content upper-only-dir\child.txt 'upper-only-child'
 if ((Get-Content upper-only-dir\child.txt) -ne 'upper-only-child') { throw 'upper-only directory child read failed' }
@@ -412,6 +427,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (Test-Path (Join-Path $source "symlink-host.txt")) {
         throw "host symlink was created"
+    }
+    if (((Get-Item (Join-Path $source "lower-symlink.txt") -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+        throw "host lower symlink stopped being a reparse point"
+    }
+    if ((Get-Content (Join-Path $source "lower-symlink.txt")) -ne "host-original") {
+        throw "host lower symlink target was modified"
     }
     if (-not (Test-Path (Join-Path $source "delete-me.txt"))) {
         throw "host delete-me.txt was removed"
@@ -536,6 +557,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (Test-Path (Join-Path $upperSource "hardlink-host.txt")) {
         throw "hardlink target was unexpectedly created in upper"
+    }
+    if (Test-Path (Join-Path $upperSource "lower-symlink.txt")) {
+        throw "lower symlink was unexpectedly copied to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "moved-lower-symlink.txt")) {
+        throw "renamed lower symlink was unexpectedly created in upper"
     }
     $upperSymlink = Join-Path $upperSource "symlink-host.txt"
     if ((Test-Path $upperSymlink) -and (((Get-Item $upperSymlink -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {

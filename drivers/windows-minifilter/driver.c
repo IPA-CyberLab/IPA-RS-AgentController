@@ -90,6 +90,7 @@ static VOID AgentFsProcessNotify(
     _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
+static BOOLEAN AgentFsPathIsReparsePoint(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static NTSTATUS AgentFsDupUnicode(_Out_ PUNICODE_STRING Destination, _In_ PCUNICODE_STRING Source);
 static NTSTATUS AgentFsVisiblePathFromName(
     _In_ PAGENTFS_ENV Env,
@@ -839,6 +840,9 @@ static NTSTATUS AgentFsCopyFile(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRI
     if (AgentFsPathExists(Instance, Target)) {
         return STATUS_SUCCESS;
     }
+    if (AgentFsPathIsReparsePoint(Instance, Source)) {
+        return STATUS_NOT_SUPPORTED;
+    }
     NTSTATUS status = AgentFsEnsureParentDirectory(Instance, Target);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -1107,6 +1111,9 @@ static NTSTATUS AgentFsCopyDirectoryTree(
     _In_ PCUNICODE_STRING Source,
     _In_ PCUNICODE_STRING Target)
 {
+    if (AgentFsPathIsReparsePoint(Instance, Source)) {
+        return STATUS_NOT_SUPPORTED;
+    }
     NTSTATUS status = AgentFsEnsureDirectoryTree(Instance, Target);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -1182,7 +1189,9 @@ static NTSTATUS AgentFsCopyDirectoryTree(
                     status = AgentFsJoinChildPath(&targetChild, Target, entry->FileName, entry->FileNameLength);
                 }
                 if (NT_SUCCESS(status)) {
-                    if (AgentFsPathIsDirectory(Instance, &sourceChild)) {
+                    if (AgentFsPathIsReparsePoint(Instance, &sourceChild)) {
+                        status = STATUS_NOT_SUPPORTED;
+                    } else if (AgentFsPathIsDirectory(Instance, &sourceChild)) {
                         status = AgentFsCopyDirectoryTree(Instance, &sourceChild, &targetChild);
                     } else {
                         status = AgentFsCopyFile(Instance, &sourceChild, &targetChild);
@@ -1451,6 +1460,44 @@ static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICOD
         return TRUE;
     }
     return FALSE;
+}
+
+static BOOLEAN AgentFsPathIsReparsePoint(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
+{
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle = NULL;
+    InitializeObjectAttributes(&oa, (PUNICODE_STRING)Path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    NTSTATUS status = FltCreateFile(
+        gFilter,
+        Instance,
+        &handle,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        &oa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        return FALSE;
+    }
+
+    FILE_BASIC_INFORMATION basicInfo;
+    RtlZeroMemory(&basicInfo, sizeof(basicInfo));
+    status = ZwQueryInformationFile(
+        handle,
+        &iosb,
+        &basicInfo,
+        sizeof(basicInfo),
+        FileBasicInformation);
+    FltClose(handle);
+    return NT_SUCCESS(status) &&
+        (basicInfo.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
 static BOOLEAN AgentFsDirectoryLayout(
