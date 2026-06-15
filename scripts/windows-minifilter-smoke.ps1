@@ -207,6 +207,7 @@ $wdkVersion = Get-WdkBuildVersion
 try {
     New-Item -ItemType Directory -Force -Path $source | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "nested\lower") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $source "delete-lower-dir\child") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "move-lower\inside") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "mixed-lower") | Out-Null
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
@@ -239,6 +240,7 @@ try {
     Set-Content -Path (Join-Path $source "replace-dir-target\child.txt") -Value "replace-dir-target-original"
     New-Item -ItemType SymbolicLink -Path (Join-Path $source "lower-symlink.txt") -Target (Join-Path $source "host.txt") | Out-Null
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
+    Set-Content -Path (Join-Path $source "delete-lower-dir\child\lower-file.txt") -Value "delete-lower-dir-original"
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
     (Get-Item (Join-Path $source "move-lower\inside\lower-file.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2018-07-08T09:10:11Z").UtcDateTime
     $moveLower = Join-Path $source "move-lower"
@@ -419,6 +421,7 @@ Set-Content mixed-lower\upper-changed.txt 'mixed-upper-modified'
 Rename-Item mixed-lower mixed-renamed
 Rename-Item move-lower moved-lower
 Remove-Item delete-me.txt
+Remove-Item -Recurse delete-lower-dir
 Remove-Item recreate-me.txt
 Set-Content recreate-me.txt 'recreated-in-env'
 Remove-Item rename-target.txt
@@ -433,11 +436,13 @@ if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recr
 if (`$names -notcontains 'stale-dir') { throw 'directory listing lost recreated upper directory' }
 if (`$names -notcontains 'upper-only-dir') { throw 'directory listing lost upper-only directory' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
+if (`$names -contains 'delete-lower-dir') { throw 'directory listing showed whiteouted lower directory' }
 if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed mixed source' }
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
 if (`$names -contains 'replace-file-source.txt') { throw 'directory listing showed replaced lower file source' }
 if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost upper replacement over lower file' }
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
+if ((Get-ChildItem -Name delete-lower-dir -ErrorAction SilentlyContinue) -contains 'delete-lower-dir') { throw 'exact listing showed whiteouted lower directory' }
 if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'exact listing lost recreated upper file over lower target' }
 "@
 
@@ -494,6 +499,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (-not (Test-Path (Join-Path $source "delete-me.txt"))) {
         throw "host delete-me.txt was removed"
+    }
+    if ((Get-Content (Join-Path $source "delete-lower-dir\child\lower-file.txt")) -ne "delete-lower-dir-original") {
+        throw "host delete-lower-dir tree was modified"
     }
     if ((Get-Content (Join-Path $source "recreate-me.txt")) -ne "recreate-original") {
         throw "host recreate-me.txt was modified"
@@ -607,6 +615,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if (Test-Path (Join-Path $upperSource "stale-dir\old.txt")) {
         throw "deleted upper directory child was left behind"
     }
+    if (Test-Path (Join-Path $upperSource "delete-lower-dir")) {
+        throw "deleted lower directory was unexpectedly copied to upper"
+    }
     if ((Get-Content (Join-Path $upperSource "upper-only-dir\child.txt")) -ne "upper-only-child") {
         throw "upper-only directory child was not written to upper"
     }
@@ -652,6 +663,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
+    }
+    if (-not (Test-Path (Join-Path $whiteoutSource "delete-lower-dir"))) {
+        throw "lower directory delete whiteout was not created"
     }
     if (Test-Path (Join-Path $whiteoutSource "collision-source.txt")) {
         throw "failed rename collision created a source whiteout"
