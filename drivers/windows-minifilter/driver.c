@@ -1977,6 +1977,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         UNICODE_STRING targetLower;
         UNICODE_STRING targetWhiteout;
         BOOLEAN replaceIfExists = FALSE;
+        BOOLEAN sourceIsDirectory = FALSE;
         RtlZeroMemory(&targetVisible, sizeof(targetVisible));
         RtlZeroMemory(&targetUpper, sizeof(targetUpper));
         RtlZeroMemory(&targetLower, sizeof(targetLower));
@@ -2023,6 +2024,20 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
             (AgentFsPathExists(FltObjects->Instance, &targetUpper) ||
                 AgentFsPathExists(FltObjects->Instance, &targetLower))) {
             status = STATUS_OBJECT_NAME_COLLISION;
+        }
+        if (NT_SUCCESS(status) &&
+            replaceIfExists &&
+            !AgentFsPathExists(FltObjects->Instance, &targetWhiteout) &&
+            !AgentFsPathExists(FltObjects->Instance, &targetUpper) &&
+            AgentFsPathExists(FltObjects->Instance, &targetLower)) {
+            sourceIsDirectory = AgentFsPathExists(FltObjects->Instance, &upper)
+                ? AgentFsPathIsDirectory(FltObjects->Instance, &upper)
+                : AgentFsPathIsDirectory(FltObjects->Instance, &lower);
+            if (sourceIsDirectory ||
+                AgentFsPathIsDirectory(FltObjects->Instance, &targetLower) ||
+                AgentFsPathIsReparsePoint(FltObjects->Instance, &targetLower)) {
+                status = STATUS_NOT_SUPPORTED;
+            }
         }
         if (NT_SUCCESS(status)) {
             if (AgentFsPathExists(FltObjects->Instance, &upper)) {
