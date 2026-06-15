@@ -268,6 +268,11 @@ if ((Get-Location).Path -ne '$source') { throw "cwd was not preserved: `$((Get-L
 if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+New-Item -ItemType Directory -Force -Path stale-dir | Out-Null
+Set-Content stale-dir\old.txt 'stale-upper-child'
+Remove-Item -Recurse stale-dir
+New-Item -ItemType Directory -Force -Path stale-dir | Out-Null
+if ((Get-ChildItem stale-dir -Force | Measure-Object).Count -ne 0) { throw 'recreated upper directory exposed stale deleted child' }
 `$renameCollisionFailed = `$false
 try {
     Rename-Item collision-source.txt collision-target.txt
@@ -296,6 +301,7 @@ if (`$names -notcontains 'mixed-renamed') { throw 'directory listing lost rename
 if (`$names -notcontains 'rename-target.txt') { throw 'directory listing lost upper file renamed onto deleted target' }
 if (`$names -notcontains 'moved-lower') { throw 'directory listing lost renamed lower directory' }
 if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
+if (`$names -notcontains 'stale-dir') { throw 'directory listing lost recreated upper directory' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
 if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed mixed source' }
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
@@ -359,6 +365,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $upperSource "recreate-me.txt")) -ne "recreated-in-env") {
         throw "recreated file was not written to upper"
+    }
+    if (-not (Test-Path (Join-Path $upperSource "stale-dir"))) {
+        throw "recreated upper directory was not present in upper"
+    }
+    if (Test-Path (Join-Path $upperSource "stale-dir\old.txt")) {
+        throw "deleted upper directory child was left behind"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"

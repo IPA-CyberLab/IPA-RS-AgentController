@@ -686,6 +686,103 @@ Exit:
     return status;
 }
 
+static NTSTATUS AgentFsDeleteDirectoryTree(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
+{
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle = NULL;
+    InitializeObjectAttributes(&oa, (PUNICODE_STRING)Path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    NTSTATUS status = FltCreateFile(
+        gFilter,
+        Instance,
+        &handle,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        &oa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND) {
+        return STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    PVOID temp = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
+    if (temp == NULL) {
+        FltClose(handle);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    BOOLEAN restartScan = TRUE;
+    for (;;) {
+        IO_STATUS_BLOCK queryStatus;
+        RtlZeroMemory(&queryStatus, sizeof(queryStatus));
+        RtlZeroMemory(temp, 64 * 1024);
+        status = ZwQueryDirectoryFile(
+            handle,
+            NULL,
+            NULL,
+            NULL,
+            &queryStatus,
+            temp,
+            64 * 1024,
+            FileNamesInformation,
+            FALSE,
+            NULL,
+            restartScan);
+        restartScan = FALSE;
+        if (status == STATUS_NO_MORE_FILES || status == STATUS_NO_SUCH_FILE) {
+            status = STATUS_SUCCESS;
+            break;
+        }
+        if (!NT_SUCCESS(status)) {
+            break;
+        }
+
+        ULONG returned = (ULONG)queryStatus.Information;
+        ULONG offset = 0;
+        while (offset < returned) {
+            PFILE_NAMES_INFORMATION entry = (PFILE_NAMES_INFORMATION)((PUCHAR)temp + offset);
+            if (!AgentFsIsDotDirectoryName(entry->FileName, entry->FileNameLength)) {
+                UNICODE_STRING child;
+                RtlZeroMemory(&child, sizeof(child));
+                status = AgentFsJoinChildPath(&child, Path, entry->FileName, entry->FileNameLength);
+                if (NT_SUCCESS(status)) {
+                    if (AgentFsPathIsDirectory(Instance, &child)) {
+                        status = AgentFsDeleteDirectoryTree(Instance, &child);
+                    } else {
+                        status = AgentFsDeletePath(&child);
+                    }
+                }
+                AgentFsFreeUnicode(&child);
+                if (!NT_SUCCESS(status)) {
+                    goto Exit;
+                }
+            }
+
+            if (entry->NextEntryOffset == 0) {
+                break;
+            }
+            offset += entry->NextEntryOffset;
+        }
+    }
+
+Exit:
+    ExFreePoolWithTag(temp, AGENTFS_TAG);
+    FltClose(handle);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    return AgentFsDeletePath(Path);
+}
+
 static ULONG AgentFsCreateDisposition(_In_ ULONG Options)
 {
     return (Options >> 24) & 0xff;
@@ -1274,9 +1371,18 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
 
     status = AgentFsJoinRedirectPath(&upper, &env->UpperRoot, &env->SourceRoot, &visible);
     if (NT_SUCCESS(status)) {
-        (VOID)AgentFsDeletePath(&upper);
+        if (AgentFsPathIsDirectory(FltObjects->Instance, &upper)) {
+            status = AgentFsDeleteDirectoryTree(FltObjects->Instance, &upper);
+        } else {
+            status = AgentFsDeletePath(&upper);
+        }
     }
     AgentFsFreeUnicode(&upper);
+    if (!NT_SUCCESS(status)) {
+        AgentFsFreeUnicode(&visible);
+        AgentFsFreeEnv(env);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
     status = AgentFsJoinRedirectPath(&whiteout, &env->WhiteoutRoot, &env->SourceRoot, &visible);
     AgentFsFreeUnicode(&visible);
     AgentFsFreeEnv(env);
