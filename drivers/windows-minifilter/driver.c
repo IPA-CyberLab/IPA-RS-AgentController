@@ -1224,6 +1224,9 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
                     &upper,
                     &targetUpper,
                     renameInfo->ReplaceIfExists != FALSE);
+                if (NT_SUCCESS(status) && AgentFsPathIsDirectory(FltObjects->Instance, &lower)) {
+                    status = AgentFsCopyDirectoryTree(FltObjects->Instance, &lower, &targetUpper);
+                }
             } else if (AgentFsPathIsDirectory(FltObjects->Instance, &lower)) {
                 status = AgentFsCopyDirectoryTree(FltObjects->Instance, &lower, &targetUpper);
             } else {

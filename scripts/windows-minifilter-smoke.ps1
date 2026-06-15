@@ -206,11 +206,14 @@ try {
     New-Item -ItemType Directory -Force -Path $source | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "nested\lower") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "move-lower\inside") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $source "mixed-lower") | Out-Null
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     Set-Content -Path (Join-Path $source "recreate-me.txt") -Value "recreate-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
+    Set-Content -Path (Join-Path $source "mixed-lower\upper-changed.txt") -Value "mixed-lower-original"
+    Set-Content -Path (Join-Path $source "mixed-lower\lower-only.txt") -Value "mixed-lower-only"
 
     Push-Location $repo
     Invoke-Logged { cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc }
@@ -267,6 +270,8 @@ Set-Content nested\lower\deep.txt 'deep-modified'
 New-Item -ItemType Directory -Force -Path nested\created\more | Out-Null
 Set-Content nested\created\more\new.txt 'new-deep'
 Rename-Item nested\created nested\renamed
+Set-Content mixed-lower\upper-changed.txt 'mixed-upper-modified'
+Rename-Item mixed-lower mixed-renamed
 Rename-Item move-lower moved-lower
 Remove-Item delete-me.txt
 Remove-Item recreate-me.txt
@@ -274,10 +279,12 @@ Set-Content recreate-me.txt 'recreated-in-env'
 Rename-Item created.txt renamed.txt
 `$names = Get-ChildItem -Name | Sort-Object
 if (`$names -notcontains 'host.txt') { throw 'directory listing lost lower file' }
+if (`$names -notcontains 'mixed-renamed') { throw 'directory listing lost renamed mixed directory' }
 if (`$names -notcontains 'renamed.txt') { throw 'directory listing lost upper renamed file' }
 if (`$names -notcontains 'moved-lower') { throw 'directory listing lost renamed lower directory' }
 if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
+if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed mixed source' }
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
 "@
 
@@ -293,6 +300,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $source "move-lower\inside\lower-file.txt")) -ne "lower-tree-original") {
         throw "host move-lower tree was modified"
+    }
+    if ((Get-Content (Join-Path $source "mixed-lower\upper-changed.txt")) -ne "mixed-lower-original") {
+        throw "host mixed-lower upper-changed.txt was modified"
     }
 
     $upperRoot = Join-Path $agentfs "envs\$EnvId\upper"
@@ -316,6 +326,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     if ((Get-Content (Join-Path $upperSource "moved-lower\inside\lower-file.txt")) -ne "lower-tree-original") {
         throw "renamed lower directory tree was not copied to upper"
     }
+    if ((Get-Content (Join-Path $upperSource "mixed-renamed\upper-changed.txt")) -ne "mixed-upper-modified") {
+        throw "renamed mixed directory lost upper-modified file"
+    }
+    if ((Get-Content (Join-Path $upperSource "mixed-renamed\lower-only.txt")) -ne "mixed-lower-only") {
+        throw "renamed mixed directory lost lower-only file"
+    }
     if (-not (Test-Path (Join-Path $upperSource "renamed.txt"))) {
         throw "renamed file was not written to upper"
     }
@@ -327,6 +343,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "move-lower"))) {
         throw "renamed lower directory source whiteout was not created"
+    }
+    if (-not (Test-Path (Join-Path $whiteoutSource "mixed-lower"))) {
+        throw "renamed mixed directory source whiteout was not created"
     }
     if (Test-Path (Join-Path $whiteoutSource "recreate-me.txt")) {
         throw "recreated file still has a whiteout"
