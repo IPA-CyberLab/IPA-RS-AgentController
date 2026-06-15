@@ -5,6 +5,12 @@
 #define AGENTFS_TAG 'sfga'
 #define AGENTFS_REPLY_OK 0
 #define AGENTFS_REPLY_ERROR 1
+#ifndef FILE_DISPOSITION_ON_CLOSE
+#define FILE_DISPOSITION_ON_CLOSE 0x00000008
+#endif
+#ifndef FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE
+#define FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE 0x00000010
+#endif
 
 typedef struct _AGENTFS_ENV {
     LIST_ENTRY Link;
@@ -372,6 +378,66 @@ static NTSTATUS AgentFsDeletePath(_In_ PCUNICODE_STRING Path)
         return STATUS_SUCCESS;
     }
     return status;
+}
+
+static VOID AgentFsClearReadOnlyAttribute(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
+{
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle = NULL;
+    InitializeObjectAttributes(&oa, (PUNICODE_STRING)Path, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    NTSTATUS status = FltCreateFile(
+        gFilter,
+        Instance,
+        &handle,
+        FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+        &oa,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        return;
+    }
+
+    FILE_BASIC_INFORMATION basicInfo;
+    RtlZeroMemory(&basicInfo, sizeof(basicInfo));
+    status = ZwQueryInformationFile(
+        handle,
+        &iosb,
+        &basicInfo,
+        sizeof(basicInfo),
+        FileBasicInformation);
+    if (NT_SUCCESS(status) && ((basicInfo.FileAttributes & FILE_ATTRIBUTE_READONLY) != 0)) {
+        basicInfo.FileAttributes &= ~FILE_ATTRIBUTE_READONLY;
+        if (basicInfo.FileAttributes == 0) {
+            basicInfo.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+        }
+        (VOID)ZwSetInformationFile(
+            handle,
+            &iosb,
+            &basicInfo,
+            sizeof(basicInfo),
+            FileBasicInformation);
+    }
+
+    FltClose(handle);
+}
+
+static NTSTATUS AgentFsDeletePathForDisposition(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING Path,
+    _In_ BOOLEAN IgnoreReadOnly)
+{
+    if (IgnoreReadOnly) {
+        AgentFsClearReadOnlyAttribute(Instance, Path);
+    }
+    return AgentFsDeletePath(Path);
 }
 
 static NTSTATUS AgentFsSiblingVisiblePath(
@@ -1446,12 +1512,26 @@ static NTSTATUS AgentFsValidateDeleteInformation(
     }
     if (InfoClass == FileDispositionInformationEx) {
         ULONG flags = ((PFILE_DISPOSITION_INFORMATION_EX)InfoBuffer)->Flags;
-        ULONG supportedFlags = FILE_DISPOSITION_DELETE;
+        ULONG supportedFlags =
+            FILE_DISPOSITION_DELETE |
+            FILE_DISPOSITION_ON_CLOSE |
+            FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE;
         if ((flags & ~supportedFlags) != 0) {
             return STATUS_NOT_SUPPORTED;
         }
     }
     return STATUS_SUCCESS;
+}
+
+static BOOLEAN AgentFsDeleteIgnoresReadOnly(
+    _In_ FILE_INFORMATION_CLASS InfoClass,
+    _In_opt_ PVOID InfoBuffer)
+{
+    if (InfoClass != FileDispositionInformationEx || InfoBuffer == NULL) {
+        return FALSE;
+    }
+    return (((PFILE_DISPOSITION_INFORMATION_EX)InfoBuffer)->Flags &
+        FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE) != 0;
 }
 
 static NTSTATUS AgentFsValidateRenameInformation(
@@ -2205,7 +2285,12 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         if (AgentFsPathIsDirectory(FltObjects->Instance, &upper)) {
             status = AgentFsDeleteDirectoryTree(FltObjects->Instance, &upper);
         } else {
-            status = AgentFsDeletePath(&upper);
+            status = AgentFsDeletePathForDisposition(
+                FltObjects->Instance,
+                &upper,
+                AgentFsDeleteIgnoresReadOnly(
+                    infoClass,
+                    Data->Iopb->Parameters.SetFileInformation.InfoBuffer));
         }
     }
     AgentFsFreeUnicode(&upper);

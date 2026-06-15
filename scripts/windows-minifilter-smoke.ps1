@@ -355,6 +355,10 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $source "mixed-lower") | Out-Null
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
+    $readonlyDelete = Join-Path $source "readonly-delete.txt"
+    Set-Content -Path $readonlyDelete -Value "readonly-delete-original"
+    $readonlyDeleteItem = Get-Item $readonlyDelete
+    $readonlyDeleteItem.Attributes = $readonlyDeleteItem.Attributes -bor [IO.FileAttributes]::ReadOnly
     Set-Content -Path (Join-Path $source "recreate-me.txt") -Value "recreate-original"
     Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
@@ -537,16 +541,75 @@ if ((Get-Content collision-source.txt) -ne 'collision-source-original') { throw 
 if ((Get-Content collision-target.txt) -ne 'collision-target-original') { throw 'rename collision modified target file' }
 Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 public static class AgentFsNativeMove {
+    private const uint DELETE_ACCESS = 0x00010000;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint FILE_SHARE_DELETE = 0x00000004;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private const uint FILE_DISPOSITION_DELETE = 0x00000001;
+    private const uint FILE_DISPOSITION_ON_CLOSE = 0x00000008;
+    private const uint FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE = 0x00000010;
+    private const int FileDispositionInfoEx = 21;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILE_DISPOSITION_INFO_EX {
+        public uint Flags;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool MoveFileEx(string existingFileName, string newFileName, int flags);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr securityAttributes);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(
+        SafeFileHandle fileHandle,
+        int fileInformationClass,
+        ref FILE_DISPOSITION_INFO_EX fileInformation,
+        int bufferSize);
+
+    public static void DeleteOnCloseIgnoreReadonly(string path) {
+        using (SafeFileHandle handle = CreateFile(
+            path,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero)) {
+            if (handle.IsInvalid) {
+                throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+            }
+
+            FILE_DISPOSITION_INFO_EX info = new FILE_DISPOSITION_INFO_EX();
+            info.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_ON_CLOSE | FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE;
+            if (!SetFileInformationByHandle(handle, FileDispositionInfoEx, ref info, Marshal.SizeOf(typeof(FILE_DISPOSITION_INFO_EX)))) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
 }
 '@
+[AgentFsNativeMove]::DeleteOnCloseIgnoreReadonly((Join-Path (Get-Location) 'readonly-delete.txt'))
+if (Test-Path readonly-delete.txt) { throw 'FileDispositionInfoEx delete left readonly lower file visible' }
 `$crossBoundaryMoveFailed = `$false
 if (-not [AgentFsNativeMove]::MoveFileEx('$outsideMoveSource', (Join-Path (Get-Location) 'cross-boundary-move.txt'), 0)) {
     `$crossBoundaryMoveFailed = `$true
@@ -597,6 +660,7 @@ if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteou
 if (`$names -contains 'delete-lower-dir') { throw 'directory listing showed whiteouted lower directory' }
 if (`$names -contains 'mixed-lower') { throw 'directory listing showed renamed mixed source' }
 if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lower source' }
+if (`$names -contains 'readonly-delete.txt') { throw 'directory listing showed readonly disposition-deleted lower file' }
 if (`$names -contains 'replace-file-source.txt') { throw 'directory listing showed replaced lower file source' }
 if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost upper replacement over lower file' }
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
@@ -657,6 +721,12 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (-not (Test-Path (Join-Path $source "delete-me.txt"))) {
         throw "host delete-me.txt was removed"
+    }
+    if ((Get-Content (Join-Path $source "readonly-delete.txt")) -ne "readonly-delete-original") {
+        throw "host readonly-delete.txt was modified"
+    }
+    if (((Get-Item (Join-Path $source "readonly-delete.txt")).Attributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
+        throw "host readonly-delete.txt lost the readonly attribute"
     }
     if ((Get-Content (Join-Path $source "delete-lower-dir\child\lower-file.txt")) -ne "delete-lower-dir-original") {
         throw "host delete-lower-dir tree was modified"
@@ -791,6 +861,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     if (Test-Path (Join-Path $upperSource "delete-lower-dir")) {
         throw "deleted lower directory was unexpectedly copied to upper"
     }
+    if (Test-Path (Join-Path $upperSource "readonly-delete.txt")) {
+        throw "readonly disposition-deleted lower file was unexpectedly left in upper"
+    }
     if ((Get-Content (Join-Path $upperSource "upper-only-dir\child.txt")) -ne "upper-only-child") {
         throw "upper-only directory child was not written to upper"
     }
@@ -845,6 +918,9 @@ if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'ex
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
+    }
+    if (-not (Test-Path (Join-Path $whiteoutSource "readonly-delete.txt"))) {
+        throw "readonly disposition-delete whiteout was not created"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-lower-dir"))) {
         throw "lower directory delete whiteout was not created"
