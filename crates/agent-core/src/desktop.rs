@@ -211,10 +211,23 @@ impl DesktopService {
         cwd: Option<&Path>,
     ) -> Result<Response> {
         self.init().await?;
+        if tokio::fs::try_exists(self.layout.env_dir(target).join("meta.json")).await? {
+            self.ensure_env_started(target).await?;
+            return self.target_response(target, command, cwd).await;
+        }
         self.ensure_base(base_id, from).await?;
         self.ensure_env(target, base_id, profile_name, limit_overrides)
             .await?;
         self.ensure_env_started(target).await?;
+        self.target_response(target, command, cwd).await
+    }
+
+    async fn target_response(
+        &self,
+        target: &str,
+        command: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<Response> {
         if command.is_empty() {
             let env = self.shell_target(target).await?;
             let base = self.layout.read_base(&env.base_id).await?;
@@ -266,6 +279,9 @@ impl DesktopService {
                 "backend {backend:?} is not a desktop clone backend"
             ));
         }
+        if backend == RootfsBackend::PathPreservingOverlay {
+            self.ensure_safe_path_preserving_source(from)?;
+        }
         let base_dir = self.layout.base_dir(name);
         if base_dir.exists() {
             return Err(anyhow!("base {name} already exists"));
@@ -295,6 +311,56 @@ impl DesktopService {
         };
         self.layout.write_base(&base).await?;
         Ok(base)
+    }
+
+    fn ensure_safe_path_preserving_source(&self, from: &Path) -> Result<()> {
+        if !from.is_absolute() {
+            bail!(
+                "path-preserving overlay source must be absolute: {}",
+                from.display()
+            );
+        }
+        let canonical = std::fs::canonicalize(from)
+            .with_context(|| format!("failed to resolve source {}", from.display()))?;
+        if !canonical.is_dir() {
+            bail!(
+                "path-preserving overlay source must be a directory: {}",
+                from.display()
+            );
+        }
+        if canonical == Path::new("/") {
+            bail!("refusing to create path-preserving overlay from filesystem root /; cd into a project directory or pass --from explicitly");
+        }
+        let broad_roots = [
+            "/Users", "/System", "/Library", "/bin", "/sbin", "/usr", "/etc", "/var", "/private",
+            "/tmp", "/dev", "/Volumes",
+        ];
+        if broad_roots.iter().any(|root| canonical == Path::new(root)) {
+            bail!(
+                "refusing to create path-preserving overlay from broad system directory {}; cd into a project directory",
+                canonical.display()
+            );
+        }
+        if let Some(home) = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .and_then(|home| std::fs::canonicalize(home).ok())
+        {
+            if canonical == home {
+                bail!(
+                    "refusing to create path-preserving overlay from home directory {}; cd into a project directory",
+                    canonical.display()
+                );
+            }
+        }
+        if let Ok(agentfs) = std::fs::canonicalize(&self.config.agentfs) {
+            if canonical == agentfs || canonical.starts_with(&agentfs) {
+                bail!(
+                    "refusing to create path-preserving overlay from agentfs storage {}; use the original host project path",
+                    canonical.display()
+                );
+            }
+        }
+        Ok(())
     }
 
     pub async fn env_create(
@@ -1573,8 +1639,11 @@ mod tests {
     use super::{human_bytes, DesktopService};
     use crate::config::AgentConfig;
     use crate::export::ExportType;
-    use crate::model::{machine_name, Base, Env, EnvState, Limits, NetworkPolicy, RootfsBackend};
+    use crate::model::{
+        machine_name, Base, Env, EnvState, LimitOverrides, Limits, NetworkPolicy, RootfsBackend,
+    };
     use crate::path_overlay::PathOverlay;
+    use crate::protocol::Response;
     use chrono::Utc;
     use std::fs;
     use std::path::Path;
@@ -1662,6 +1731,53 @@ mod tests {
             .unwrap(),
             rootfs.join(rel)
         );
+    }
+
+    #[tokio::test]
+    async fn path_preserving_base_rejects_filesystem_root_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+
+        let error = service
+            .base_freeze_with_backend(
+                "base-root",
+                Path::new("/"),
+                RootfsBackend::PathPreservingOverlay,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("filesystem root"));
+    }
+
+    #[tokio::test]
+    async fn new_target_reuses_existing_env_before_current_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        let source = dir.path().join("workspace");
+        create_path_preserving_env_fixture(&service, &source).await;
+
+        let response = service
+            .new_target(
+                "codex-1",
+                "base-from-root",
+                Path::new("/"),
+                "privileged-dev",
+                LimitOverrides::default(),
+                &[],
+                Some(Path::new("/")),
+            )
+            .await
+            .unwrap();
+
+        let Response::DesktopShell { command, .. } = response else {
+            panic!("expected desktop shell response");
+        };
+        assert!(command.contains(&"--source-root".to_string()));
+        assert!(command.contains(&source.display().to_string()));
+        assert!(!service.layout.base_dir("base-from-root").exists());
     }
 
     #[test]
