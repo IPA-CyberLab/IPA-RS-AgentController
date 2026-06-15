@@ -1198,9 +1198,11 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
             (PFILE_RENAME_INFORMATION)Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
         UNICODE_STRING targetVisible;
         UNICODE_STRING targetUpper;
+        UNICODE_STRING targetLower;
         UNICODE_STRING targetWhiteout;
         RtlZeroMemory(&targetVisible, sizeof(targetVisible));
         RtlZeroMemory(&targetUpper, sizeof(targetUpper));
+        RtlZeroMemory(&targetLower, sizeof(targetLower));
         RtlZeroMemory(&targetWhiteout, sizeof(targetWhiteout));
         status = AgentFsSiblingVisiblePath(
             &targetVisible,
@@ -1220,7 +1222,17 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
             status = AgentFsJoinRedirectPath(&targetUpper, &env->UpperRoot, &env->SourceRoot, &targetVisible);
         }
         if (NT_SUCCESS(status)) {
+            status = AgentFsJoinRedirectPath(&targetLower, &env->LowerRoot, &env->SourceRoot, &targetVisible);
+        }
+        if (NT_SUCCESS(status)) {
             status = AgentFsJoinRedirectPath(&targetWhiteout, &env->WhiteoutRoot, &env->SourceRoot, &targetVisible);
+        }
+        if (NT_SUCCESS(status) &&
+            renameInfo->ReplaceIfExists == FALSE &&
+            !AgentFsPathExists(FltObjects->Instance, &targetWhiteout) &&
+            (AgentFsPathExists(FltObjects->Instance, &targetUpper) ||
+                AgentFsPathExists(FltObjects->Instance, &targetLower))) {
+            status = STATUS_OBJECT_NAME_COLLISION;
         }
         if (NT_SUCCESS(status)) {
             if (AgentFsPathExists(FltObjects->Instance, &upper)) {
@@ -1249,6 +1261,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         }
         AgentFsFreeUnicode(&targetVisible);
         AgentFsFreeUnicode(&targetUpper);
+        AgentFsFreeUnicode(&targetLower);
         AgentFsFreeUnicode(&targetWhiteout);
         AgentFsFreeUnicode(&upper);
         AgentFsFreeUnicode(&lower);

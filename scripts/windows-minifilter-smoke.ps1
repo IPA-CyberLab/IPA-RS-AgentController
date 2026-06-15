@@ -211,6 +211,8 @@ try {
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     Set-Content -Path (Join-Path $source "recreate-me.txt") -Value "recreate-original"
     Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
+    Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
+    Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
     Set-Content -Path (Join-Path $source "move-lower\inside\lower-file.txt") -Value "lower-tree-original"
     Set-Content -Path (Join-Path $source "mixed-lower\upper-changed.txt") -Value "mixed-lower-original"
@@ -266,6 +268,15 @@ if ((Get-Location).Path -ne '$source') { throw "cwd was not preserved: `$((Get-L
 if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+`$renameCollisionFailed = `$false
+try {
+    Rename-Item collision-source.txt collision-target.txt
+} catch {
+    `$renameCollisionFailed = `$true
+}
+if (-not `$renameCollisionFailed) { throw 'rename over existing lower target unexpectedly succeeded' }
+if ((Get-Content collision-source.txt) -ne 'collision-source-original') { throw 'rename collision hid source file' }
+if ((Get-Content collision-target.txt) -ne 'collision-target-original') { throw 'rename collision modified target file' }
 New-Item -ItemType Directory -Force -Path nested\lower | Out-Null
 Set-Content nested\lower\deep.txt 'deep-modified'
 New-Item -ItemType Directory -Force -Path nested\created\more | Out-Null
@@ -302,6 +313,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $source "rename-target.txt")) -ne "rename-target-original") {
         throw "host rename-target.txt was modified"
+    }
+    if ((Get-Content (Join-Path $source "collision-source.txt")) -ne "collision-source-original") {
+        throw "host collision-source.txt was modified"
+    }
+    if ((Get-Content (Join-Path $source "collision-target.txt")) -ne "collision-target-original") {
+        throw "host collision-target.txt was modified"
     }
     if ((Get-Content (Join-Path $source "move-lower\inside\lower-file.txt")) -ne "lower-tree-original") {
         throw "host move-lower tree was modified"
@@ -345,6 +362,12 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "collision-source.txt")) {
+        throw "failed rename collision created a source whiteout"
+    }
+    if (Test-Path (Join-Path $upperSource "collision-target.txt")) {
+        throw "failed rename collision wrote the target to upper"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "move-lower"))) {
         throw "renamed lower directory source whiteout was not created"
