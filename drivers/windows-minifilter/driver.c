@@ -1057,6 +1057,26 @@ static BOOLEAN AgentFsDeleteRequested(_In_ PFLT_CALLBACK_DATA Data, _In_ FILE_IN
     return FALSE;
 }
 
+static NTSTATUS AgentFsValidateRenameInformation(
+    _In_ FILE_INFORMATION_CLASS InfoClass,
+    _In_ PFILE_RENAME_INFORMATION RenameInfo,
+    _Out_ PBOOLEAN ReplaceIfExists)
+{
+    if (RenameInfo == NULL || ReplaceIfExists == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (InfoClass == FileRenameInformationEx) {
+        ULONG supportedFlags = FILE_RENAME_REPLACE_IF_EXISTS;
+        if ((RenameInfo->Flags & ~supportedFlags) != 0) {
+            return STATUS_NOT_SUPPORTED;
+        }
+        *ReplaceIfExists = (RenameInfo->Flags & FILE_RENAME_REPLACE_IF_EXISTS) != 0;
+    } else {
+        *ReplaceIfExists = RenameInfo->ReplaceIfExists != FALSE;
+    }
+    return STATUS_SUCCESS;
+}
+
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path)
 {
     OBJECT_ATTRIBUTES oa;
@@ -1585,6 +1605,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         UNICODE_STRING targetUpper;
         UNICODE_STRING targetLower;
         UNICODE_STRING targetWhiteout;
+        BOOLEAN replaceIfExists = FALSE;
         RtlZeroMemory(&targetVisible, sizeof(targetVisible));
         RtlZeroMemory(&targetUpper, sizeof(targetUpper));
         RtlZeroMemory(&targetLower, sizeof(targetLower));
@@ -1592,11 +1613,16 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         if (renameInfo == NULL || renameInfo->RootDirectory != NULL) {
             status = STATUS_NOT_SUPPORTED;
         } else {
+            status = AgentFsValidateRenameInformation(infoClass, renameInfo, &replaceIfExists);
+        }
+        if (NT_SUCCESS(status)) {
             status = AgentFsSiblingVisiblePath(
                 &targetVisible,
                 &visible,
                 renameInfo->FileName,
                 renameInfo->FileNameLength);
+        } else {
+            RtlZeroMemory(&targetVisible, sizeof(targetVisible));
         }
         if (NT_SUCCESS(status) && !AgentFsStartsWithPath(&targetVisible, &env->SourceRoot)) {
             status = STATUS_NOT_SUPPORTED;
@@ -1617,7 +1643,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
             status = AgentFsJoinRedirectPath(&targetWhiteout, &env->WhiteoutRoot, &env->SourceRoot, &targetVisible);
         }
         if (NT_SUCCESS(status) &&
-            renameInfo->ReplaceIfExists == FALSE &&
+            !replaceIfExists &&
             !AgentFsPathExists(FltObjects->Instance, &targetWhiteout) &&
             (AgentFsPathExists(FltObjects->Instance, &targetUpper) ||
                 AgentFsPathExists(FltObjects->Instance, &targetLower))) {
@@ -1629,7 +1655,7 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
                     FltObjects->Instance,
                     &upper,
                     &targetUpper,
-                    renameInfo->ReplaceIfExists != FALSE);
+                    replaceIfExists);
                 if (NT_SUCCESS(status) && AgentFsPathIsDirectory(FltObjects->Instance, &lower)) {
                     status = AgentFsCopyDirectoryTree(FltObjects->Instance, &lower, &targetUpper);
                 }
