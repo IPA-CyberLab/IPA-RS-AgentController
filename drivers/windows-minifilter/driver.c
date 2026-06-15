@@ -91,6 +91,15 @@ static VOID AgentFsProcessNotify(
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static NTSTATUS AgentFsDupUnicode(_Out_ PUNICODE_STRING Destination, _In_ PCUNICODE_STRING Source);
+static NTSTATUS AgentFsVisiblePathFromName(
+    _In_ PAGENTFS_ENV Env,
+    _In_ PCUNICODE_STRING Name,
+    _Out_ PUNICODE_STRING Visible);
+static NTSTATUS AgentFsJoinChildPath(
+    _Out_ PUNICODE_STRING Target,
+    _In_ PCUNICODE_STRING Root,
+    _In_reads_bytes_(NameLength) PCWCH Name,
+    _In_ ULONG NameLength);
 static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject);
 static BOOLEAN AgentFsDirUpperAlreadyMerged(_In_ PFILE_OBJECT FileObject);
 static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject);
@@ -405,6 +414,57 @@ static NTSTATUS AgentFsSiblingVisiblePath(
     RtlCopyMemory((PUCHAR)Target->Buffer + parentBytes + separatorBytes, FileName, FileNameLength);
     Target->Buffer[totalBytes / sizeof(WCHAR)] = L'\0';
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS AgentFsRenameTargetVisiblePath(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PAGENTFS_ENV Env,
+    _In_ PCUNICODE_STRING SourceVisible,
+    _In_ KPROCESSOR_MODE RequestorMode,
+    _In_opt_ HANDLE RootDirectory,
+    _In_reads_bytes_(FileNameLength) PWCH FileName,
+    _In_ ULONG FileNameLength,
+    _Out_ PUNICODE_STRING Target)
+{
+    if (RootDirectory == NULL || (FileNameLength != 0 && FileName != NULL && FileName[0] == L'\\')) {
+        return AgentFsSiblingVisiblePath(Target, SourceVisible, FileName, FileNameLength);
+    }
+
+    PFILE_OBJECT rootObject = NULL;
+    NTSTATUS status = ObReferenceObjectByHandle(
+        RootDirectory,
+        FILE_READ_ATTRIBUTES,
+        *IoFileObjectType,
+        RequestorMode,
+        (PVOID *)&rootObject,
+        NULL);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    PFLT_FILE_NAME_INFORMATION rootName = NULL;
+    UNICODE_STRING rootVisible;
+    RtlZeroMemory(&rootVisible, sizeof(rootVisible));
+    status = FltGetFileNameInformationUnsafe(
+        rootObject,
+        Instance,
+        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
+        &rootName);
+    if (NT_SUCCESS(status)) {
+        status = FltParseFileNameInformation(rootName);
+    }
+    if (NT_SUCCESS(status)) {
+        status = AgentFsVisiblePathFromName(Env, &rootName->Name, &rootVisible);
+    }
+    if (NT_SUCCESS(status)) {
+        status = AgentFsJoinChildPath(Target, &rootVisible, FileName, FileNameLength);
+    }
+    AgentFsFreeUnicode(&rootVisible);
+    if (rootName != NULL) {
+        FltReleaseFileNameInformation(rootName);
+    }
+    ObDereferenceObject(rootObject);
+    return status;
 }
 
 static NTSTATUS AgentFsJoinChildPath(
@@ -1867,17 +1927,21 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         RtlZeroMemory(&targetUpper, sizeof(targetUpper));
         RtlZeroMemory(&targetLower, sizeof(targetLower));
         RtlZeroMemory(&targetWhiteout, sizeof(targetWhiteout));
-        if (renameInfo == NULL || renameInfo->RootDirectory != NULL) {
-            status = STATUS_NOT_SUPPORTED;
+        if (renameInfo == NULL) {
+            status = STATUS_INVALID_PARAMETER;
         } else {
             status = AgentFsValidateRenameInformation(infoClass, renameInfo, &replaceIfExists);
         }
         if (NT_SUCCESS(status)) {
-            status = AgentFsSiblingVisiblePath(
-                &targetVisible,
+            status = AgentFsRenameTargetVisiblePath(
+                FltObjects->Instance,
+                env,
                 &visible,
+                Data->RequestorMode,
+                renameInfo->RootDirectory,
                 renameInfo->FileName,
-                renameInfo->FileNameLength);
+                renameInfo->FileNameLength,
+                &targetVisible);
         } else {
             RtlZeroMemory(&targetVisible, sizeof(targetVisible));
         }
