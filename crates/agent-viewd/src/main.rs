@@ -829,7 +829,25 @@ fn source_visible_root_with_home(source_root: &Path, home: Option<&Path>) -> Pat
             return home.to_path_buf();
         }
     }
+    if let Some(home) = home_like_visible_root_from_source(source_root) {
+        return home;
+    }
     source_root.to_path_buf()
+}
+
+fn home_like_visible_root_from_source(source_root: &Path) -> Option<PathBuf> {
+    let mut components = source_root.components();
+    match (components.next()?, components.next()?, components.next()?) {
+        (std::path::Component::RootDir, std::path::Component::Normal(parent), user)
+            if parent == "Users" || parent == "home" =>
+        {
+            let mut home = PathBuf::from("/");
+            home.push(parent);
+            home.push(user.as_os_str());
+            Some(home)
+        }
+        _ => None,
+    }
 }
 
 fn source_view_path(view_root: &Path, visible_root: &Path, path: &Path) -> Result<PathBuf> {
@@ -1444,6 +1462,22 @@ mod tests {
                 Path::new("/private/tmp/project"),
                 Some(Path::new("/Users/me"))
             ),
+            PathBuf::from("/private/tmp/project")
+        );
+    }
+
+    #[test]
+    fn source_visible_root_infers_home_from_user_path_without_home_env() {
+        assert_eq!(
+            super::source_visible_root_with_home(Path::new("/Users/me/Desktop/project"), None),
+            PathBuf::from("/Users/me")
+        );
+        assert_eq!(
+            super::source_visible_root_with_home(Path::new("/home/me/project"), None),
+            PathBuf::from("/home/me")
+        );
+        assert_eq!(
+            super::source_visible_root_with_home(Path::new("/private/tmp/project"), None),
             PathBuf::from("/private/tmp/project")
         );
     }
