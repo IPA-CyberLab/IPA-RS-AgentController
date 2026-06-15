@@ -800,7 +800,14 @@ static BOOLEAN AgentFsDispositionCanCreate(_In_ ULONG Disposition)
 static BOOLEAN AgentFsWriteIntent(_In_ ACCESS_MASK DesiredAccess, _In_ ULONG Options)
 {
     ULONG disposition = AgentFsCreateDisposition(Options);
-    if ((DesiredAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | WRITE_DAC | WRITE_OWNER)) != 0) {
+    if ((DesiredAccess & (
+            FILE_WRITE_DATA |
+            FILE_APPEND_DATA |
+            FILE_WRITE_EA |
+            FILE_WRITE_ATTRIBUTES |
+            DELETE |
+            WRITE_DAC |
+            WRITE_OWNER)) != 0) {
         return TRUE;
     }
     return disposition == FILE_CREATE ||

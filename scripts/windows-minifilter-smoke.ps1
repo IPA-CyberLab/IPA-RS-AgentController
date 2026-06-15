@@ -211,6 +211,8 @@ try {
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     Set-Content -Path (Join-Path $source "recreate-me.txt") -Value "recreate-original"
     Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
+    Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
+    (Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime
     Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
     Set-Content -Path (Join-Path $source "nested\lower\deep.txt") -Value "deep-original"
@@ -266,6 +268,7 @@ try {
 `$ErrorActionPreference = 'Stop'
 if ((Get-Location).Path -ne '$source') { throw "cwd was not preserved: `$((Get-Location).Path)" }
 if ((Get-Content host.txt) -ne 'host-original') { throw 'lower read failed' }
+(Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
 New-Item -ItemType Directory -Force -Path upper-only-dir | Out-Null
@@ -325,6 +328,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     if ((Get-Content (Join-Path $source "rename-target.txt")) -ne "rename-target-original") {
         throw "host rename-target.txt was modified"
     }
+    if ((Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime) {
+        throw "host metadata.txt timestamp was modified"
+    }
     if ((Get-Content (Join-Path $source "collision-source.txt")) -ne "collision-source-original") {
         throw "host collision-source.txt was modified"
     }
@@ -379,6 +385,9 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
     }
     if ((Get-Content (Join-Path $upperSource "upper-only-dir\child.txt")) -ne "upper-only-child") {
         throw "upper-only directory child was not written to upper"
+    }
+    if ((Get-Item (Join-Path $upperSource "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2020-02-03T04:05:06Z").UtcDateTime) {
+        throw "metadata write was not redirected to upper"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
