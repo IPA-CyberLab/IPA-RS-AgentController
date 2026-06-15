@@ -35,14 +35,24 @@ jobs:
           $ErrorActionPreference = "Stop"
           cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc
 
-      - name: Install Windows SDK and WDK
+      - name: Install VS2022 Build Tools, Windows SDK, and WDK
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $buildTools = Join-Path $env:RUNNER_TEMP "vs_buildtools.exe"
           $sdk = Join-Path $env:RUNNER_TEMP "winsdksetup.exe"
           $wdk = Join-Path $env:RUNNER_TEMP "wdksetup.exe"
+          curl.exe -L "https://aka.ms/vs/17/release/vs_buildtools.exe" -o $buildTools
           curl.exe -L "https://go.microsoft.com/fwlink/?linkid=2338977" -o $sdk
           curl.exe -L "https://go.microsoft.com/fwlink/?linkid=2335869" -o $wdk
+          Start-Process -FilePath $buildTools -ArgumentList `
+            "--quiet", "--wait", "--norestart", "--nocache", `
+            "--add", "Microsoft.VisualStudio.Workload.NativeDesktop", `
+            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
+            "--add", "Microsoft.VisualStudio.Component.VC.ATL.Spectre", `
+            "--add", "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", `
+            "--add", "Component.Microsoft.Windows.DriverKit" `
+            -Wait
           Start-Process -FilePath $sdk -ArgumentList "/quiet", "/norestart" -Wait
           Start-Process -FilePath $wdk -ArgumentList "/quiet", "/norestart" -Wait
 
