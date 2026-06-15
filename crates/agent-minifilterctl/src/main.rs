@@ -8,8 +8,12 @@ mod windows_app {
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;
     use std::ptr::{null, null_mut};
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
-    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, QueryDosDeviceW, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS, OPEN_EXISTING,
+    };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -17,7 +21,7 @@ mod windows_app {
     };
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, GetExitCodeProcess, ResumeThread, WaitForSingleObject, CREATE_SUSPENDED,
-        INFINITE, PROCESS_INFORMATION, STARTUPINFOW,
+        INFINITE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
     };
 
     const AGENTFS_PORT_NAME: &str = "\\AgentFsPort";
@@ -207,6 +211,13 @@ mod windows_app {
         let cwd = wide_null(args.cwd.as_os_str());
         let mut startup: STARTUPINFOW = unsafe { zeroed() };
         startup.cb = size_of::<STARTUPINFOW>() as u32;
+        let stdio = child_stdio(args)?;
+        if let Some(stdio) = &stdio {
+            startup.dwFlags |= STARTF_USESTDHANDLES;
+            startup.hStdInput = stdio.stdin;
+            startup.hStdOutput = stdio.stdout;
+            startup.hStdError = stdio.stderr;
+        }
         let mut process_info: PROCESS_INFORMATION = unsafe { zeroed() };
         let ok = unsafe {
             CreateProcessW(
@@ -280,6 +291,102 @@ mod windows_app {
             job,
             pid: process_info.dwProcessId,
         })
+    }
+
+    struct ChildStdio {
+        stdin: HANDLE,
+        stdout: HANDLE,
+        stderr: HANDLE,
+    }
+
+    impl Drop for ChildStdio {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.stdin);
+                CloseHandle(self.stdout);
+                CloseHandle(self.stderr);
+            }
+        }
+    }
+
+    fn child_stdio(args: &RunArgs) -> Result<Option<ChildStdio>> {
+        let Some(log_path) = &args.log_path else {
+            return Ok(None);
+        };
+        if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let stdout = open_inheritable_handle(
+            log_path.as_os_str(),
+            FILE_APPEND_DATA,
+            OPEN_ALWAYS,
+            "session log",
+        )?;
+        let stderr = match open_inheritable_handle(
+            log_path.as_os_str(),
+            FILE_APPEND_DATA,
+            OPEN_ALWAYS,
+            "session log",
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                unsafe {
+                    CloseHandle(stdout);
+                }
+                return Err(error);
+            }
+        };
+        let stdin = match open_inheritable_handle(
+            OsStr::new("NUL"),
+            FILE_GENERIC_READ,
+            OPEN_EXISTING,
+            "NUL",
+        ) {
+            Ok(handle) => handle,
+            Err(error) => {
+                unsafe {
+                    CloseHandle(stdout);
+                    CloseHandle(stderr);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Some(ChildStdio {
+            stdin,
+            stdout,
+            stderr,
+        }))
+    }
+
+    fn open_inheritable_handle(
+        path: &OsStr,
+        access: u32,
+        disposition: u32,
+        description: &str,
+    ) -> Result<HANDLE> {
+        let path = wide_null(path);
+        let security_attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: null_mut(),
+            bInheritHandle: 1,
+        };
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &security_attributes,
+                disposition,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let error = unsafe { GetLastError() };
+            Err(anyhow!("failed to open {description}: {error}"))
+        } else {
+            Ok(handle)
+        }
     }
 
     fn apply_job_limits(job: HANDLE) -> Result<()> {
