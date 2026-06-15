@@ -694,27 +694,46 @@ static VOID AgentFsCopyAlternateDataStreams(
     _In_ PCUNICODE_STRING Source,
     _In_ PCUNICODE_STRING Target)
 {
-    PVOID streamInfo = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
-    if (streamInfo == NULL) {
-        return;
+    PVOID streamInfo = NULL;
+    ULONG streamInfoLength = 64 * 1024;
+    ULONG returned = 0;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status;
+
+    for (;;) {
+        streamInfo = ExAllocatePool2(POOL_FLAG_NON_PAGED, streamInfoLength, AGENTFS_TAG);
+        if (streamInfo == NULL) {
+            return;
+        }
+
+        RtlZeroMemory(&iosb, sizeof(iosb));
+        RtlZeroMemory(streamInfo, streamInfoLength);
+        status = ZwQueryInformationFile(
+            SourceHandle,
+            &iosb,
+            streamInfo,
+            streamInfoLength,
+            FileStreamInformation);
+        returned = (ULONG)iosb.Information;
+        if (NT_SUCCESS(status)) {
+            break;
+        }
+
+        ExFreePoolWithTag(streamInfo, AGENTFS_TAG);
+        streamInfo = NULL;
+        if ((status != STATUS_BUFFER_OVERFLOW && status != STATUS_BUFFER_TOO_SMALL) ||
+            streamInfoLength >= 1024 * 1024) {
+            return;
+        }
+        streamInfoLength *= 2;
     }
 
-    IO_STATUS_BLOCK iosb;
-    RtlZeroMemory(&iosb, sizeof(iosb));
-    RtlZeroMemory(streamInfo, 64 * 1024);
-    NTSTATUS status = ZwQueryInformationFile(
-        SourceHandle,
-        &iosb,
-        streamInfo,
-        64 * 1024,
-        FileStreamInformation);
-    if (!NT_SUCCESS(status)) {
+    if (returned == 0) {
         ExFreePoolWithTag(streamInfo, AGENTFS_TAG);
         return;
     }
 
     ULONG offset = 0;
-    ULONG returned = (ULONG)iosb.Information;
     while (offset < returned) {
         PFILE_STREAM_INFORMATION entry = (PFILE_STREAM_INFORMATION)((PUCHAR)streamInfo + offset);
         if (entry->StreamNameLength != 0 &&
