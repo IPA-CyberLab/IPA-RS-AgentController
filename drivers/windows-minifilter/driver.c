@@ -29,6 +29,8 @@ typedef struct _AGENTFS_DIR_STATE {
     LIST_ENTRY Link;
     PFILE_OBJECT FileObject;
     BOOLEAN UpperMerged;
+    BOOLEAN UpperSingleExhausted;
+    UNICODE_STRING UpperSingleCursor;
 } AGENTFS_DIR_STATE, *PAGENTFS_DIR_STATE;
 
 static PFLT_FILTER gFilter;
@@ -88,9 +90,18 @@ static VOID AgentFsProcessNotify(
     _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
 static BOOLEAN AgentFsPathExists(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
 static BOOLEAN AgentFsPathIsDirectory(_In_ PFLT_INSTANCE Instance, _In_ PCUNICODE_STRING Path);
+static NTSTATUS AgentFsDupUnicode(_Out_ PUNICODE_STRING Destination, _In_ PCUNICODE_STRING Source);
 static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject);
 static BOOLEAN AgentFsDirUpperAlreadyMerged(_In_ PFILE_OBJECT FileObject);
 static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject);
+static BOOLEAN AgentFsDirUpperSingleExhausted(_In_ PFILE_OBJECT FileObject);
+static NTSTATUS AgentFsSnapshotDirUpperSingleCursor(
+    _In_ PFILE_OBJECT FileObject,
+    _Out_ PUNICODE_STRING Cursor);
+static VOID AgentFsUpdateDirUpperSingleCursor(
+    _In_ PFILE_OBJECT FileObject,
+    _In_opt_ PCUNICODE_STRING Cursor,
+    _In_ BOOLEAN Exhausted);
 static VOID AgentFsRemoveDirState(_In_opt_ PFILE_OBJECT FileObject);
 
 CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
@@ -2069,6 +2080,28 @@ static PAGENTFS_DIR_STATE AgentFsFindDirStateLocked(_In_ PFILE_OBJECT FileObject
     return NULL;
 }
 
+static VOID AgentFsFreeDirState(_In_ PAGENTFS_DIR_STATE State)
+{
+    AgentFsFreeUnicode(&State->UpperSingleCursor);
+    ExFreePoolWithTag(State, AGENTFS_TAG);
+}
+
+static PAGENTFS_DIR_STATE AgentFsEnsureDirStateLocked(_In_ PFILE_OBJECT FileObject)
+{
+    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
+    if (state != NULL) {
+        return state;
+    }
+    state = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(AGENTFS_DIR_STATE), AGENTFS_TAG);
+    if (state == NULL) {
+        return NULL;
+    }
+    RtlZeroMemory(state, sizeof(*state));
+    state->FileObject = FileObject;
+    InsertTailList(&gDirStates, &state->Link);
+    return state;
+}
+
 static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject)
 {
     if (FileObject == NULL) {
@@ -2078,6 +2111,8 @@ static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject)
     PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
     if (state != NULL) {
         state->UpperMerged = FALSE;
+        state->UpperSingleExhausted = FALSE;
+        AgentFsFreeUnicode(&state->UpperSingleCursor);
     }
     ExReleaseFastMutex(&gDirStateLock);
 }
@@ -2100,17 +2135,59 @@ static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject)
         return;
     }
     ExAcquireFastMutex(&gDirStateLock);
-    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
-    if (state == NULL) {
-        state = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(AGENTFS_DIR_STATE), AGENTFS_TAG);
-        if (state != NULL) {
-            RtlZeroMemory(state, sizeof(*state));
-            state->FileObject = FileObject;
-            InsertTailList(&gDirStates, &state->Link);
-        }
-    }
+    PAGENTFS_DIR_STATE state = AgentFsEnsureDirStateLocked(FileObject);
     if (state != NULL) {
         state->UpperMerged = TRUE;
+    }
+    ExReleaseFastMutex(&gDirStateLock);
+}
+
+static BOOLEAN AgentFsDirUpperSingleExhausted(_In_ PFILE_OBJECT FileObject)
+{
+    if (FileObject == NULL) {
+        return FALSE;
+    }
+    ExAcquireFastMutex(&gDirStateLock);
+    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
+    BOOLEAN exhausted = state != NULL && state->UpperSingleExhausted;
+    ExReleaseFastMutex(&gDirStateLock);
+    return exhausted;
+}
+
+static NTSTATUS AgentFsSnapshotDirUpperSingleCursor(
+    _In_ PFILE_OBJECT FileObject,
+    _Out_ PUNICODE_STRING Cursor)
+{
+    RtlZeroMemory(Cursor, sizeof(*Cursor));
+    if (FileObject == NULL) {
+        return STATUS_NOT_FOUND;
+    }
+    ExAcquireFastMutex(&gDirStateLock);
+    PAGENTFS_DIR_STATE state = AgentFsFindDirStateLocked(FileObject);
+    NTSTATUS status = STATUS_NOT_FOUND;
+    if (state != NULL && state->UpperSingleCursor.Buffer != NULL) {
+        status = AgentFsDupUnicode(Cursor, &state->UpperSingleCursor);
+    }
+    ExReleaseFastMutex(&gDirStateLock);
+    return status;
+}
+
+static VOID AgentFsUpdateDirUpperSingleCursor(
+    _In_ PFILE_OBJECT FileObject,
+    _In_opt_ PCUNICODE_STRING Cursor,
+    _In_ BOOLEAN Exhausted)
+{
+    if (FileObject == NULL) {
+        return;
+    }
+    ExAcquireFastMutex(&gDirStateLock);
+    PAGENTFS_DIR_STATE state = AgentFsEnsureDirStateLocked(FileObject);
+    if (state != NULL) {
+        AgentFsFreeUnicode(&state->UpperSingleCursor);
+        state->UpperSingleExhausted = Exhausted;
+        if (!Exhausted && Cursor != NULL && Cursor->Buffer != NULL) {
+            (VOID)AgentFsDupUnicode(&state->UpperSingleCursor, Cursor);
+        }
     }
     ExReleaseFastMutex(&gDirStateLock);
 }
@@ -2127,7 +2204,7 @@ static VOID AgentFsRemoveDirState(_In_opt_ PFILE_OBJECT FileObject)
     }
     ExReleaseFastMutex(&gDirStateLock);
     if (state != NULL) {
-        ExFreePoolWithTag(state, AGENTFS_TAG);
+        AgentFsFreeDirState(state);
     }
 }
 
@@ -2136,13 +2213,23 @@ static NTSTATUS AgentFsAppendUpperDirectoryEntries(
     _In_ PAGENTFS_DIR_CONTEXT Context,
     _In_ FILE_INFORMATION_CLASS InfoClass,
     _In_opt_ PUNICODE_STRING SearchPattern,
+    _In_opt_ PCUNICODE_STRING Cursor,
+    _In_ ULONG MaxEntries,
     _In_ ULONG FileNameLengthOffset,
     _In_ ULONG FileNameOffset,
     _Inout_updates_bytes_(Capacity) PVOID Output,
     _In_ ULONG Capacity,
     _Inout_ PULONG Used,
-    _Inout_ PULONG LastOffset)
+    _Inout_ PULONG LastOffset,
+    _Out_opt_ PUNICODE_STRING LastEmittedName,
+    _Out_opt_ PBOOLEAN Exhausted)
 {
+    if (Exhausted != NULL) {
+        *Exhausted = TRUE;
+    }
+    if (LastEmittedName != NULL) {
+        RtlZeroMemory(LastEmittedName, sizeof(*LastEmittedName));
+    }
     if (!AgentFsPathExists(Instance, &Context->UpperPath)) {
         return STATUS_SUCCESS;
     }
@@ -2177,6 +2264,8 @@ static NTSTATUS AgentFsAppendUpperDirectoryEntries(
     }
 
     BOOLEAN restartScan = TRUE;
+    BOOLEAN seekPastCursor = Cursor != NULL && Cursor->Buffer != NULL;
+    ULONG emitted = 0;
     for (;;) {
         IO_STATUS_BLOCK queryStatus;
         RtlZeroMemory(&queryStatus, sizeof(queryStatus));
@@ -2209,9 +2298,43 @@ static NTSTATUS AgentFsAppendUpperDirectoryEntries(
             ULONG entrySize = AgentFsEntryRecordSize(entry, remaining, FileNameLengthOffset, FileNameOffset);
             ULONG nameLength = *(PULONG)((PUCHAR)entry + FileNameLengthOffset);
             PCWCH name = (PCWCH)((PUCHAR)entry + FileNameOffset);
+            if (seekPastCursor) {
+                UNICODE_STRING entryName;
+                entryName.Buffer = (PWCH)name;
+                entryName.Length = (USHORT)nameLength;
+                entryName.MaximumLength = (USHORT)nameLength;
+                if (RtlEqualUnicodeString(&entryName, Cursor, TRUE)) {
+                    seekPastCursor = FALSE;
+                }
+                ULONG next = *(PULONG)entry;
+                if (next == 0) {
+                    break;
+                }
+                offset += next;
+                continue;
+            }
             if (!AgentFsEntryHiddenByUpperOrWhiteout(Instance, Context, name, nameLength, FALSE)) {
                 NTSTATUS appendStatus = AgentFsAppendDirectoryEntry(Output, Capacity, Used, LastOffset, entry, entrySize);
                 if (!NT_SUCCESS(appendStatus)) {
+                    if (Exhausted != NULL) {
+                        *Exhausted = FALSE;
+                    }
+                    status = STATUS_SUCCESS;
+                    goto Exit;
+                }
+                emitted++;
+                if (LastEmittedName != NULL) {
+                    UNICODE_STRING emittedName;
+                    emittedName.Buffer = (PWCH)name;
+                    emittedName.Length = (USHORT)nameLength;
+                    emittedName.MaximumLength = (USHORT)nameLength;
+                    AgentFsFreeUnicode(LastEmittedName);
+                    (VOID)AgentFsDupUnicode(LastEmittedName, &emittedName);
+                }
+                if (MaxEntries != 0 && emitted >= MaxEntries) {
+                    if (Exhausted != NULL) {
+                        *Exhausted = FALSE;
+                    }
                     status = STATUS_SUCCESS;
                     goto Exit;
                 }
@@ -2232,10 +2355,12 @@ Exit:
 
 static BOOLEAN AgentFsShouldAppendUpperDirectoryEntries(
     _In_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _In_ PAGENTFS_DIR_CONTEXT Context)
 {
     if (Context->ReturnSingleEntry) {
-        return FALSE;
+        return Data->IoStatus.Status == STATUS_NO_MORE_FILES &&
+            !AgentFsDirUpperSingleExhausted(FltObjects->FileObject);
     }
     return Data->IoStatus.Status == STATUS_NO_MORE_FILES;
 }
@@ -2307,20 +2432,55 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
         }
     }
 
-    if (!context->EnumeratingUpperPath && AgentFsShouldAppendUpperDirectoryEntries(Data, context)) {
-        if (!AgentFsDirUpperAlreadyMerged(FltObjects->FileObject)) {
+    if (!context->EnumeratingUpperPath && AgentFsShouldAppendUpperDirectoryEntries(Data, FltObjects, context)) {
+        if (context->ReturnSingleEntry) {
+            UNICODE_STRING cursor;
+            UNICODE_STRING lastEmitted;
+            BOOLEAN exhausted = FALSE;
+            RtlZeroMemory(&cursor, sizeof(cursor));
+            RtlZeroMemory(&lastEmitted, sizeof(lastEmitted));
+            (VOID)AgentFsSnapshotDirUpperSingleCursor(FltObjects->FileObject, &cursor);
             (VOID)AgentFsAppendUpperDirectoryEntries(
                 FltObjects->Instance,
                 context,
                 infoClass,
                 Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName,
+                cursor.Buffer != NULL ? &cursor : NULL,
+                1,
                 nameLengthOffset,
                 nameOffset,
                 output,
                 capacity,
                 &used,
-                &lastOffset);
-            AgentFsMarkDirUpperMerged(FltObjects->FileObject);
+                &lastOffset,
+                &lastEmitted,
+                &exhausted);
+            AgentFsUpdateDirUpperSingleCursor(
+                FltObjects->FileObject,
+                lastEmitted.Buffer != NULL ? &lastEmitted : NULL,
+                exhausted);
+            AgentFsFreeUnicode(&lastEmitted);
+            AgentFsFreeUnicode(&cursor);
+        } else if (!AgentFsDirUpperAlreadyMerged(FltObjects->FileObject)) {
+            BOOLEAN exhausted = FALSE;
+            (VOID)AgentFsAppendUpperDirectoryEntries(
+                FltObjects->Instance,
+                context,
+                infoClass,
+                Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName,
+                NULL,
+                0,
+                nameLengthOffset,
+                nameOffset,
+                output,
+                capacity,
+                &used,
+                &lastOffset,
+                NULL,
+                &exhausted);
+            if (exhausted) {
+                AgentFsMarkDirUpperMerged(FltObjects->FileObject);
+            }
         }
     }
 
@@ -2508,7 +2668,7 @@ static NTSTATUS AgentFsUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
         PLIST_ENTRY link = RemoveHeadList(&gDirStates);
         PAGENTFS_DIR_STATE state = CONTAINING_RECORD(link, AGENTFS_DIR_STATE, Link);
         ExReleaseFastMutex(&gDirStateLock);
-        ExFreePoolWithTag(state, AGENTFS_TAG);
+        AgentFsFreeDirState(state);
         ExAcquireFastMutex(&gDirStateLock);
     }
     ExReleaseFastMutex(&gDirStateLock);
