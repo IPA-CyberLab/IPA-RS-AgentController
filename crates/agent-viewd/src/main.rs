@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 #[cfg(target_os = "macos")]
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 #[cfg(any(target_os = "macos", test))]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "macos")]
@@ -177,10 +177,11 @@ fn enter_and_run(
         validate_direct_runtime(&source_root, &cwd, program)?;
         let mounted_cwd = source_view_path(&view_root, &source_root, &cwd)?;
         prepare_source_view_workspace(&view_root, &mounted_cwd)?;
-        let mut command = command_for_direct_mount(program, args, &network, &view_root);
+        let mut command =
+            command_for_direct_mount(program, args, &network, &view_root, &source_root);
         prepare_direct_child(&mut command, &mounted_cwd);
         let status = command
-            .env("PWD", &cwd)
+            .env("PWD", &mounted_cwd)
             .env("AGENT_SOURCE_ROOT", &source_root)
             .env("AGENT_VIEW_ROOT", &view_root)
             .status()
@@ -222,11 +223,16 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
         let stderr = stdout
             .try_clone()
             .with_context(|| format!("failed to clone log {}", args.log_path.display()))?;
-        let mut command =
-            command_for_direct_mount(program, command_args, &args.network, &args.view_root);
+        let mut command = command_for_direct_mount(
+            program,
+            command_args,
+            &args.network,
+            &args.view_root,
+            source_root,
+        );
         prepare_direct_child(&mut command, &mounted_cwd);
         command
-            .env("PWD", &args.cwd)
+            .env("PWD", &mounted_cwd)
             .env("AGENT_SOURCE_ROOT", source_root)
             .env("AGENT_VIEW_ROOT", &args.view_root)
             .stdin(Stdio::null())
@@ -858,28 +864,50 @@ fn command_for_direct_mount(
     args: &[String],
     network: &str,
     view_root: &Path,
+    source_root: &Path,
 ) -> Command {
+    let host_home = target_home_dir();
+    let home = host_home.as_deref().unwrap_or(view_root);
     let mut command = Command::new("/usr/bin/sandbox-exec");
     command
         .arg("-p")
-        .arg(direct_mount_sandbox_profile(view_root, network))
+        .arg(direct_mount_sandbox_profile(
+            view_root,
+            source_root,
+            host_home.as_deref(),
+            network,
+        ))
         .arg(program)
         .args(args)
         .env("AGENT_NETWORK", network)
-        .env("HOME", view_root)
-        .env("ZDOTDIR", view_root)
+        .env("HOME", home)
+        .env("ZDOTDIR", home)
         .env("TMPDIR", view_root)
         .env("TMP", view_root)
         .env("TEMP", view_root);
-    if let Ok(host_home) = std::env::var("HOME") {
+    if let Some(host_home) = host_home {
         command.env("HOST_HOME", host_home);
     }
     command
 }
 
 #[cfg(target_os = "macos")]
-fn direct_mount_sandbox_profile(view_root: &Path, network: &str) -> String {
+fn direct_mount_sandbox_profile(
+    view_root: &Path,
+    source_root: &Path,
+    host_home: Option<&Path>,
+    network: &str,
+) -> String {
     let view_root = scheme_string(&view_root.display().to_string());
+    let source_root = scheme_string(&source_root.display().to_string());
+    let home_write_rule = host_home
+        .map(|path| {
+            format!(
+                "(allow file-write* (subpath \"{}\"))\n",
+                scheme_string(&path.display().to_string())
+            )
+        })
+        .unwrap_or_default();
     let network_rule = if network == "none" {
         "(deny network*)"
     } else {
@@ -893,14 +921,47 @@ fn direct_mount_sandbox_profile(view_root: &Path, network: &str) -> String {
 (allow file-read*)
 (allow file-ioctl)
 (allow file-write* (subpath "{view_root}"))
+{home_write_rule}(deny file-write* (subpath "{source_root}"))
 {network_rule}
 "#
     )
 }
 
 #[cfg(not(target_os = "macos"))]
-fn direct_mount_sandbox_profile(_view_root: &Path, _network: &str) -> String {
+fn direct_mount_sandbox_profile(
+    _view_root: &Path,
+    _source_root: &Path,
+    _host_home: Option<&Path>,
+    _network: &str,
+) -> String {
     String::new()
+}
+
+#[cfg(target_os = "macos")]
+fn target_home_dir() -> Option<PathBuf> {
+    let uid = target_uid().unwrap_or_else(|| unsafe { getuid() });
+    unsafe {
+        let passwd = libc::getpwuid(uid as libc::uid_t);
+        if !passwd.is_null() {
+            let home = (*passwd).pw_dir;
+            if !home.is_null() {
+                let path = PathBuf::from(CStr::from_ptr(home).to_string_lossy().into_owned());
+                if path.is_absolute() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn target_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 #[cfg(target_os = "macos")]
@@ -1430,16 +1491,50 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn direct_mount_sandbox_writes_only_private_view_root() {
+    fn direct_mount_sandbox_allows_host_home_but_denies_source_root() {
         let profile = super::direct_mount_sandbox_profile(
             Path::new("/Users/me/.agentfs/envs/codex/view-root"),
+            Path::new("/Users/me/project"),
+            Some(Path::new("/Users/me")),
             "host",
         );
 
         assert!(profile.contains(
             r#"(allow file-write* (subpath "/Users/me/.agentfs/envs/codex/view-root"))"#
         ));
-        assert!(!profile.contains(r#"(subpath "/Users/me/project")"#));
+        assert!(profile.contains(r#"(allow file-write* (subpath "/Users/me"))"#));
+        assert!(profile.contains(r#"(deny file-write* (subpath "/Users/me/project"))"#));
+        let home_allow = profile.find(r#"(allow file-write* (subpath "/Users/me"))"#);
+        let source_deny = profile.find(r#"(deny file-write* (subpath "/Users/me/project"))"#);
+        assert!(home_allow < source_deny);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn direct_mount_command_uses_host_home_for_app_state() {
+        let view_root = Path::new("/Users/me/.agentfs/envs/codex/view-root");
+        let source_root = Path::new("/Users/me/project");
+        let command = super::command_for_direct_mount(
+            "/bin/echo",
+            &["ok".to_string()],
+            "host",
+            view_root,
+            source_root,
+        );
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| (key.to_string_lossy().into_owned(), value.map(PathBuf::from)))
+            .collect::<Vec<_>>();
+
+        if let Some(host_home) = super::target_home_dir() {
+            assert!(envs.contains(&("HOME".to_string(), Some(host_home.clone()))));
+            assert!(envs.contains(&("ZDOTDIR".to_string(), Some(host_home.clone()))));
+            assert!(envs.contains(&("HOST_HOME".to_string(), Some(host_home))));
+        } else {
+            assert!(envs.contains(&("HOME".to_string(), Some(view_root.to_path_buf()))));
+            assert!(envs.contains(&("ZDOTDIR".to_string(), Some(view_root.to_path_buf()))));
+        }
+        assert!(envs.contains(&("TMPDIR".to_string(), Some(view_root.to_path_buf()))));
     }
 
     #[test]
