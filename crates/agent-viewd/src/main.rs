@@ -177,12 +177,10 @@ fn enter_and_run(
         validate_direct_runtime(&source_root, &cwd, program)?;
         let mounted_cwd = source_view_path(&view_root, &source_root, &cwd)?;
         prepare_source_view_workspace(&view_root, &mounted_cwd)?;
-        let mut command =
-            command_for_direct_mount(program, args, &network, &view_root, &source_root);
+        let mut command = command_for_direct_mount(program, args, &network, &view_root);
         prepare_direct_child(&mut command, &mounted_cwd);
         let status = command
             .env("PWD", &mounted_cwd)
-            .env("AGENT_SOURCE_ROOT", &source_root)
             .env("AGENT_VIEW_ROOT", &view_root)
             .status()
             .with_context(|| {
@@ -223,17 +221,11 @@ fn spawn_session(args: SessionArgs) -> Result<u32> {
         let stderr = stdout
             .try_clone()
             .with_context(|| format!("failed to clone log {}", args.log_path.display()))?;
-        let mut command = command_for_direct_mount(
-            program,
-            command_args,
-            &args.network,
-            &args.view_root,
-            source_root,
-        );
+        let mut command =
+            command_for_direct_mount(program, command_args, &args.network, &args.view_root);
         prepare_direct_child(&mut command, &mounted_cwd);
         command
             .env("PWD", &mounted_cwd)
-            .env("AGENT_SOURCE_ROOT", source_root)
             .env("AGENT_VIEW_ROOT", &args.view_root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
@@ -864,20 +856,11 @@ fn command_for_direct_mount(
     args: &[String],
     network: &str,
     view_root: &Path,
-    source_root: &Path,
 ) -> Command {
     let host_home = target_home_dir();
     let home = host_home.as_deref().unwrap_or(view_root);
-    let mut command = Command::new("/usr/bin/sandbox-exec");
+    let mut command = Command::new(program);
     command
-        .arg("-p")
-        .arg(direct_mount_sandbox_profile(
-            view_root,
-            source_root,
-            host_home.as_deref(),
-            network,
-        ))
-        .arg(program)
         .args(args)
         .env("AGENT_NETWORK", network)
         .env("HOME", home)
@@ -889,53 +872,6 @@ fn command_for_direct_mount(
         command.env("HOST_HOME", host_home);
     }
     command
-}
-
-#[cfg(target_os = "macos")]
-fn direct_mount_sandbox_profile(
-    view_root: &Path,
-    source_root: &Path,
-    host_home: Option<&Path>,
-    network: &str,
-) -> String {
-    let view_root = scheme_string(&view_root.display().to_string());
-    let source_root = scheme_string(&source_root.display().to_string());
-    let home_write_rule = host_home
-        .map(|path| {
-            format!(
-                "(allow file-write* (subpath \"{}\"))\n",
-                scheme_string(&path.display().to_string())
-            )
-        })
-        .unwrap_or_default();
-    let network_rule = if network == "none" {
-        "(deny network*)"
-    } else {
-        "(allow network*)"
-    };
-    format!(
-        r#"(version 1)
-(deny default)
-(allow process*)
-(allow sysctl-read)
-(allow file-read*)
-(allow file-ioctl)
-(allow file-write* (subpath "{view_root}"))
-(allow file-write* (subpath "/dev"))
-{home_write_rule}(deny file-write* (subpath "{source_root}"))
-{network_rule}
-"#
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-fn direct_mount_sandbox_profile(
-    _view_root: &Path,
-    _source_root: &Path,
-    _host_home: Option<&Path>,
-    _network: &str,
-) -> String {
-    String::new()
 }
 
 #[cfg(target_os = "macos")]
@@ -963,16 +899,6 @@ fn target_home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-}
-
-#[cfg(target_os = "macos")]
-fn scheme_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-#[cfg(not(target_os = "macos"))]
-fn scheme_string(value: &str) -> String {
-    value.to_string()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1490,39 +1416,26 @@ mod tests {
         assert!(error.contains("must be inside source-root"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn direct_mount_sandbox_allows_host_home_but_denies_source_root() {
-        let profile = super::direct_mount_sandbox_profile(
-            Path::new("/Users/me/.agentfs/envs/codex/view-root"),
-            Path::new("/Users/me/project"),
-            Some(Path::new("/Users/me")),
-            "host",
+    fn direct_mount_command_runs_without_process_sandbox() {
+        let view_root = Path::new("/Users/me/.agentfs/envs/codex/view-root");
+        let command =
+            super::command_for_direct_mount("/bin/echo", &["ok".to_string()], "host", view_root);
+        assert_eq!(command.get_program(), "/bin/echo");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["ok".to_string()]
         );
-
-        assert!(profile.contains(
-            r#"(allow file-write* (subpath "/Users/me/.agentfs/envs/codex/view-root"))"#
-        ));
-        assert!(profile.contains(r#"(allow file-write* (subpath "/dev"))"#));
-        assert!(profile.contains(r#"(allow file-write* (subpath "/Users/me"))"#));
-        assert!(profile.contains(r#"(deny file-write* (subpath "/Users/me/project"))"#));
-        let home_allow = profile.find(r#"(allow file-write* (subpath "/Users/me"))"#);
-        let source_deny = profile.find(r#"(deny file-write* (subpath "/Users/me/project"))"#);
-        assert!(home_allow < source_deny);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn direct_mount_command_uses_host_home_for_app_state() {
         let view_root = Path::new("/Users/me/.agentfs/envs/codex/view-root");
-        let source_root = Path::new("/Users/me/project");
-        let command = super::command_for_direct_mount(
-            "/bin/echo",
-            &["ok".to_string()],
-            "host",
-            view_root,
-            source_root,
-        );
+        let command =
+            super::command_for_direct_mount("/bin/echo", &["ok".to_string()], "host", view_root);
         let envs = command
             .get_envs()
             .map(|(key, value)| (key.to_string_lossy().into_owned(), value.map(PathBuf::from)))
