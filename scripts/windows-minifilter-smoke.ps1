@@ -483,6 +483,8 @@ try {
 if ([IO.File]::ReadAllText((Join-Path (Get-Location) 'truncate.txt')) -ne 'truncate') { throw 'truncated lower file did not show env length' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
+& powershell.exe -NoProfile -Command "Set-Content child-process.txt 'child-env'; if ((Get-Content child-process.txt) -ne 'child-env') { throw 'child process write readback failed' }"
+if (`$LASTEXITCODE -ne 0) { throw 'child process overlay command failed' }
 Set-Content acl-source.txt 'acl-env'
 `$mappedBytes = [Text.Encoding]::UTF8.GetBytes('mapped-env')
 `$mappedFile = [IO.File]::Open('mapped.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
@@ -952,6 +954,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Content (Join-Path $source "rename-target.txt")) -ne "rename-target-original") {
         throw "host rename-target.txt was modified"
     }
+    if (Test-Path (Join-Path $source "child-process.txt")) {
+        throw "host child-process.txt was created"
+    }
     if ((Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime) {
         throw "host metadata.txt timestamp was modified"
     }
@@ -1033,6 +1038,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
 
     if ((Get-Content (Join-Path $upperSource "host.txt")) -ne "env-modified") {
         throw "modified file was not copied to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "child-process.txt")) -ne "child-env") {
+        throw "child process write was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "nested\lower\deep.txt")) -ne "deep-modified") {
         throw "nested lower file was not copied to upper"
