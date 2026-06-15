@@ -483,7 +483,7 @@ try {
 if ([IO.File]::ReadAllText((Join-Path (Get-Location) 'truncate.txt')) -ne 'truncate') { throw 'truncated lower file did not show env length' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
-& powershell.exe -NoProfile -Command "Set-Content child-process.txt 'child-env'; if ((Get-Content child-process.txt) -ne 'child-env') { throw 'child process write readback failed' }"
+& powershell.exe -NoProfile -Command "Set-Content child-process.txt 'child-env'; & powershell.exe -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAZwByAGEAbgBkAGMAaABpAGwAZAAtAHAAcgBvAGMAZQBzAHMALgB0AHgAdAAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAOwAgAGkAZgAgACgAKABHAGUAdAAtAEMAbwBuAHQAZQBuAHQAIABnAHIAYQBuAGQAYwBoAGkAbABkAC0AcAByAG8AYwBlAHMAcwAuAHQAeAB0ACkAIAAtAG4AZQAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAGcAcgBhAG4AZABjAGgAaQBsAGQAIABwAHIAbwBjAGUAcwBzACAAdwByAGkAdABlACAAcgBlAGEAZABiAGEAYwBrACAAZgBhAGkAbABlAGQAJwAgAH0A; if (`$LASTEXITCODE -ne 0) { throw 'grandchild process overlay command failed' }; if ((Get-Content child-process.txt) -ne 'child-env') { throw 'child process write readback failed' }"
 if (`$LASTEXITCODE -ne 0) { throw 'child process overlay command failed' }
 Set-Content acl-source.txt 'acl-env'
 `$mappedBytes = [Text.Encoding]::UTF8.GetBytes('mapped-env')
@@ -957,6 +957,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if (Test-Path (Join-Path $source "child-process.txt")) {
         throw "host child-process.txt was created"
     }
+    if (Test-Path (Join-Path $source "grandchild-process.txt")) {
+        throw "host grandchild-process.txt was created"
+    }
     if ((Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime) {
         throw "host metadata.txt timestamp was modified"
     }
@@ -1041,6 +1044,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ((Get-Content (Join-Path $upperSource "child-process.txt")) -ne "child-env") {
         throw "child process write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "grandchild-process.txt")) -ne "grandchild-env") {
+        throw "grandchild process write was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "nested\lower\deep.txt")) -ne "deep-modified") {
         throw "nested lower file was not copied to upper"
