@@ -2094,6 +2094,9 @@ static NTSTATUS AgentFsVisiblePathFromName(
     if (NT_SUCCESS(status)) {
         return status;
     }
+    if (status != STATUS_NOT_FOUND) {
+        return status;
+    }
     return AgentFsStorageToVisiblePath(Visible, &Env->SourceRoot, &Env->LowerRoot, Name);
 }
 
