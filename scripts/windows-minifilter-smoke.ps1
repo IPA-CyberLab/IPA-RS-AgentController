@@ -660,6 +660,13 @@ try {
     `$hardlinkFailed = `$true
 }
 if (-not `$hardlinkFailed) { throw 'hardlink creation unexpectedly succeeded inside overlay' }
+`$nativeHardlinkFailed = `$false
+try {
+    [AgentFsNativeMove]::LinkWithRootDirectory((Join-Path (Get-Location) 'host.txt'), (Get-Location).Path, 'native-hardlink-host.txt')
+} catch {
+    `$nativeHardlinkFailed = `$true
+}
+if (-not `$nativeHardlinkFailed) { throw 'native FileLinkInformation hardlink unexpectedly succeeded inside overlay' }
 `$symlinkFailed = `$false
 try {
     New-Item -ItemType SymbolicLink -Path symlink-host.txt -Target host.txt | Out-Null
@@ -735,6 +742,7 @@ public static class AgentFsNativeMove {
     private const int FileDispositionInfoEx = 21;
     private const int FileRenameInfoEx = 22;
     private const int NtFileRenameInformation = 10;
+    private const int NtFileLinkInformation = 11;
     private const int STATUS_NO_MORE_FILES = unchecked((int)0x80000006);
     private const int STATUS_NO_SUCH_FILE = unchecked((int)0xC000000F);
 
@@ -1064,6 +1072,45 @@ public static class AgentFsNativeMove {
             }
         }
     }
+
+    public static void LinkWithRootDirectory(string sourcePath, string targetDirectory, string targetFileName) {
+        using (SafeFileHandle sourceHandle = CreateFile(
+            sourcePath,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero))
+        using (SafeFileHandle rootHandle = CreateFile(
+            targetDirectory,
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+            IntPtr.Zero)) {
+            if (sourceHandle.IsInvalid) {
+                throw new IOException("CreateFile source failed: " + Marshal.GetLastWin32Error());
+            }
+            if (rootHandle.IsInvalid) {
+                throw new IOException("CreateFile root failed: " + Marshal.GetLastWin32Error());
+            }
+
+            byte[] targetBytes = System.Text.Encoding.Unicode.GetBytes(targetFileName);
+            byte[] info = new byte[20 + targetBytes.Length];
+            info[0] = 0;
+            BitConverter.GetBytes(rootHandle.DangerousGetHandle().ToInt64()).CopyTo(info, 8);
+            BitConverter.GetBytes(targetBytes.Length).CopyTo(info, 16);
+            Buffer.BlockCopy(targetBytes, 0, info, 20, targetBytes.Length);
+
+            IO_STATUS_BLOCK iosb;
+            int status = NtSetInformationFile(sourceHandle, out iosb, info, (uint)info.Length, NtFileLinkInformation);
+            if (status < 0) {
+                throw new IOException("NtSetInformationFile link failed: 0x" + status.ToString("x8"));
+            }
+        }
+    }
 }
 '@
 [AgentFsNativeMove]::DeleteOnCloseIgnoreReadonly((Join-Path (Get-Location) 'readonly-delete.txt'))
@@ -1358,6 +1405,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if (Test-Path (Join-Path $source "hardlink-host.txt")) {
         throw "host hardlink was created"
+    }
+    if (Test-Path (Join-Path $source "native-hardlink-host.txt")) {
+        throw "host native hardlink was created"
     }
     if (Test-Path (Join-Path $source "symlink-host.txt")) {
         throw "host symlink was created"
@@ -1779,6 +1829,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if (Test-Path (Join-Path $upperSource "hardlink-host.txt")) {
         throw "hardlink target was unexpectedly created in upper"
+    }
+    if (Test-Path (Join-Path $upperSource "native-hardlink-host.txt")) {
+        throw "native hardlink target was unexpectedly created in upper"
     }
     if (Test-Path (Join-Path $upperSource "cross-boundary-move.txt")) {
         throw "cross-boundary move target was unexpectedly created in upper"
