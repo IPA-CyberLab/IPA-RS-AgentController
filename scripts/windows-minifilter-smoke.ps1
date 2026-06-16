@@ -363,6 +363,7 @@ try {
     Set-Content -Path (Join-Path $source "CaseDirDelete\child\lower-file.txt") -Value "case-dir-delete-original"
     Set-Content -Path (Join-Path $source "CaseDirRename\child\lower-file.txt") -Value "case-dir-rename-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
+    Set-Content -Path (Join-Path $source "disposition-delete.txt") -Value "disposition-delete-original"
     $readonlyDelete = Join-Path $source "readonly-delete.txt"
     Set-Content -Path $readonlyDelete -Value "readonly-delete-original"
     $readonlyDeleteItem = Get-Item $readonlyDelete
@@ -699,10 +700,16 @@ public static class AgentFsNativeMove {
     private const uint FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE = 0x00000010;
     private const uint FILE_RENAME_REPLACE_IF_EXISTS = 0x00000001;
     private const uint FILE_RENAME_IGNORE_READONLY_ATTRIBUTE = 0x00000040;
+    private const int FileDispositionInfo = 4;
     private const int FileDispositionInfoEx = 21;
     private const int FileRenameInfoEx = 22;
     private const int STATUS_NO_MORE_FILES = unchecked((int)0x80000006);
     private const int STATUS_NO_SUCH_FILE = unchecked((int)0xC000000F);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILE_DISPOSITION_INFO {
+        public byte DeleteFile;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FILE_DISPOSITION_INFO_EX {
@@ -737,6 +744,13 @@ public static class AgentFsNativeMove {
         uint creationDisposition,
         uint flagsAndAttributes,
         IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(
+        SafeFileHandle fileHandle,
+        int fileInformationClass,
+        ref FILE_DISPOSITION_INFO fileInformation,
+        int bufferSize);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetFileInformationByHandle(
@@ -883,6 +897,27 @@ public static class AgentFsNativeMove {
         }
     }
 
+    public static void DeleteByDispositionInfo(string path) {
+        using (SafeFileHandle handle = CreateFile(
+            path,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero)) {
+            if (handle.IsInvalid) {
+                throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+            }
+
+            FILE_DISPOSITION_INFO info = new FILE_DISPOSITION_INFO();
+            info.DeleteFile = 1;
+            if (!SetFileInformationByHandle(handle, FileDispositionInfo, ref info, Marshal.SizeOf(typeof(FILE_DISPOSITION_INFO)))) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
+
     public static void DeleteDirectoryOnCloseIgnoreReadonly(string path) {
         using (SafeFileHandle handle = CreateFile(
             path,
@@ -933,6 +968,8 @@ public static class AgentFsNativeMove {
 '@
 [AgentFsNativeMove]::DeleteOnCloseIgnoreReadonly((Join-Path (Get-Location) 'readonly-delete.txt'))
 if (Test-Path readonly-delete.txt) { throw 'FileDispositionInfoEx delete left readonly lower file visible' }
+[AgentFsNativeMove]::DeleteByDispositionInfo((Join-Path (Get-Location) 'disposition-delete.txt'))
+if (Test-Path disposition-delete.txt) { throw 'FileDispositionInfo delete left lower file visible' }
 New-Item -ItemType Directory -Force -Path readonly-tree | Out-Null
 Set-Content readonly-tree\child.txt 'readonly-tree-child-env'
 `$readonlyTreeChild = Get-Item readonly-tree\child.txt
@@ -1008,6 +1045,7 @@ if (`$names -notcontains 'case-dir-renamed') { throw 'directory listing lost cas
 if (`$names -notcontains 'stale-dir') { throw 'directory listing lost recreated upper directory' }
 if (`$names -notcontains 'upper-only-dir') { throw 'directory listing lost upper-only directory' }
 if (`$names -contains 'delete-me.txt') { throw 'directory listing showed whiteout file' }
+if (`$names -contains 'disposition-delete.txt') { throw 'directory listing showed FileDispositionInfo-deleted lower file' }
 if (`$names -contains 'CaseDelete.TXT') { throw 'directory listing showed case-insensitive whiteout file' }
 if (`$names -contains 'CaseRename.TXT') { throw 'directory listing showed case-insensitive renamed source' }
 if (`$names -contains 'CaseDirDelete') { throw 'directory listing showed case-insensitive whiteouted lower directory' }
@@ -1027,6 +1065,7 @@ if (`$txtNames -notcontains 'replace-file-target.txt') { throw 'wildcard listing
 if (`$txtNames -notcontains 'recreate-me.txt') { throw 'wildcard listing lost recreated file' }
 if (`$txtNames -notcontains 'case-renamed.txt') { throw 'wildcard listing lost case-insensitive renamed file' }
 if (`$txtNames -contains 'delete-me.txt') { throw 'wildcard listing showed whiteouted lower file' }
+if (`$txtNames -contains 'disposition-delete.txt') { throw 'wildcard listing showed FileDispositionInfo-deleted lower file' }
 if (`$txtNames -contains 'CaseDelete.TXT') { throw 'wildcard listing showed case-insensitive whiteouted lower file' }
 if (`$txtNames -contains 'CaseRename.TXT') { throw 'wildcard listing showed case-insensitive renamed source' }
 if (`$txtNames -contains 'readonly-delete.txt') { throw 'wildcard listing showed readonly disposition-deleted lower file' }
@@ -1037,6 +1076,7 @@ if (`$nativeTxtNames -notcontains 'host.txt') { throw 'native wildcard listing l
 if (`$nativeTxtNames -notcontains 'case-renamed.txt') { throw 'native wildcard listing lost case-insensitive renamed file' }
 if (`$nativeTxtNames -notcontains 'replace-file-target.txt') { throw 'native wildcard listing lost replaced lower file target' }
 if (`$nativeTxtNames -contains 'delete-me.txt') { throw 'native wildcard listing showed whiteouted lower file' }
+if (`$nativeTxtNames -contains 'disposition-delete.txt') { throw 'native wildcard listing showed FileDispositionInfo-deleted lower file' }
 if (`$nativeTxtNames -contains 'CaseDelete.TXT') { throw 'native wildcard listing showed case-insensitive whiteouted lower file' }
 if (`$nativeTxtNames -contains 'CaseRename.TXT') { throw 'native wildcard listing showed case-insensitive renamed source' }
 if (`$nativeTxtNames -contains 'readonly-delete.txt') { throw 'native wildcard listing showed readonly disposition-deleted lower file' }
@@ -1050,6 +1090,8 @@ if (`$nativeExactCaseRename -ne 'case-renamed.txt') { throw 'native exact listin
 if (`$nativeExactRenameTarget -ne 'rename-target.txt') { throw 'native exact listing lost recreated upper file over lower target' }
 `$nativeExactDeleted = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'delete-me.txt', 12, 8, 12)
 if (`$nativeExactDeleted -contains 'delete-me.txt') { throw 'native exact listing showed whiteouted lower file' }
+`$nativeExactDispositionDeleted = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'disposition-delete.txt', 12, 8, 12)
+if (`$nativeExactDispositionDeleted -contains 'disposition-delete.txt') { throw 'native exact listing showed FileDispositionInfo-deleted lower file' }
 `$nativeExactCaseRenameSource = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'caserename.txt', 12, 8, 12)
 if (`$nativeExactCaseRenameSource -contains 'CaseRename.TXT') { throw 'native exact listing showed case-insensitive renamed source' }
 `$nativeExactLowerSymlink = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'lower-symlink.txt', 12, 8, 12)
@@ -1058,6 +1100,7 @@ if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost u
 if ((Get-ChildItem -Name case-renamed.txt) -ne 'case-renamed.txt') { throw 'exact listing lost case-insensitive renamed file' }
 if ((Get-ChildItem -Name case-dir-renamed) -ne 'case-dir-renamed') { throw 'exact listing lost case-insensitive renamed directory' }
 if ((Get-ChildItem -Name delete-me.txt -ErrorAction SilentlyContinue) -contains 'delete-me.txt') { throw 'exact listing showed whiteouted lower file' }
+if ((Get-ChildItem -Name disposition-delete.txt -ErrorAction SilentlyContinue) -contains 'disposition-delete.txt') { throw 'exact listing showed FileDispositionInfo-deleted lower file' }
 if ((Get-ChildItem -Name casedelete.txt -ErrorAction SilentlyContinue) -contains 'CaseDelete.TXT') { throw 'exact listing showed case-insensitive whiteouted lower file' }
 if ((Get-ChildItem -Name caserename.txt -ErrorAction SilentlyContinue) -contains 'CaseRename.TXT') { throw 'exact listing showed case-insensitive renamed source' }
 if ((Get-ChildItem -Name casedirdelete -ErrorAction SilentlyContinue) -contains 'CaseDirDelete') { throw 'exact listing showed case-insensitive whiteouted lower directory' }
@@ -1072,6 +1115,7 @@ if (`$singleNames -notcontains 'case-renamed.txt') { throw 'single-entry listing
 if (`$singleNames -notcontains 'case-dir-renamed') { throw 'single-entry listing lost case-insensitive renamed directory' }
 if (`$singleNames -notcontains 'upper-only-dir') { throw 'single-entry listing lost upper-only directory' }
 if (`$singleNames -contains 'delete-me.txt') { throw 'single-entry listing showed whiteouted lower file' }
+if (`$singleNames -contains 'disposition-delete.txt') { throw 'single-entry listing showed FileDispositionInfo-deleted lower file' }
 if (`$singleNames -contains 'CaseDelete.TXT') { throw 'single-entry listing showed case-insensitive whiteouted lower file' }
 if (`$singleNames -contains 'CaseRename.TXT') { throw 'single-entry listing showed case-insensitive renamed source' }
 if (`$singleNames -contains 'CaseDirDelete') { throw 'single-entry listing showed case-insensitive whiteouted lower directory' }
@@ -1084,6 +1128,7 @@ if (`$fileIdExtdNames -notcontains 'case-renamed.txt') { throw 'FileIdExtdDirect
 if (`$fileIdExtdNames -notcontains 'case-dir-renamed') { throw 'FileIdExtdDirectoryInformation lost case-insensitive renamed directory' }
 if (`$fileIdExtdNames -notcontains 'upper-only-dir') { throw 'FileIdExtdDirectoryInformation lost upper directory' }
 if (`$fileIdExtdNames -contains 'delete-me.txt') { throw 'FileIdExtdDirectoryInformation showed whiteouted lower file' }
+if (`$fileIdExtdNames -contains 'disposition-delete.txt') { throw 'FileIdExtdDirectoryInformation showed FileDispositionInfo-deleted lower file' }
 if (`$fileIdExtdNames -contains 'CaseDelete.TXT') { throw 'FileIdExtdDirectoryInformation showed case-insensitive whiteouted lower file' }
 if (`$fileIdExtdNames -contains 'CaseRename.TXT') { throw 'FileIdExtdDirectoryInformation showed case-insensitive renamed source' }
 if (`$fileIdExtdNames -contains 'CaseDirDelete') { throw 'FileIdExtdDirectoryInformation showed case-insensitive whiteouted lower directory' }
@@ -1095,6 +1140,7 @@ if (`$fileIdExtdBothNames -notcontains 'case-renamed.txt') { throw 'FileIdExtdBo
 if (`$fileIdExtdBothNames -notcontains 'case-dir-renamed') { throw 'FileIdExtdBothDirectoryInformation lost case-insensitive renamed directory' }
 if (`$fileIdExtdBothNames -notcontains 'upper-only-dir') { throw 'FileIdExtdBothDirectoryInformation lost upper directory' }
 if (`$fileIdExtdBothNames -contains 'delete-me.txt') { throw 'FileIdExtdBothDirectoryInformation showed whiteouted lower file' }
+if (`$fileIdExtdBothNames -contains 'disposition-delete.txt') { throw 'FileIdExtdBothDirectoryInformation showed FileDispositionInfo-deleted lower file' }
 if (`$fileIdExtdBothNames -contains 'CaseDelete.TXT') { throw 'FileIdExtdBothDirectoryInformation showed case-insensitive whiteouted lower file' }
 if (`$fileIdExtdBothNames -contains 'CaseRename.TXT') { throw 'FileIdExtdBothDirectoryInformation showed case-insensitive renamed source' }
 if (`$fileIdExtdBothNames -contains 'CaseDirDelete') { throw 'FileIdExtdBothDirectoryInformation showed case-insensitive whiteouted lower directory' }
@@ -1106,6 +1152,7 @@ if (`$fileId64ExtdNames -notcontains 'case-renamed.txt') { throw 'FileId64ExtdDi
 if (`$fileId64ExtdNames -notcontains 'case-dir-renamed') { throw 'FileId64ExtdDirectoryInformation lost case-insensitive renamed directory' }
 if (`$fileId64ExtdNames -notcontains 'upper-only-dir') { throw 'FileId64ExtdDirectoryInformation lost upper directory' }
 if (`$fileId64ExtdNames -contains 'delete-me.txt') { throw 'FileId64ExtdDirectoryInformation showed whiteouted lower file' }
+if (`$fileId64ExtdNames -contains 'disposition-delete.txt') { throw 'FileId64ExtdDirectoryInformation showed FileDispositionInfo-deleted lower file' }
 if (`$fileId64ExtdNames -contains 'CaseDelete.TXT') { throw 'FileId64ExtdDirectoryInformation showed case-insensitive whiteouted lower file' }
 if (`$fileId64ExtdNames -contains 'CaseRename.TXT') { throw 'FileId64ExtdDirectoryInformation showed case-insensitive renamed source' }
 if (`$fileId64ExtdNames -contains 'CaseDirDelete') { throw 'FileId64ExtdDirectoryInformation showed case-insensitive whiteouted lower directory' }
@@ -1117,6 +1164,7 @@ if (`$fileId64ExtdBothNames -notcontains 'case-renamed.txt') { throw 'FileId64Ex
 if (`$fileId64ExtdBothNames -notcontains 'case-dir-renamed') { throw 'FileId64ExtdBothDirectoryInformation lost case-insensitive renamed directory' }
 if (`$fileId64ExtdBothNames -notcontains 'upper-only-dir') { throw 'FileId64ExtdBothDirectoryInformation lost upper directory' }
 if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBothDirectoryInformation showed whiteouted lower file' }
+if (`$fileId64ExtdBothNames -contains 'disposition-delete.txt') { throw 'FileId64ExtdBothDirectoryInformation showed FileDispositionInfo-deleted lower file' }
 if (`$fileId64ExtdBothNames -contains 'CaseDelete.TXT') { throw 'FileId64ExtdBothDirectoryInformation showed case-insensitive whiteouted lower file' }
 if (`$fileId64ExtdBothNames -contains 'CaseRename.TXT') { throw 'FileId64ExtdBothDirectoryInformation showed case-insensitive renamed source' }
 if (`$fileId64ExtdBothNames -contains 'CaseDirDelete') { throw 'FileId64ExtdBothDirectoryInformation showed case-insensitive whiteouted lower directory' }
@@ -1195,6 +1243,9 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     }
     if (-not (Test-Path (Join-Path $source "delete-me.txt"))) {
         throw "host delete-me.txt was removed"
+    }
+    if ((Get-Content (Join-Path $source "disposition-delete.txt")) -ne "disposition-delete-original") {
+        throw "host disposition-delete.txt was modified"
     }
     if ((Get-Content (Join-Path $source "CaseDelete.TXT")) -ne "case-delete-original") {
         throw "host CaseDelete.TXT was modified"
@@ -1437,6 +1488,9 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     if (Test-Path (Join-Path $upperSource "delete-lower-dir")) {
         throw "deleted lower directory was unexpectedly copied to upper"
     }
+    if (Test-Path (Join-Path $upperSource "disposition-delete.txt")) {
+        throw "FileDispositionInfo-deleted lower file was unexpectedly copied to upper"
+    }
     if (Test-Path (Join-Path $upperSource "readonly-delete.txt")) {
         throw "readonly disposition-deleted lower file was unexpectedly left in upper"
     }
@@ -1545,6 +1599,9 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
+    }
+    if (-not (Test-Path (Join-Path $whiteoutSource "disposition-delete.txt"))) {
+        throw "FileDispositionInfo delete whiteout was not created"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "casedelete.txt"))) {
         throw "case-insensitive delete whiteout was not created"
