@@ -899,6 +899,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
         throw "session stderr was not written to the agentfs log file"
     }
 
+    $env:AGENTFS_POST_ENV_HOST_WRITE = Join-Path $source "post-env-host-write.txt"
+    & powershell.exe -NoProfile -Command "Set-Content -LiteralPath `$env:AGENTFS_POST_ENV_HOST_WRITE 'post-env-host'; if ((Get-Content -LiteralPath `$env:AGENTFS_POST_ENV_HOST_WRITE) -ne 'post-env-host') { throw 'post-env host process write readback failed' }"
+    if ($LASTEXITCODE -ne 0) {
+        throw "post-env host process write failed with exit code $LASTEXITCODE"
+    }
+
     $hostContent = Get-Content (Join-Path $source "host.txt")
     if ($hostContent -ne "host-original") {
         throw "host file was modified: $hostContent"
@@ -959,6 +965,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if (Test-Path (Join-Path $source "grandchild-process.txt")) {
         throw "host grandchild-process.txt was created"
+    }
+    if ((Get-Content (Join-Path $source "post-env-host-write.txt")) -ne "post-env-host") {
+        throw "post-env host process write did not land in source"
     }
     if ((Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc -ne [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime) {
         throw "host metadata.txt timestamp was modified"
@@ -1047,6 +1056,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ((Get-Content (Join-Path $upperSource "grandchild-process.txt")) -ne "grandchild-env") {
         throw "grandchild process write was not redirected to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "post-env-host-write.txt")) {
+        throw "post-env host process write was redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "nested\lower\deep.txt")) -ne "deep-modified") {
         throw "nested lower file was not copied to upper"
