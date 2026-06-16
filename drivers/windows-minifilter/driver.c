@@ -1554,6 +1554,7 @@ static NTSTATUS AgentFsValidateRenameInformation(
     if (InfoClass == FileRenameInformationEx) {
         ULONG supportedFlags =
             FILE_RENAME_REPLACE_IF_EXISTS |
+            FILE_RENAME_POSIX_SEMANTICS |
             FILE_RENAME_IGNORE_READONLY_ATTRIBUTE;
         if ((RenameInfo->Flags & ~supportedFlags) != 0) {
             return STATUS_NOT_SUPPORTED;
