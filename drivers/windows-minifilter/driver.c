@@ -1992,14 +1992,15 @@ static NTSTATUS AgentFsCloneEnvForProcessLocked(
 static NTSTATUS AgentFsSnapshotEnvForProcess(_In_ HANDLE ProcessId, _Outptr_result_maybenull_ PAGENTFS_ENV *Snapshot)
 {
     PAGENTFS_ENV env;
+    NTSTATUS status = STATUS_NOT_FOUND;
     *Snapshot = NULL;
     ExAcquireFastMutex(&gEnvLock);
     env = AgentFsFindEnvLocked(ProcessId);
     if (env != NULL) {
-        (VOID)AgentFsCloneEnvForProcessLocked(env, ProcessId, FALSE, Snapshot);
+        status = AgentFsCloneEnvForProcessLocked(env, ProcessId, FALSE, Snapshot);
     }
     ExReleaseFastMutex(&gEnvLock);
-    return *Snapshot == NULL ? STATUS_NOT_FOUND : STATUS_SUCCESS;
+    return status;
 }
 
 static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
@@ -2017,6 +2018,11 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
 
     status = AgentFsSnapshotEnvForProcess(pid, &env);
     if (!NT_SUCCESS(status)) {
+        if (status != STATUS_NOT_FOUND) {
+            Data->IoStatus.Status = status;
+            Data->IoStatus.Information = 0;
+            return FLT_PREOP_COMPLETE;
+        }
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -2104,6 +2110,11 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreFileSystemControl(
 
     NTSTATUS status = AgentFsSnapshotEnvForProcess(pid, &env);
     if (!NT_SUCCESS(status)) {
+        if (status != STATUS_NOT_FOUND) {
+            Data->IoStatus.Status = status;
+            Data->IoStatus.Information = 0;
+            return FLT_PREOP_COMPLETE;
+        }
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltGetFileNameInformation(
@@ -2163,6 +2174,11 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
 
     status = AgentFsSnapshotEnvForProcess(pid, &env);
     if (!NT_SUCCESS(status)) {
+        if (status != STATUS_NOT_FOUND) {
+            Data->IoStatus.Status = status;
+            Data->IoStatus.Information = 0;
+            return FLT_PREOP_COMPLETE;
+        }
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltGetFileNameInformation(
@@ -2425,6 +2441,11 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
 
     status = AgentFsSnapshotEnvForProcess(pid, &env);
     if (!NT_SUCCESS(status)) {
+        if (status != STATUS_NOT_FOUND) {
+            Data->IoStatus.Status = status;
+            Data->IoStatus.Information = 0;
+            return FLT_PREOP_COMPLETE;
+        }
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
     status = FltGetFileNameInformation(
