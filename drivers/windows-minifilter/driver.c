@@ -1886,6 +1886,11 @@ static NTSTATUS AgentFsSelectRedirect(
                 return status;
             }
             if (AgentFsPathExists(Instance, &lower)) {
+                if (disposition == FILE_CREATE) {
+                    AgentFsFreeUnicode(&lower);
+                    AgentFsFreeUnicode(&upper);
+                    return STATUS_OBJECT_NAME_COLLISION;
+                }
                 if (AgentFsDirectoryOpen(Options) || AgentFsPathIsDirectory(Instance, &lower)) {
                     status = AgentFsEnsureDirectoryTree(Instance, &upper);
                 } else {
