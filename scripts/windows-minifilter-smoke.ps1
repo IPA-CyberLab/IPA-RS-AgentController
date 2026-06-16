@@ -1573,11 +1573,17 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     if (Test-Path (Join-Path $whiteoutSource "collision-source.txt")) {
         throw "failed rename collision created a source whiteout"
     }
+    if (Test-Path (Join-Path $upperSource "collision-source.txt")) {
+        throw "failed rename collision copied the source to upper"
+    }
     if (Test-Path (Join-Path $upperSource "collision-target.txt")) {
         throw "failed rename collision wrote the target to upper"
     }
     if (Test-Path (Join-Path $whiteoutSource "replace-dir-source.txt")) {
         throw "failed replace-dir rename created a source whiteout"
+    }
+    if (Test-Path (Join-Path $upperSource "replace-dir-source.txt")) {
+        throw "failed replace-dir rename copied the source to upper"
     }
     if (Test-Path (Join-Path $upperSource "replace-dir-target")) {
         throw "failed replace-dir rename wrote the target to upper"
