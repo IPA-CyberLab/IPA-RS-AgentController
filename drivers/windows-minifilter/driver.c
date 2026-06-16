@@ -2425,13 +2425,17 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     if (!NT_SUCCESS(status)) {
         AgentFsFreeUnicode(&visible);
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     status = AgentFsJoinRedirectPath(&whiteout, &env->WhiteoutRoot, &env->SourceRoot, &visible);
     AgentFsFreeUnicode(&visible);
     AgentFsFreeEnv(env);
     if (!NT_SUCCESS(status)) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     status = AgentFsCreateEmptyFile(FltObjects->Instance, &whiteout);
     AgentFsFreeUnicode(&whiteout);
