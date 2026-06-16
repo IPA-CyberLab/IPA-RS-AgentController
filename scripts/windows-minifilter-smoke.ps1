@@ -666,6 +666,13 @@ try {
     `$symlinkFailed = `$true
 }
 if (-not `$symlinkFailed) { throw 'symlink creation unexpectedly succeeded inside overlay' }
+`$junctionFailed = `$false
+try {
+    New-Item -ItemType Junction -Path junction-host -Target upper-only-dir | Out-Null
+} catch {
+    `$junctionFailed = `$true
+}
+if (-not `$junctionFailed) { throw 'junction creation unexpectedly succeeded inside overlay' }
 `$lowerSymlinkWriteFailed = `$false
 try {
     Set-Content lower-symlink.txt 'lower-symlink-env'
@@ -1322,6 +1329,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if (Test-Path (Join-Path $source "symlink-host.txt")) {
         throw "host symlink was created"
     }
+    if (Test-Path (Join-Path $source "junction-host")) {
+        throw "host junction was created"
+    }
     if (Test-Path (Join-Path $source "cross-boundary-move.txt")) {
         throw "host cross-boundary move target was created"
     }
@@ -1746,6 +1756,10 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     $upperSymlink = Join-Path $upperSource "symlink-host.txt"
     if ((Test-Path $upperSymlink) -and (((Get-Item $upperSymlink -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         throw "symlink reparse point was unexpectedly created in upper"
+    }
+    $upperJunction = Join-Path $upperSource "junction-host"
+    if ((Test-Path $upperJunction) -and (((Get-Item $upperJunction -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "junction reparse point was unexpectedly created in upper"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "delete-me.txt"))) {
         throw "delete whiteout was not created"
