@@ -2060,13 +2060,10 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
     FltReleaseFileNameInformation(nameInfo);
     AgentFsFreeEnv(env);
 
-    if (status == STATUS_OBJECT_NAME_NOT_FOUND) {
+    if (!NT_SUCCESS(status)) {
         Data->IoStatus.Status = status;
         Data->IoStatus.Information = 0;
         return FLT_PREOP_COMPLETE;
-    }
-    if (!NT_SUCCESS(status)) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
     IoReplaceFileObjectName(
