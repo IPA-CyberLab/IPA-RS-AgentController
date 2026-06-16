@@ -355,6 +355,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $source "metadata-dir") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $source "mixed-lower") | Out-Null
     Set-Content -Path (Join-Path $source "host.txt") -Value "host-original"
+    Set-Content -Path (Join-Path $source "CaseSource.TXT") -Value "case-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     $readonlyDelete = Join-Path $source "readonly-delete.txt"
     Set-Content -Path $readonlyDelete -Value "readonly-delete-original"
@@ -561,6 +562,8 @@ Set-Content readonly-attributes.txt 'readonly-attributes-env'
 if ((Get-Content readonly-attributes.txt) -ne 'readonly-attributes-env') { throw 'readonly attribute copy-up write readback failed' }
 if (((Get-Item readonly-attributes.txt).Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) { throw 'readonly attribute clear was not visible in env' }
 Set-Content host.txt 'env-modified'
+Set-Content casesource.txt 'case-env'
+if ((Get-Content casesource.txt) -ne 'case-env') { throw 'case-insensitive lower write readback failed' }
 Set-Content created.txt 'env-created'
 & powershell.exe -NoProfile -Command "Set-Content child-process.txt 'child-env'; & powershell.exe -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAZwByAGEAbgBkAGMAaABpAGwAZAAtAHAAcgBvAGMAZQBzAHMALgB0AHgAdAAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAOwAgAGkAZgAgACgAKABHAGUAdAAtAEMAbwBuAHQAZQBuAHQAIABnAHIAYQBuAGQAYwBoAGkAbABkAC0AcAByAG8AYwBlAHMAcwAuAHQAeAB0ACkAIAAtAG4AZQAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAGcAcgBhAG4AZABjAGgAaQBsAGQAIABwAHIAbwBjAGUAcwBzACAAdwByAGkAdABlACAAcgBlAGEAZABiAGEAYwBrACAAZgBhAGkAbABlAGQAJwAgAH0A; if (`$LASTEXITCODE -ne 0) { throw 'grandchild process overlay command failed' }; if ((Get-Content child-process.txt) -ne 'child-env') { throw 'child process write readback failed' }"
 if (`$LASTEXITCODE -ne 0) { throw 'child process overlay command failed' }
@@ -997,6 +1000,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ($hostContent -ne "host-original") {
         throw "host file was modified: $hostContent"
     }
+    if ((Get-Content (Join-Path $source "CaseSource.TXT")) -ne "case-original") {
+        throw "host CaseSource.TXT was modified"
+    }
     if (Test-Path (Join-Path $source "hardlink-host.txt")) {
         throw "host hardlink was created"
     }
@@ -1171,6 +1177,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
 
     if ((Get-Content (Join-Path $upperSource "host.txt")) -ne "env-modified") {
         throw "modified file was not copied to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "casesource.txt")) -ne "case-env") {
+        throw "case-insensitive lower write was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "child-process.txt")) -ne "child-env") {
         throw "child process write was not redirected to upper"
