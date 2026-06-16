@@ -702,6 +702,7 @@ public static class AgentFsNativeMove {
     private const int FileDispositionInfoEx = 21;
     private const int FileRenameInfoEx = 22;
     private const int STATUS_NO_MORE_FILES = unchecked((int)0x80000006);
+    private const int STATUS_NO_SUCH_FILE = unchecked((int)0xC000000F);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FILE_DISPOSITION_INFO_EX {
@@ -829,7 +830,7 @@ public static class AgentFsNativeMove {
                         patternString,
                         restartScan);
                     restartScan = false;
-                    if (status == STATUS_NO_MORE_FILES) {
+                    if (status == STATUS_NO_MORE_FILES || status == STATUS_NO_SUCH_FILE) {
                         break;
                     }
                     if (status < 0) {
@@ -1041,6 +1042,18 @@ if (`$nativeTxtNames -contains 'CaseRename.TXT') { throw 'native wildcard listin
 if (`$nativeTxtNames -contains 'readonly-delete.txt') { throw 'native wildcard listing showed readonly disposition-deleted lower file' }
 if (`$nativeTxtNames -contains 'replace-file-source.txt') { throw 'native wildcard listing showed replaced lower file source' }
 if (`$nativeTxtNames -contains 'lower-symlink.txt') { throw 'native wildcard listing showed whiteouted lower symlink' }
+`$nativeExactHost = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'host.txt', 12, 8, 12)
+if (`$nativeExactHost -ne 'host.txt') { throw 'native exact listing lost upper replacement over lower file' }
+`$nativeExactCaseRename = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'case-renamed.txt', 12, 8, 12)
+if (`$nativeExactCaseRename -ne 'case-renamed.txt') { throw 'native exact listing lost case-insensitive renamed file' }
+`$nativeExactRenameTarget = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'rename-target.txt', 12, 8, 12)
+if (`$nativeExactRenameTarget -ne 'rename-target.txt') { throw 'native exact listing lost recreated upper file over lower target' }
+`$nativeExactDeleted = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'delete-me.txt', 12, 8, 12)
+if (`$nativeExactDeleted -contains 'delete-me.txt') { throw 'native exact listing showed whiteouted lower file' }
+`$nativeExactCaseRenameSource = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'caserename.txt', 12, 8, 12)
+if (`$nativeExactCaseRenameSource -contains 'CaseRename.TXT') { throw 'native exact listing showed case-insensitive renamed source' }
+`$nativeExactLowerSymlink = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'lower-symlink.txt', 12, 8, 12)
+if (`$nativeExactLowerSymlink -contains 'lower-symlink.txt') { throw 'native exact listing showed whiteouted lower symlink' }
 if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost upper replacement over lower file' }
 if ((Get-ChildItem -Name case-renamed.txt) -ne 'case-renamed.txt') { throw 'exact listing lost case-insensitive renamed file' }
 if ((Get-ChildItem -Name case-dir-renamed) -ne 'case-dir-renamed') { throw 'exact listing lost case-insensitive renamed directory' }
