@@ -369,6 +369,7 @@ try {
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
     (Get-Item (Join-Path $source "metadata.txt")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2019-01-02T03:04:05Z").UtcDateTime
     Set-Content -Path (Join-Path $source "metadata-dir\child.txt") -Value "metadata-dir-child-original"
+    [AgentFsEa]::SetDirectoryEa((Join-Path $source "metadata-dir"), "agentfs.metadata.dir.ea", "lower-metadata-dir-ea")
     (Get-Item (Join-Path $source "metadata-dir")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2016-01-02T03:04:05Z").UtcDateTime
     Set-Content -Path (Join-Path $source "truncate.txt") -Value "truncate-original"
     Set-Content -Path (Join-Path $source "append.txt") -Value "append-original"
@@ -491,6 +492,8 @@ try {
 if (-not `$lockedWriteFailed) { throw 'write to exclusively locked lower file unexpectedly succeeded' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 (Get-Item metadata-dir).LastWriteTimeUtc = [DateTimeOffset]::Parse('2021-03-04T05:06:07Z').UtcDateTime
+[AgentFsEa]::SetDirectoryEa((Join-Path (Get-Location) 'metadata-dir'), 'agentfs.metadata.dir.ea', 'env-dir-ea')
+if ([AgentFsEa]::GetDirectoryEa((Join-Path (Get-Location) 'metadata-dir'), 'agentfs.metadata.dir.ea') -ne 'env-dir-ea') { throw 'directory EA write readback failed' }
 if ((Get-ChildItem metadata-dir -Name) -notcontains 'child.txt') { throw 'directory metadata copy-up hid lower child' }
 `$truncateFile = [IO.File]::Open('truncate.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
 try {
@@ -1016,6 +1019,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Content (Join-Path $source "metadata-dir\child.txt")) -ne "metadata-dir-child-original") {
         throw "host metadata-dir child was modified"
     }
+    if ([AgentFsEa]::GetDirectoryEa((Join-Path $source "metadata-dir"), "agentfs.metadata.dir.ea") -ne "lower-metadata-dir-ea") {
+        throw "host metadata-dir EA was modified"
+    }
     if ((Get-Content (Join-Path $source "truncate.txt")) -ne "truncate-original") {
         throw "host truncate.txt was modified"
     }
@@ -1184,6 +1190,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if (Test-Path (Join-Path $upperSource "metadata-dir\child.txt")) {
         throw "directory metadata write copied lower child into upper"
+    }
+    if ([AgentFsEa]::GetDirectoryEa((Join-Path $upperSource "metadata-dir"), "agentfs.metadata.dir.ea") -ne "env-dir-ea") {
+        throw "directory EA write was not redirected to upper"
     }
     if ([IO.File]::ReadAllText((Join-Path $upperSource "truncate.txt")) -ne "truncate") {
         throw "truncated file was not redirected to upper"
