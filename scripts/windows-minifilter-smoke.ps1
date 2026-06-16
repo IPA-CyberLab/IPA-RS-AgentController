@@ -374,7 +374,7 @@ try {
     Set-Content -Path (Join-Path $source "truncate.txt") -Value "truncate-original"
     Set-Content -Path (Join-Path $source "append.txt") -Value "append-original"
     Set-Content -Path (Join-Path $source "overwrite.txt") -Value "overwrite-original"
-    Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
+    [IO.File]::WriteAllText((Join-Path $source "mapped.txt"), "0000000000")
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
     Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
     [AgentFsEa]::SetEa((Join-Path $source "ea-source.txt"), "agentfs.ea", "lower-ea-original")
@@ -496,13 +496,14 @@ if (-not `$lockedWriteFailed) { throw 'write to exclusively locked lower file un
 [AgentFsEa]::SetDirectoryEa((Join-Path (Get-Location) 'metadata-dir'), 'agentfs.metadata.dir.ea', 'env-dir-ea')
 if ([AgentFsEa]::GetDirectoryEa((Join-Path (Get-Location) 'metadata-dir'), 'agentfs.metadata.dir.ea') -ne 'env-dir-ea') { throw 'directory EA write readback failed' }
 if ((Get-ChildItem metadata-dir -Name) -notcontains 'child.txt') { throw 'directory metadata copy-up hid lower child' }
-`$truncateFile = [IO.File]::Open('truncate.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+`$truncatePath = Join-Path (Get-Location) 'truncate.txt'
+`$truncateFile = [IO.File]::Open(`$truncatePath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
 try {
     `$truncateFile.SetLength(8)
 } finally {
     `$truncateFile.Dispose()
 }
-if ([IO.File]::ReadAllText((Join-Path (Get-Location) 'truncate.txt')) -ne 'truncate') { throw 'truncated lower file did not show env length' }
+if ([IO.File]::ReadAllText(`$truncatePath) -ne 'truncate') { throw 'truncated lower file did not show env length' }
 Add-Content append.txt 'append-env'
 if (((Get-Content append.txt) -join "`n") -ne "append-original`nappend-env") { throw 'append write was not visible in env' }
 `$overwritePath = Join-Path (Get-Location) 'overwrite.txt'
@@ -529,10 +530,12 @@ Set-Content acl-source.txt 'acl-env'
 `$aclChange = Get-Acl acl-change-source.txt
 `$aclChange.PurgeAccessRules([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
 Set-Acl -Path acl-change-source.txt -AclObject `$aclChange
+`$mappedPath = Join-Path (Get-Location) 'mapped.txt'
 `$mappedBytes = [Text.Encoding]::UTF8.GetBytes('mapped-env')
-`$mappedFile = [IO.File]::Open('mapped.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+`$mappedFile = [IO.File]::Open(`$mappedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
 try {
-    `$mmf = [IO.MemoryMappedFiles.MemoryMappedFile]::CreateFromFile(`$mappedFile, `$null, 0, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite, `$null, [IO.HandleInheritability]::None, `$false)
+    `$mappedName = 'agentfs-smoke-' + [Guid]::NewGuid().ToString('N')
+    `$mmf = [IO.MemoryMappedFiles.MemoryMappedFile]::CreateFromFile(`$mappedFile, `$mappedName, 0, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite, `$null, [IO.HandleInheritability]::None, `$false)
     try {
         `$view = `$mmf.CreateViewAccessor(0, `$mappedBytes.Length, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::Write)
         try {
