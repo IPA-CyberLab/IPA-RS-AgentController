@@ -146,12 +146,12 @@ static NTSTATUS AgentFsJoinChildPath(
     _In_ ULONG NameLength);
 static VOID AgentFsResetDirState(_In_ PFILE_OBJECT FileObject);
 static BOOLEAN AgentFsDirUpperAlreadyMerged(_In_ PFILE_OBJECT FileObject);
-static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject);
+static NTSTATUS AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject);
 static BOOLEAN AgentFsDirUpperSingleExhausted(_In_ PFILE_OBJECT FileObject);
 static NTSTATUS AgentFsSnapshotDirUpperSingleCursor(
     _In_ PFILE_OBJECT FileObject,
     _Out_ PUNICODE_STRING Cursor);
-static VOID AgentFsUpdateDirUpperSingleCursor(
+static NTSTATUS AgentFsUpdateDirUpperSingleCursor(
     _In_ PFILE_OBJECT FileObject,
     _In_opt_ PCUNICODE_STRING Cursor,
     _In_ BOOLEAN Exhausted);
@@ -2610,17 +2610,21 @@ static BOOLEAN AgentFsDirUpperAlreadyMerged(_In_ PFILE_OBJECT FileObject)
     return merged;
 }
 
-static VOID AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject)
+static NTSTATUS AgentFsMarkDirUpperMerged(_In_ PFILE_OBJECT FileObject)
 {
     if (FileObject == NULL) {
-        return;
+        return STATUS_NOT_FOUND;
     }
     ExAcquireFastMutex(&gDirStateLock);
     PAGENTFS_DIR_STATE state = AgentFsEnsureDirStateLocked(FileObject);
+    NTSTATUS status = STATUS_SUCCESS;
     if (state != NULL) {
         state->UpperMerged = TRUE;
+    } else {
+        status = STATUS_INSUFFICIENT_RESOURCES;
     }
     ExReleaseFastMutex(&gDirStateLock);
+    return status;
 }
 
 static BOOLEAN AgentFsDirUpperSingleExhausted(_In_ PFILE_OBJECT FileObject)
@@ -2653,24 +2657,28 @@ static NTSTATUS AgentFsSnapshotDirUpperSingleCursor(
     return status;
 }
 
-static VOID AgentFsUpdateDirUpperSingleCursor(
+static NTSTATUS AgentFsUpdateDirUpperSingleCursor(
     _In_ PFILE_OBJECT FileObject,
     _In_opt_ PCUNICODE_STRING Cursor,
     _In_ BOOLEAN Exhausted)
 {
     if (FileObject == NULL) {
-        return;
+        return STATUS_NOT_FOUND;
     }
     ExAcquireFastMutex(&gDirStateLock);
     PAGENTFS_DIR_STATE state = AgentFsEnsureDirStateLocked(FileObject);
+    NTSTATUS status = STATUS_SUCCESS;
     if (state != NULL) {
         AgentFsFreeUnicode(&state->UpperSingleCursor);
         state->UpperSingleExhausted = Exhausted;
         if (!Exhausted && Cursor != NULL && Cursor->Buffer != NULL) {
-            (VOID)AgentFsDupUnicode(&state->UpperSingleCursor, Cursor);
+            status = AgentFsDupUnicode(&state->UpperSingleCursor, Cursor);
         }
+    } else {
+        status = STATUS_INSUFFICIENT_RESOURCES;
     }
     ExReleaseFastMutex(&gDirStateLock);
+    return status;
 }
 
 static VOID AgentFsRemoveDirState(_In_opt_ PFILE_OBJECT FileObject)
@@ -2956,7 +2964,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
                 &lastEmitted,
                 &exhausted);
             if (NT_SUCCESS(mergeStatus)) {
-                AgentFsUpdateDirUpperSingleCursor(
+                mergeStatus = AgentFsUpdateDirUpperSingleCursor(
                     FltObjects->FileObject,
                     lastEmitted.Buffer != NULL ? &lastEmitted : NULL,
                     exhausted);
@@ -2981,7 +2989,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
                 NULL,
                 &exhausted);
             if (NT_SUCCESS(mergeStatus) && exhausted) {
-                AgentFsMarkDirUpperMerged(FltObjects->FileObject);
+                mergeStatus = AgentFsMarkDirUpperMerged(FltObjects->FileObject);
             }
         }
     }
