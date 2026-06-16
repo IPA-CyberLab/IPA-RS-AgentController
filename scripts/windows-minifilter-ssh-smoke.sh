@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage: scripts/windows-minifilter-ssh-smoke.sh user@host [remote-repo-path]
 
-Runs the Windows minifilter smoke test on a real Windows machine over SSH.
+Runs the Windows minifilter smoke tests on a real Windows machine over SSH.
 
 Defaults:
   key:              ./.key
@@ -14,7 +14,8 @@ Defaults:
 
 The remote checkout must be clean. The script fetches origin, checks out the
 current branch, fast-forwards it, and runs scripts\windows-minifilter-smoke.ps1
-from an elevated/admin-capable SSH session.
+plus scripts\windows-minifilter-project-smoke.ps1 from an elevated/admin-capable
+SSH session.
 EOF
 }
 
@@ -80,6 +81,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows-minifilter-smoke.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows-minifilter-project-smoke.ps1 -Repo $repo
 POWERSHELL
 )
 remote_script="${remote_script/__REMOTE_REPO__/$remote_repo_ps}"
