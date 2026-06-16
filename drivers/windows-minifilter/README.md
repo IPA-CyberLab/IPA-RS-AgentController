@@ -1,9 +1,12 @@
 # AgentFs Windows Minifilter
 
-This driver is the Windows path-preserving overlay backend. `agentctl` creates
-an env with lower, upper, and whiteout directories. `agent-minifilterctl`
-launches the target process suspended, registers its PID and env roots through
-the minifilter communication port, then resumes it.
+This driver is the opt-in Windows path-preserving overlay backend. The default
+Windows desktop backend is driver-free and exposes the env at a separate path;
+select this backend explicitly with `--backend windows-minifilter-overlay` when
+the command must keep seeing the original host path. `agentctl` creates an env
+with lower, upper, and whiteout directories. `agent-minifilterctl` launches the
+target process suspended, registers its PID and env roots through the minifilter
+communication port, then resumes it.
 
 The driver applies the overlay for registered process trees only:
 

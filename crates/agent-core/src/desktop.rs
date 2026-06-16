@@ -79,6 +79,7 @@ impl DesktopService {
                 target,
                 base,
                 from,
+                backend,
                 profile,
                 limits,
                 command,
@@ -88,6 +89,7 @@ impl DesktopService {
                     &target,
                     &base,
                     &from,
+                    backend,
                     &profile,
                     limits,
                     &command,
@@ -95,8 +97,19 @@ impl DesktopService {
                 )
                 .await
             }
-            Request::BaseFreeze { name, from } => {
-                self.base_freeze(&name, &from).await?;
+            Request::BaseFreeze {
+                name,
+                from,
+                backend,
+            } => {
+                match backend {
+                    Some(backend) => {
+                        self.base_freeze_with_backend(&name, &from, backend).await?;
+                    }
+                    None => {
+                        self.base_freeze(&name, &from).await?;
+                    }
+                }
                 Ok(Response::Ok)
             }
             Request::EnvCreate {
@@ -205,6 +218,7 @@ impl DesktopService {
         target: &str,
         base_id: &str,
         from: &Path,
+        backend: Option<RootfsBackend>,
         profile_name: &str,
         limit_overrides: LimitOverrides,
         command: &[String],
@@ -215,7 +229,7 @@ impl DesktopService {
             self.ensure_env_started(target).await?;
             return self.target_response(target, command, cwd).await;
         }
-        self.ensure_base(base_id, from).await?;
+        self.ensure_base(base_id, from, backend).await?;
         self.ensure_env(target, base_id, profile_name, limit_overrides)
             .await?;
         self.ensure_env_started(target).await?;
@@ -693,11 +707,25 @@ impl DesktopService {
         Ok(stats.summary())
     }
 
-    async fn ensure_base(&self, base_id: &str, from: &Path) -> Result<Base> {
+    async fn ensure_base(
+        &self,
+        base_id: &str,
+        from: &Path,
+        backend: Option<RootfsBackend>,
+    ) -> Result<Base> {
         validate_id(base_id)?;
         let manifest = self.layout.base_dir(base_id).join("manifest.json");
         if tokio::fs::try_exists(&manifest).await? {
             let base = self.layout.read_base(base_id).await?;
+            if let Some(requested_backend) = backend {
+                if base.backend != requested_backend {
+                    return Err(anyhow!(
+                        "base {base_id} was created with backend {:?}; requested backend {:?}; use a different --base or omit --backend",
+                        base.backend,
+                        requested_backend
+                    ));
+                }
+            }
             if base.backend.is_path_preserving_overlay()
                 && base.source != from.display().to_string()
             {
@@ -709,7 +737,10 @@ impl DesktopService {
             }
             return Ok(base);
         }
-        self.base_freeze(base_id, from).await
+        match backend {
+            Some(backend) => self.base_freeze_with_backend(base_id, from, backend).await,
+            None => self.base_freeze(base_id, from).await,
+        }
     }
 
     async fn ensure_env(
@@ -1848,6 +1879,7 @@ mod tests {
                 "codex-1",
                 "base-from-root",
                 Path::new("/"),
+                None,
                 "privileged-dev",
                 LimitOverrides::default(),
                 &[],

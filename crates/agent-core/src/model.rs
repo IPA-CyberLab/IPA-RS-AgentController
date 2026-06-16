@@ -75,23 +75,12 @@ impl RootfsBackend {
 
 #[cfg(target_os = "macos")]
 fn native_clone_backend() -> Option<RootfsBackend> {
-    Some(RootfsBackend::PathPreservingOverlay)
+    Some(RootfsBackend::ApfsClone)
 }
 
 #[cfg(target_os = "windows")]
 fn native_clone_backend() -> Option<RootfsBackend> {
-    if std::env::var_os("AGENT_WINDOWS_BLOCK_CLONE")
-        .as_deref()
-        .is_some_and(|value| {
-            matches!(
-                value.to_string_lossy().as_ref(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-    {
-        return Some(RootfsBackend::WindowsBlockClone);
-    }
-    Some(RootfsBackend::WindowsMinifilterOverlay)
+    Some(RootfsBackend::WindowsBlockClone)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -556,12 +545,12 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             RootfsBackend::native_clone_for_current_os(),
-            Some(RootfsBackend::PathPreservingOverlay)
+            Some(RootfsBackend::ApfsClone)
         );
         #[cfg(target_os = "windows")]
         assert_eq!(
             RootfsBackend::native_clone_for_current_os(),
-            Some(RootfsBackend::WindowsMinifilterOverlay)
+            Some(RootfsBackend::WindowsBlockClone)
         );
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         assert_eq!(RootfsBackend::native_clone_for_current_os(), None);

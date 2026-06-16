@@ -134,34 +134,37 @@ GitHub Actions builds release archives for Linux, macOS, and Windows on x86_64
 and arm64 targets. `agent-forkd` is operational on Linux where the runtime
 requirements below are available. Windows and macOS can either use `--remote`
 or `AGENT_REMOTE` for the Linux-backed workflow, or run the native desktop
-daemon locally. The native backend uses path-preserving overlay metadata and
-the `agent-viewd` and `agent-overlayfs` helpers on macOS. On Windows,
-`agent-minifilterctl` registers the launched process with the `agentfs`
-minifilter so the process keeps seeing the original `C:\Users\...\project`
-path while reads resolve through lower/upper/whiteout state and writes are
-redirected to the env upper layer. Set `AGENT_WINDOWS_BLOCK_CLONE=1` to use the
-older compatibility backend based on `FSCTL_DUPLICATE_EXTENTS_TO_FILE` block
-cloning.
-macOS path-preserving views require macFUSE. The native backend currently
-supports local exec/shell plus `workspace-patch` and `rootfs-changed-paths`
-export. macOS exec and shell mount `agent-overlayfs` directly on the selected
-source path for the lifetime of the command, so tools see the original absolute
-workspace path while writes are copied into the env upper layer and the host
-source remains unchanged after unmount. Because macOS has no per-process mount
-namespace, the installer adds a small `agctl` shell wrapper that temporarily
-moves the calling shell out of the workspace and passes the original directory
-through `AGENT_HOST_CWD`; this keeps mount/unmount from invalidating the
-terminal's current directory. The command itself runs with `HOME`, `ZDOTDIR`,
-and temp variables pointed at the overlaid source path. macOS path-preserving
-views support `network=host` and `network=none`; `bridge` is a Linux nspawn mode
-and is rejected instead of silently running with host networking. `network=none`
-wraps the entered command in the macOS sandbox profile that denies `network*`.
-Windows minifilter execution starts the command suspended, registers its PID and
-overlay roots through the filter communication port, assigns it to a Job
-Object, then resumes it. The compatibility block-clone backend is still weaker
-than the Linux `systemd-nspawn` backend: it runs inside a Job Object rooted at
-the env directory, and native desktop sessions support background
-create/list/logs/kill but not interactive attach yet.
+daemon locally. The default desktop backend is not path-preserving: macOS uses
+`apfs-clone` and Windows uses `windows-block-clone`, so commands run from the
+env root path instead of the original host project path. This keeps the normal
+desktop mode driver-free and easier to distribute. Path-preserving backends are
+explicit opt-in with `--backend path-preserving-overlay` on macOS or
+`--backend windows-minifilter-overlay` on Windows.
+
+macOS path-preserving views require macFUSE and the `agent-viewd` and
+`agent-overlayfs` helpers. In that mode, exec and shell mount `agent-overlayfs`
+directly on the selected source path for the lifetime of the command, so tools
+see the original absolute workspace path while writes are copied into the env
+upper layer and the host source remains unchanged after unmount. Because macOS
+has no per-process mount namespace, the installer adds a small `agctl` shell
+wrapper that temporarily moves the calling shell out of the workspace and
+passes the original directory through `AGENT_HOST_CWD`; this keeps
+mount/unmount from invalidating the terminal's current directory. The command
+itself runs with `HOME`, `ZDOTDIR`, and temp variables pointed at the overlaid
+source path. macOS path-preserving views support `network=host` and
+`network=none`; `bridge` is a Linux nspawn mode and is rejected instead of
+silently running with host networking. `network=none` wraps the entered command
+in the macOS sandbox profile that denies `network*`.
+
+Windows minifilter execution is an advanced path-preserving backend. It starts
+the command suspended, registers its PID and overlay roots through the filter
+communication port, assigns it to a Job Object, then resumes it so the process
+keeps seeing the original `C:\Users\...\project` path while reads resolve
+through lower/upper/whiteout state and writes are redirected to the env upper
+layer. The default block-clone backend is still weaker than the Linux
+`systemd-nspawn` backend: it runs inside a Job Object rooted at the env
+directory, and native desktop sessions support background create/list/logs/kill
+but not interactive attach yet.
 
 On a Windows development machine with WDK installed and test-signing enabled,
 build, load, and verify the minifilter path-preserving backend from an elevated
@@ -331,22 +334,22 @@ Session operations invoke `tmux` through `machinectl shell` inside the child nsp
 Child environments are not separate VMs. They are privileged development roots inside the Project VM and rely on the outer Kata VM for the kernel boundary. `agent-forkd` still configures nspawn private users, applies the selected network mode, marks `/agentfs` and common Docker socket paths inaccessible, and keeps base and sibling rootfs trees outside the child view.
 
 On macOS and Windows, the native desktop backend is copy-on-write workspace
-isolation, not a VM boundary. On macOS, new native environments store a lower
-snapshot, upper layer, whiteouts, and hidden `view-root`; commands enter that
-view through `agent-viewd` so the visible cwd can remain the original
-`/Users/...` path while writes are directed to the env upper layer. `agent-viewd`
-is a privileged helper, `agent-overlayfs` performs the macFUSE mount, and
-`agent-viewd` only accepts the fixed path-preserving env layout
+isolation, not a VM boundary. The default desktop backends expose a separate
+env path. Optional path-preserving backends store a lower snapshot, upper
+layer, whiteouts, and hidden `view-root`; commands enter that view so the
+visible cwd can remain the original host path while writes are directed to the
+env upper layer. `agent-viewd` is a privileged macOS helper, `agent-overlayfs`
+performs the macFUSE mount, and `agent-viewd` only accepts the fixed
+path-preserving env layout
 `<agentfs>/envs/<id>/{lower,upper,whiteouts,view-root}` without `..` or symlink
 components before it creates or mounts privileged paths. Neither helper must
 fall back to running directly in the host workspace. Windows minifilter envs
 use the same lower/upper/whiteout metadata but enforce the view in kernel mode
 for registered PIDs only. The driver is a filesystem isolation mechanism, not a
-security boundary equivalent to Linux namespaces, and it requires normal Windows
-driver signing/test-signing discipline. Native desktop sessions are tracked as
-background host processes with transcript files under the env's session log
-directory; macOS and Windows minifilter session commands use the same
-path-preserving view as exec.
+security boundary equivalent to Linux namespaces, and it requires normal
+Windows driver signing/test-signing discipline. Native desktop sessions are
+tracked as background host processes with transcript files under the env's
+session log directory.
 
 ## Test Notes
 

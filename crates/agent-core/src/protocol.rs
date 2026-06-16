@@ -1,4 +1,4 @@
-use crate::model::{EnvStatus, LimitOverrides, Session};
+use crate::model::{EnvStatus, LimitOverrides, RootfsBackend, Session};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -13,6 +13,8 @@ pub enum Request {
         target: String,
         base: String,
         from: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend: Option<RootfsBackend>,
         profile: String,
         limits: LimitOverrides,
         command: Vec<String>,
@@ -22,6 +24,8 @@ pub enum Request {
     BaseFreeze {
         name: String,
         from: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend: Option<RootfsBackend>,
     },
     EnvCreate {
         id: String,
@@ -170,9 +174,9 @@ fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]>
     Some(match message_type {
         "init" => &["type", "agentfs"],
         "new" => &[
-            "type", "target", "base", "from", "profile", "limits", "command", "cwd",
+            "type", "target", "base", "from", "backend", "profile", "limits", "command", "cwd",
         ],
-        "base_freeze" => &["type", "name", "from"],
+        "base_freeze" => &["type", "name", "from", "backend"],
         "env_create" => &["type", "id", "base", "profile", "limits"],
         "env_start" | "env_stop" | "env_destroy" | "env_status" => &["type", "id"],
         "shell" => &["type", "id", "cwd"],
@@ -207,8 +211,8 @@ fn response_allowed_fields(message_type: &str) -> Option<&'static [&'static str]
 #[cfg(test)]
 mod tests {
     use crate::model::{
-        machine_name, Env, EnvState, EnvStatus, LimitOverrides, Limits, Session, SessionState,
-        SessionType,
+        machine_name, Env, EnvState, EnvStatus, LimitOverrides, Limits, RootfsBackend, Session,
+        SessionState, SessionType,
     };
     use chrono::Utc;
 
@@ -248,7 +252,10 @@ mod tests {
         .unwrap();
 
         match request {
-            Request::New { cwd, .. } => assert_eq!(cwd, None),
+            Request::New { backend, cwd, .. } => {
+                assert_eq!(backend, None);
+                assert_eq!(cwd, None);
+            }
             other => panic!("unexpected request {other:?}"),
         }
     }
@@ -282,6 +289,7 @@ mod tests {
                 target: "codex".to_string(),
                 base: "base-001".to_string(),
                 from: "/".into(),
+                backend: Some(RootfsBackend::WindowsMinifilterOverlay),
                 profile: "privileged-dev".to_string(),
                 limits: LimitOverrides::default(),
                 command: Vec::new(),
@@ -290,6 +298,7 @@ mod tests {
             Request::BaseFreeze {
                 name: "base-001".to_string(),
                 from: "/".into(),
+                backend: None,
             },
             Request::EnvCreate {
                 id: "codex-1".to_string(),

@@ -1,5 +1,5 @@
 use agent_core::config::{default_agentfs, AgentConfig};
-use agent_core::model::{EnvState, LimitOverrides, SessionState};
+use agent_core::model::{EnvState, LimitOverrides, RootfsBackend, SessionState};
 use agent_core::protocol::parse_response_json;
 use agent_core::protocol::{Request, Response};
 use anyhow::{anyhow, Context, Result};
@@ -53,6 +53,7 @@ impl TryFrom<RawCli> for Cli {
                 target,
                 base: None,
                 from: default_new_source(),
+                backend: None,
                 profile: None,
                 cpu_max: None,
                 memory_max: None,
@@ -146,6 +147,8 @@ struct NewArgs {
     base: Option<String>,
     #[arg(long = "from", default_value_os_t = default_new_source())]
     from: PathBuf,
+    #[arg(long, value_enum)]
+    backend: Option<DesktopBackendArg>,
     #[arg(long)]
     profile: Option<String>,
     #[arg(long)]
@@ -217,7 +220,28 @@ enum BaseCommand {
         name: String,
         #[arg(long)]
         from: PathBuf,
+        #[arg(long, value_enum)]
+        backend: Option<DesktopBackendArg>,
     },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum DesktopBackendArg {
+    ApfsClone,
+    WindowsBlockClone,
+    PathPreservingOverlay,
+    WindowsMinifilterOverlay,
+}
+
+impl From<DesktopBackendArg> for RootfsBackend {
+    fn from(value: DesktopBackendArg) -> Self {
+        match value {
+            DesktopBackendArg::ApfsClone => RootfsBackend::ApfsClone,
+            DesktopBackendArg::WindowsBlockClone => RootfsBackend::WindowsBlockClone,
+            DesktopBackendArg::PathPreservingOverlay => RootfsBackend::PathPreservingOverlay,
+            DesktopBackendArg::WindowsMinifilterOverlay => RootfsBackend::WindowsMinifilterOverlay,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -402,6 +426,7 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
             args.push(new.target.clone());
             push_opt(args, "--base", new.base.as_ref());
             push_path(args, "--from", Some(&new.from));
+            push_backend(args, "--backend", new.backend.as_ref());
             push_opt(args, "--profile", new.profile.as_ref());
             push_opt(args, "--cpu-max", new.cpu_max.as_ref());
             push_opt(args, "--memory-max", new.memory_max.as_ref());
@@ -413,10 +438,15 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
             push_trailing_command(args, &new.command);
         }
         Command::Base { command } => match command {
-            BaseCommand::Freeze { name, from } => {
+            BaseCommand::Freeze {
+                name,
+                from,
+                backend,
+            } => {
                 args.extend(["base".to_string(), "freeze".to_string()]);
                 push_opt(args, "--name", Some(name));
                 push_path(args, "--from", Some(from));
+                push_backend(args, "--backend", backend.as_ref());
             }
         },
         Command::Env { command } => {
@@ -520,6 +550,13 @@ fn push_path(args: &mut Vec<String>, flag: &str, value: Option<&PathBuf>) {
     }
 }
 
+fn push_backend(args: &mut Vec<String>, flag: &str, value: Option<&DesktopBackendArg>) {
+    if let Some(value) = value {
+        args.push(flag.to_string());
+        args.push(value.to_possible_value().unwrap().get_name().to_string());
+    }
+}
+
 fn push_u32(args: &mut Vec<String>, flag: &str, value: Option<u32>) {
     if let Some(value) = value {
         args.push(flag.to_string());
@@ -567,6 +604,7 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
                 .clone()
                 .unwrap_or_else(|| default_base_for_source(&args.from)),
             from: args.from.clone(),
+            backend: args.backend.clone().map(Into::into),
             profile: args
                 .profile
                 .clone()
@@ -584,9 +622,14 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             cwd: Some(host_current_dir()?),
         }),
         Command::Base { command } => Ok(match command {
-            BaseCommand::Freeze { name, from } => Request::BaseFreeze {
+            BaseCommand::Freeze {
+                name,
+                from,
+                backend,
+            } => Request::BaseFreeze {
                 name: name.clone(),
                 from: from.clone(),
+                backend: backend.clone().map(Into::into),
             },
         }),
         Command::Env { command } => Ok(match command {
@@ -1050,10 +1093,11 @@ mod tests {
         desktop_shell_start_dir_for_current_dir, effective_agentfs, env_state_label,
         machinectl_attach_args, needs_remote_tty, parse_response_line, remote_agentctl_args,
         remote_shell_command, session_state_label, shell_quote, tmux_attach_command, to_request,
-        ApplyArgs, Cli, Command, EnvCommand, ExportArgs, ExportKind, InitArgs, NewArgs, StdCommand,
+        ApplyArgs, Cli, Command, DesktopBackendArg, EnvCommand, ExportArgs, ExportKind, InitArgs,
+        NewArgs, StdCommand,
     };
     use agent_core::config::{AgentConfig, Profile};
-    use agent_core::model::{EnvState, SessionState};
+    use agent_core::model::{EnvState, RootfsBackend, SessionState};
     use agent_core::protocol::Request;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
@@ -1133,6 +1177,7 @@ mod tests {
                 target: "codex".to_string(),
                 base: Some("base-001".to_string()),
                 from: PathBuf::from("/"),
+                backend: None,
                 profile: None,
                 cpu_max: None,
                 memory_max: None,
@@ -1187,6 +1232,7 @@ mod tests {
                 target: "codex".to_string(),
                 base: Some("base-dev".to_string()),
                 from: PathBuf::from("/"),
+                backend: Some(DesktopBackendArg::WindowsMinifilterOverlay),
                 profile: Some("privileged-dev".to_string()),
                 cpu_max: Some("800%".to_string()),
                 memory_max: Some("32G".to_string()),
@@ -1203,6 +1249,7 @@ mod tests {
             Request::New {
                 target,
                 base,
+                backend,
                 profile,
                 limits,
                 command,
@@ -1211,6 +1258,7 @@ mod tests {
             } => {
                 assert_eq!(target, "codex");
                 assert_eq!(base, "base-dev");
+                assert_eq!(backend, Some(RootfsBackend::WindowsMinifilterOverlay));
                 assert_eq!(profile, "privileged-dev");
                 assert_eq!(limits.cpu_max.as_deref(), Some("800%"));
                 assert_eq!(limits.memory_max.as_deref(), Some("32G"));
@@ -1685,6 +1733,7 @@ mod tests {
                 target: "codex".to_string(),
                 base: Some("base-001".to_string()),
                 from: PathBuf::from("/"),
+                backend: Some(DesktopBackendArg::WindowsMinifilterOverlay),
                 profile: Some("privileged-dev".to_string()),
                 cpu_max: None,
                 memory_max: None,
@@ -1709,6 +1758,8 @@ mod tests {
                 "base-001",
                 "--from",
                 "/",
+                "--backend",
+                "windows-minifilter-overlay",
                 "--profile",
                 "privileged-dev",
                 "--",
@@ -1778,6 +1829,7 @@ mod tests {
             target: "codex".to_string(),
             base: Some("base-001".to_string()),
             from: PathBuf::from("/"),
+            backend: None,
             profile: None,
             cpu_max: None,
             memory_max: None,

@@ -61,15 +61,30 @@ impl AgentService {
                 target,
                 base,
                 from,
+                backend,
                 profile,
                 limits,
                 command,
                 cwd: _,
             } => {
+                if backend.is_some() {
+                    return Err(anyhow!(
+                        "backend selection is supported only by the native desktop backend"
+                    ));
+                }
                 self.new_target(&target, &base, &from, &profile, limits, &command)
                     .await
             }
-            Request::BaseFreeze { name, from } => {
+            Request::BaseFreeze {
+                name,
+                from,
+                backend,
+            } => {
+                if backend.is_some() {
+                    return Err(anyhow!(
+                        "backend selection is supported only by the native desktop backend"
+                    ));
+                }
                 self.base_freeze(&name, &from).await?;
                 Ok(Response::Ok)
             }
