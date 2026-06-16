@@ -3005,7 +3005,10 @@ static VOID AgentFsProcessNotify(
         PAGENTFS_ENV parent = AgentFsFindEnvLocked(CreateInfo->ParentProcessId);
         if (parent != NULL) {
             PAGENTFS_ENV child = NULL;
-            (VOID)AgentFsCloneEnvForProcessLocked(parent, ProcessId, TRUE, &child);
+            NTSTATUS status = AgentFsCloneEnvForProcessLocked(parent, ProcessId, TRUE, &child);
+            if (!NT_SUCCESS(status)) {
+                CreateInfo->CreationStatus = status;
+            }
         }
     }
     ExReleaseFastMutex(&gEnvLock);
