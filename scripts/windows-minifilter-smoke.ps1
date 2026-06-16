@@ -517,6 +517,8 @@ try {
     `$mappedFile.Dispose()
 }
 Set-Content ea-source.txt 'ea-main-env'
+[AgentFsEa]::SetEa((Join-Path (Get-Location) 'ea-source.txt'), 'agentfs.ea', 'env-ea')
+if ([AgentFsEa]::GetEa((Join-Path (Get-Location) 'ea-source.txt'), 'agentfs.ea') -ne 'env-ea') { throw 'EA write readback failed' }
 if ((Get-Content stream-source.txt -Stream lower) -ne 'lower-stream-original') { throw 'lower ADS read failed' }
 Set-Content stream-source.txt 'stream-main-env'
 Set-Content stream-source.txt -Stream lower 'lower-stream-env'
@@ -1182,8 +1184,8 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Content (Join-Path $upperSource "ea-source.txt")) -ne "ea-main-env") {
         throw "EA source main stream write was not redirected to upper"
     }
-    if ([AgentFsEa]::GetEa((Join-Path $upperSource "ea-source.txt"), "agentfs.ea") -ne "lower-ea-original") {
-        throw "copy-up did not preserve lower EA"
+    if ([AgentFsEa]::GetEa((Join-Path $upperSource "ea-source.txt"), "agentfs.ea") -ne "env-ea") {
+        throw "EA write was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "acl-source.txt")) -ne "acl-env") {
         throw "ACL source write was not redirected to upper"
