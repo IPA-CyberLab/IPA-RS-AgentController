@@ -390,6 +390,19 @@ try {
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($administrators, "FullControl", "Allow")) | Out-Null
     Set-Acl -Path $aclSource -AclObject $acl
     $aclSourceSddl = (Get-Acl $aclSource).Sddl
+    $aclChangeSource = Join-Path $source "acl-change-source.txt"
+    Set-Content -Path $aclChangeSource -Value "acl-change-original"
+    $aclChange = Get-Acl $aclChangeSource
+    $aclChange.SetAccessRuleProtection($true, $false)
+    $aclChange.SetOwner($currentUser)
+    $aclChange.SetGroup($currentUser)
+    $aclChange.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($currentUser, "FullControl", "Allow"))
+    $aclChange.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($administrators, "FullControl", "Allow")) | Out-Null
+    Set-Acl -Path $aclChangeSource -AclObject $aclChange
+    $aclChangeSourceSddl = (Get-Acl $aclChangeSource).Sddl
+    $aclChangeExpected = Get-Acl $aclChangeSource
+    $aclChangeExpected.PurgeAccessRules($administrators)
+    $aclChangeExpectedSddl = $aclChangeExpected.Sddl
     Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
     Set-Content -Path (Join-Path $source "replace-file-source.txt") -Value "replace-file-source-original"
@@ -498,6 +511,9 @@ Set-Content created.txt 'env-created'
 & powershell.exe -NoProfile -Command "Set-Content child-process.txt 'child-env'; & powershell.exe -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAZwByAGEAbgBkAGMAaABpAGwAZAAtAHAAcgBvAGMAZQBzAHMALgB0AHgAdAAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAOwAgAGkAZgAgACgAKABHAGUAdAAtAEMAbwBuAHQAZQBuAHQAIABnAHIAYQBuAGQAYwBoAGkAbABkAC0AcAByAG8AYwBlAHMAcwAuAHQAeAB0ACkAIAAtAG4AZQAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAGcAcgBhAG4AZABjAGgAaQBsAGQAIABwAHIAbwBjAGUAcwBzACAAdwByAGkAdABlACAAcgBlAGEAZABiAGEAYwBrACAAZgBhAGkAbABlAGQAJwAgAH0A; if (`$LASTEXITCODE -ne 0) { throw 'grandchild process overlay command failed' }; if ((Get-Content child-process.txt) -ne 'child-env') { throw 'child process write readback failed' }"
 if (`$LASTEXITCODE -ne 0) { throw 'child process overlay command failed' }
 Set-Content acl-source.txt 'acl-env'
+`$aclChange = Get-Acl acl-change-source.txt
+`$aclChange.PurgeAccessRules([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+Set-Acl -Path acl-change-source.txt -AclObject `$aclChange
 `$mappedBytes = [Text.Encoding]::UTF8.GetBytes('mapped-env')
 `$mappedFile = [IO.File]::Open('mapped.txt', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
 try {
@@ -1024,6 +1040,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Acl (Join-Path $source "acl-source.txt")).Sddl -ne $aclSourceSddl) {
         throw "host acl-source.txt security descriptor was modified"
     }
+    if ((Get-Content (Join-Path $source "acl-change-source.txt")) -ne "acl-change-original") {
+        throw "host acl-change-source.txt was modified"
+    }
+    if ((Get-Acl (Join-Path $source "acl-change-source.txt")).Sddl -ne $aclChangeSourceSddl) {
+        throw "host acl-change-source.txt security descriptor was modified"
+    }
     if ((Get-Content (Join-Path $source "stream-source.txt") -Stream lower) -ne "lower-stream-original") {
         throw "host lower ADS was modified"
     }
@@ -1192,6 +1214,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ((Get-Acl (Join-Path $upperSource "acl-source.txt")).Sddl -ne $aclSourceSddl) {
         throw "copy-up did not preserve security descriptor"
+    }
+    if ((Get-Content (Join-Path $upperSource "acl-change-source.txt")) -ne "acl-change-original") {
+        throw "ACL-only write did not copy lower content to upper"
+    }
+    if ((Get-Acl (Join-Path $upperSource "acl-change-source.txt")).Sddl -ne $aclChangeExpectedSddl) {
+        throw "ACL-only write was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "stream-source.txt")) -ne "stream-main-env") {
         throw "ADS source main stream write was not redirected to upper"
