@@ -391,6 +391,8 @@ try {
     [AgentFsEa]::SetEa((Join-Path $source "ea-source.txt"), "agentfs.ea", "lower-ea-original")
     Set-Content -Path (Join-Path $source "stream-source.txt") -Value "stream-main-original"
     Set-Content -Path (Join-Path $source "stream-source.txt") -Stream lower -Value "lower-stream-original"
+    Set-Content -Path (Join-Path $source "stream-only-source.txt") -Value "stream-only-main-original"
+    Set-Content -Path (Join-Path $source "stream-only-source.txt") -Stream lower -Value "stream-only-lower-original"
     $aclSource = Join-Path $source "acl-source.txt"
     Set-Content -Path $aclSource -Value "acl-original"
     $acl = Get-Acl $aclSource
@@ -631,6 +633,12 @@ Set-Content stream-source.txt 'stream-main-env'
 Set-Content stream-source.txt -Stream lower 'lower-stream-env'
 if ((Get-Content stream-source.txt -Stream lower) -ne 'lower-stream-env') { throw 'lower ADS write readback failed' }
 Set-Content stream-source.txt -Stream env 'env-stream'
+if ((Get-Content stream-only-source.txt) -ne 'stream-only-main-original') { throw 'stream-only main read failed before ADS write' }
+if ((Get-Content stream-only-source.txt -Stream lower) -ne 'stream-only-lower-original') { throw 'stream-only lower ADS read failed before ADS write' }
+Set-Content stream-only-source.txt -Stream env 'stream-only-env'
+if ((Get-Content stream-only-source.txt) -ne 'stream-only-main-original') { throw 'stream-only ADS write changed main stream readback' }
+if ((Get-Content stream-only-source.txt -Stream lower) -ne 'stream-only-lower-original') { throw 'stream-only ADS write changed lower ADS readback' }
+if ((Get-Content stream-only-source.txt -Stream env) -ne 'stream-only-env') { throw 'stream-only ADS write readback failed' }
 `$hardlinkFailed = `$false
 try {
     New-Item -ItemType HardLink -Path hardlink-host.txt -Target host.txt | Out-Null
@@ -1445,6 +1453,15 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if (Get-Item -Path (Join-Path $source "stream-source.txt") -Stream env -ErrorAction SilentlyContinue) {
         throw "host env ADS was created"
     }
+    if ((Get-Content (Join-Path $source "stream-only-source.txt")) -ne "stream-only-main-original") {
+        throw "host stream-only-source.txt main stream was modified"
+    }
+    if ((Get-Content (Join-Path $source "stream-only-source.txt") -Stream lower) -ne "stream-only-lower-original") {
+        throw "host stream-only-source.txt lower ADS was modified"
+    }
+    if (Get-Item -Path (Join-Path $source "stream-only-source.txt") -Stream env -ErrorAction SilentlyContinue) {
+        throw "host stream-only env ADS was created"
+    }
     if ((Get-Content (Join-Path $source "collision-source.txt")) -ne "collision-source-original") {
         throw "host collision-source.txt was modified"
     }
@@ -1667,6 +1684,15 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream env) -ne "env-stream") {
         throw "ADS write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "stream-only-source.txt")) -ne "stream-only-main-original") {
+        throw "stream-only ADS write did not copy lower main stream to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "stream-only-source.txt") -Stream lower) -ne "stream-only-lower-original") {
+        throw "stream-only ADS write did not preserve lower ADS in upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "stream-only-source.txt") -Stream env) -ne "stream-only-env") {
+        throw "stream-only ADS write was not redirected to upper"
     }
     if (Test-Path (Join-Path $upperSource "hardlink-host.txt")) {
         throw "hardlink target was unexpectedly created in upper"
