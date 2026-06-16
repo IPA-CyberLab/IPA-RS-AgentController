@@ -373,6 +373,7 @@ try {
     (Get-Item (Join-Path $source "metadata-dir")).LastWriteTimeUtc = [DateTimeOffset]::Parse("2016-01-02T03:04:05Z").UtcDateTime
     Set-Content -Path (Join-Path $source "truncate.txt") -Value "truncate-original"
     Set-Content -Path (Join-Path $source "append.txt") -Value "append-original"
+    Set-Content -Path (Join-Path $source "overwrite.txt") -Value "overwrite-original"
     Set-Content -Path (Join-Path $source "mapped.txt") -Value "0000000000"
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
     Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
@@ -504,6 +505,17 @@ try {
 if ([IO.File]::ReadAllText((Join-Path (Get-Location) 'truncate.txt')) -ne 'truncate') { throw 'truncated lower file did not show env length' }
 Add-Content append.txt 'append-env'
 if (((Get-Content append.txt) -join "`n") -ne "append-original`nappend-env") { throw 'append write was not visible in env' }
+`$overwritePath = Join-Path (Get-Location) 'overwrite.txt'
+`$overwriteBytes = [Text.Encoding]::UTF8.GetBytes('overwrite-env')
+`$overwriteFile = [IO.File]::Open(`$overwritePath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+try {
+    foreach (`$byte in `$overwriteBytes) {
+        `$overwriteFile.WriteByte(`$byte)
+    }
+} finally {
+    `$overwriteFile.Dispose()
+}
+if ([IO.File]::ReadAllText(`$overwritePath) -ne 'overwrite-env') { throw 'overwrite create disposition was not visible in env' }
 `$readonlyAttributesItem = Get-Item readonly-attributes.txt
 `$readonlyAttributesItem.Attributes = `$readonlyAttributesItem.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
 Set-Content readonly-attributes.txt 'readonly-attributes-env'
@@ -1028,6 +1040,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if (((Get-Content (Join-Path $source "append.txt")) -join "`n") -ne "append-original") {
         throw "host append.txt was modified"
     }
+    if ((Get-Content (Join-Path $source "overwrite.txt")) -ne "overwrite-original") {
+        throw "host overwrite.txt was modified"
+    }
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
     }
@@ -1199,6 +1214,9 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if (((Get-Content (Join-Path $upperSource "append.txt")) -join "`n") -ne "append-original`nappend-env") {
         throw "append write was not redirected to upper"
+    }
+    if ([IO.File]::ReadAllText((Join-Path $upperSource "overwrite.txt")) -ne "overwrite-env") {
+        throw "overwrite create disposition was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "readonly-attributes.txt")) -ne "readonly-attributes-env") {
         throw "readonly attribute write was not redirected to upper"
