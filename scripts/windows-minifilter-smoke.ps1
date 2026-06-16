@@ -519,6 +519,8 @@ try {
 Set-Content ea-source.txt 'ea-main-env'
 if ((Get-Content stream-source.txt -Stream lower) -ne 'lower-stream-original') { throw 'lower ADS read failed' }
 Set-Content stream-source.txt 'stream-main-env'
+Set-Content stream-source.txt -Stream lower 'lower-stream-env'
+if ((Get-Content stream-source.txt -Stream lower) -ne 'lower-stream-env') { throw 'lower ADS write readback failed' }
 Set-Content stream-source.txt -Stream env 'env-stream'
 `$hardlinkFailed = `$false
 try {
@@ -1192,8 +1194,8 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Content (Join-Path $upperSource "stream-source.txt")) -ne "stream-main-env") {
         throw "ADS source main stream write was not redirected to upper"
     }
-    if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream lower) -ne "lower-stream-original") {
-        throw "copy-up did not preserve lower ADS"
+    if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream lower) -ne "lower-stream-env") {
+        throw "lower ADS write was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "stream-source.txt") -Stream env) -ne "env-stream") {
         throw "ADS write was not redirected to upper"
