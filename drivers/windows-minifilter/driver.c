@@ -2454,20 +2454,26 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
         &nameInfo);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     status = FltParseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status)) {
         FltReleaseFileNameInformation(nameInfo);
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
 
     context = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(AGENTFS_DIR_CONTEXT), AGENTFS_TAG);
     if (context == NULL) {
         FltReleaseFileNameInformation(nameInfo);
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     RtlZeroMemory(context, sizeof(*context));
     context->EnumeratingUpperPath = AgentFsStartsWithPath(&nameInfo->Name, &env->UpperRoot);
@@ -2486,7 +2492,9 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreDirectoryControl(
     AgentFsFreeEnv(env);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeDirContext(context);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     *CompletionContext = context;
     return FLT_PREOP_SUCCESS_WITH_CALLBACK;
