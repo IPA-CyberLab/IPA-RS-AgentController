@@ -375,6 +375,7 @@ try {
     Set-Content -Path (Join-Path $source "append.txt") -Value "append-original"
     Set-Content -Path (Join-Path $source "overwrite.txt") -Value "overwrite-original"
     [IO.File]::WriteAllText((Join-Path $source "open-or-create-existing.txt"), "open-or-create-existing-original")
+    [IO.File]::WriteAllText((Join-Path $source "create-new-existing.txt"), "create-new-existing-original")
     [IO.File]::WriteAllText((Join-Path $source "mapped.txt"), "0000000000")
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
     Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
@@ -537,6 +538,23 @@ try {
     `$openIfNewFile.Dispose()
 }
 if ([IO.File]::ReadAllText(`$openIfNewPath) -ne 'open-or-create-new-env') { throw 'open-or-create new file was not visible in env' }
+`$createNewExistingFailed = `$false
+try {
+    `$createNewExisting = [IO.File]::Open((Join-Path (Get-Location) 'create-new-existing.txt'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+    `$createNewExisting.Dispose()
+} catch {
+    `$createNewExistingFailed = `$true
+}
+if (-not `$createNewExistingFailed) { throw 'create-new existing lower file unexpectedly succeeded' }
+`$createNewPath = Join-Path (Get-Location) 'create-new.txt'
+`$createNewBytes = [Text.Encoding]::UTF8.GetBytes('create-new-env')
+`$createNewFile = [IO.File]::Open(`$createNewPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+try {
+    `$createNewFile.Write(`$createNewBytes, 0, `$createNewBytes.Length)
+} finally {
+    `$createNewFile.Dispose()
+}
+if ([IO.File]::ReadAllText(`$createNewPath) -ne 'create-new-env') { throw 'create-new file was not visible in env' }
 `$readonlyAttributesItem = Get-Item readonly-attributes.txt
 `$readonlyAttributesItem.Attributes = `$readonlyAttributesItem.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
 Set-Content readonly-attributes.txt 'readonly-attributes-env'
@@ -1072,6 +1090,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if (Test-Path (Join-Path $source "open-or-create-new.txt")) {
         throw "host open-or-create-new.txt was created"
     }
+    if ([IO.File]::ReadAllText((Join-Path $source "create-new-existing.txt")) -ne "create-new-existing-original") {
+        throw "host create-new-existing.txt was modified"
+    }
+    if (Test-Path (Join-Path $source "create-new.txt")) {
+        throw "host create-new.txt was created"
+    }
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
     }
@@ -1252,6 +1276,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ([IO.File]::ReadAllText((Join-Path $upperSource "open-or-create-new.txt")) -ne "open-or-create-new-env") {
         throw "open-or-create new file was not redirected to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "create-new-existing.txt")) {
+        throw "create-new existing lower file unexpectedly created upper"
+    }
+    if ([IO.File]::ReadAllText((Join-Path $upperSource "create-new.txt")) -ne "create-new-env") {
+        throw "create-new file was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "readonly-attributes.txt")) -ne "readonly-attributes-env") {
         throw "readonly attribute write was not redirected to upper"
