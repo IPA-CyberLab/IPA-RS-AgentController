@@ -362,6 +362,7 @@ try {
     Set-Content -Path (Join-Path $source "CaseRename.TXT") -Value "case-rename-original"
     Set-Content -Path (Join-Path $source "CaseDirDelete\child\lower-file.txt") -Value "case-dir-delete-original"
     Set-Content -Path (Join-Path $source "CaseDirRename\child\lower-file.txt") -Value "case-dir-rename-original"
+    Set-Content -Path (Join-Path $source "rootdir-rename-source.txt") -Value "rootdir-rename-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     Set-Content -Path (Join-Path $source "disposition-delete.txt") -Value "disposition-delete-original"
     $readonlyDelete = Join-Path $source "readonly-delete.txt"
@@ -701,8 +702,10 @@ public static class AgentFsNativeMove {
     private const uint FILE_RENAME_REPLACE_IF_EXISTS = 0x00000001;
     private const uint FILE_RENAME_IGNORE_READONLY_ATTRIBUTE = 0x00000040;
     private const int FileDispositionInfo = 4;
+    private const int FileRenameInfo = 3;
     private const int FileDispositionInfoEx = 21;
     private const int FileRenameInfoEx = 22;
+    private const int NtFileRenameInformation = 10;
     private const int STATUS_NO_MORE_FILES = unchecked((int)0x80000006);
     private const int STATUS_NO_SUCH_FILE = unchecked((int)0xC000000F);
 
@@ -779,6 +782,14 @@ public static class AgentFsNativeMove {
         bool returnSingleEntry,
         IntPtr fileName,
         bool restartScan);
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtSetInformationFile(
+        SafeFileHandle fileHandle,
+        out IO_STATUS_BLOCK ioStatusBlock,
+        byte[] fileInformation,
+        uint length,
+        int fileInformationClass);
 
     public static string[] QueryDirectoryNames(string path, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset) {
         return QueryDirectoryNames(path, fileInformationClass, fileNameLengthOffset, fileNameOffset, false);
@@ -964,12 +975,57 @@ public static class AgentFsNativeMove {
             }
         }
     }
+
+    public static void RenameWithRootDirectory(string sourcePath, string targetDirectory, string targetFileName) {
+        using (SafeFileHandle sourceHandle = CreateFile(
+            sourcePath,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero))
+        using (SafeFileHandle rootHandle = CreateFile(
+            targetDirectory,
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+            IntPtr.Zero)) {
+            if (sourceHandle.IsInvalid) {
+                throw new IOException("CreateFile source failed: " + Marshal.GetLastWin32Error());
+            }
+            if (rootHandle.IsInvalid) {
+                throw new IOException("CreateFile root failed: " + Marshal.GetLastWin32Error());
+            }
+
+            byte[] targetBytes = System.Text.Encoding.Unicode.GetBytes(targetFileName);
+            byte[] info = new byte[20 + targetBytes.Length];
+            info[0] = 0;
+            BitConverter.GetBytes(rootHandle.DangerousGetHandle().ToInt64()).CopyTo(info, 8);
+            BitConverter.GetBytes(targetBytes.Length).CopyTo(info, 16);
+            Buffer.BlockCopy(targetBytes, 0, info, 20, targetBytes.Length);
+
+            IO_STATUS_BLOCK iosb;
+            int status = NtSetInformationFile(sourceHandle, out iosb, info, (uint)info.Length, NtFileRenameInformation);
+            if (status < 0) {
+                throw new IOException("NtSetInformationFile rename failed: 0x" + status.ToString("x8"));
+            }
+        }
+    }
 }
 '@
 [AgentFsNativeMove]::DeleteOnCloseIgnoreReadonly((Join-Path (Get-Location) 'readonly-delete.txt'))
 if (Test-Path readonly-delete.txt) { throw 'FileDispositionInfoEx delete left readonly lower file visible' }
 [AgentFsNativeMove]::DeleteByDispositionInfo((Join-Path (Get-Location) 'disposition-delete.txt'))
 if (Test-Path disposition-delete.txt) { throw 'FileDispositionInfo delete left lower file visible' }
+[AgentFsNativeMove]::RenameWithRootDirectory(
+    (Join-Path (Get-Location) 'rootdir-rename-source.txt'),
+    (Get-Location).Path,
+    'rootdir-renamed.txt')
+if (Test-Path rootdir-rename-source.txt) { throw 'RootDirectory FileRenameInfo left lower source visible' }
+if ((Get-Content rootdir-renamed.txt) -ne 'rootdir-rename-original') { throw 'RootDirectory FileRenameInfo target readback failed' }
 New-Item -ItemType Directory -Force -Path readonly-tree | Out-Null
 Set-Content readonly-tree\child.txt 'readonly-tree-child-env'
 `$readonlyTreeChild = Get-Item readonly-tree\child.txt
@@ -1040,6 +1096,7 @@ if (`$names -notcontains 'readonly-replace-target.txt') { throw 'directory listi
 if (`$names -notcontains 'moved-lower') { throw 'directory listing lost renamed lower directory' }
 if (`$names -notcontains 'replace-file-target.txt') { throw 'directory listing lost replaced lower file target' }
 if (`$names -notcontains 'recreate-me.txt') { throw 'directory listing lost recreated file' }
+if (`$names -notcontains 'rootdir-renamed.txt') { throw 'directory listing lost RootDirectory FileRenameInfo target' }
 if (`$names -notcontains 'case-renamed.txt') { throw 'directory listing lost case-insensitive renamed file' }
 if (`$names -notcontains 'case-dir-renamed') { throw 'directory listing lost case-insensitive renamed directory' }
 if (`$names -notcontains 'stale-dir') { throw 'directory listing lost recreated upper directory' }
@@ -1057,12 +1114,14 @@ if (`$names -contains 'move-lower') { throw 'directory listing showed renamed lo
 if (`$names -contains 'readonly-delete.txt') { throw 'directory listing showed readonly disposition-deleted lower file' }
 if (`$names -contains 'readonly-tree') { throw 'directory listing showed readonly disposition-deleted upper directory tree' }
 if (`$names -contains 'replace-file-source.txt') { throw 'directory listing showed replaced lower file source' }
+if (`$names -contains 'rootdir-rename-source.txt') { throw 'directory listing showed RootDirectory FileRenameInfo source' }
 `$txtNames = Get-ChildItem -Name *.txt | Sort-Object
 if (`$txtNames -notcontains 'host.txt') { throw 'wildcard listing lost upper replacement over lower file' }
 if (`$txtNames -notcontains 'rename-target.txt') { throw 'wildcard listing lost upper file renamed onto deleted target' }
 if (`$txtNames -notcontains 'readonly-replace-target.txt') { throw 'wildcard listing lost FileRenameInfoEx readonly replace target' }
 if (`$txtNames -notcontains 'replace-file-target.txt') { throw 'wildcard listing lost replaced lower file target' }
 if (`$txtNames -notcontains 'recreate-me.txt') { throw 'wildcard listing lost recreated file' }
+if (`$txtNames -notcontains 'rootdir-renamed.txt') { throw 'wildcard listing lost RootDirectory FileRenameInfo target' }
 if (`$txtNames -notcontains 'case-renamed.txt') { throw 'wildcard listing lost case-insensitive renamed file' }
 if (`$txtNames -contains 'delete-me.txt') { throw 'wildcard listing showed whiteouted lower file' }
 if (`$txtNames -contains 'disposition-delete.txt') { throw 'wildcard listing showed FileDispositionInfo-deleted lower file' }
@@ -1070,17 +1129,20 @@ if (`$txtNames -contains 'CaseDelete.TXT') { throw 'wildcard listing showed case
 if (`$txtNames -contains 'CaseRename.TXT') { throw 'wildcard listing showed case-insensitive renamed source' }
 if (`$txtNames -contains 'readonly-delete.txt') { throw 'wildcard listing showed readonly disposition-deleted lower file' }
 if (`$txtNames -contains 'replace-file-source.txt') { throw 'wildcard listing showed replaced lower file source' }
+if (`$txtNames -contains 'rootdir-rename-source.txt') { throw 'wildcard listing showed RootDirectory FileRenameInfo source' }
 if (`$txtNames -contains 'lower-symlink.txt') { throw 'wildcard listing showed whiteouted lower symlink' }
 `$nativeTxtNames = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, '*.txt', 12, 8, 12)
 if (`$nativeTxtNames -notcontains 'host.txt') { throw 'native wildcard listing lost upper replacement over lower file' }
 if (`$nativeTxtNames -notcontains 'case-renamed.txt') { throw 'native wildcard listing lost case-insensitive renamed file' }
 if (`$nativeTxtNames -notcontains 'replace-file-target.txt') { throw 'native wildcard listing lost replaced lower file target' }
+if (`$nativeTxtNames -notcontains 'rootdir-renamed.txt') { throw 'native wildcard listing lost RootDirectory FileRenameInfo target' }
 if (`$nativeTxtNames -contains 'delete-me.txt') { throw 'native wildcard listing showed whiteouted lower file' }
 if (`$nativeTxtNames -contains 'disposition-delete.txt') { throw 'native wildcard listing showed FileDispositionInfo-deleted lower file' }
 if (`$nativeTxtNames -contains 'CaseDelete.TXT') { throw 'native wildcard listing showed case-insensitive whiteouted lower file' }
 if (`$nativeTxtNames -contains 'CaseRename.TXT') { throw 'native wildcard listing showed case-insensitive renamed source' }
 if (`$nativeTxtNames -contains 'readonly-delete.txt') { throw 'native wildcard listing showed readonly disposition-deleted lower file' }
 if (`$nativeTxtNames -contains 'replace-file-source.txt') { throw 'native wildcard listing showed replaced lower file source' }
+if (`$nativeTxtNames -contains 'rootdir-rename-source.txt') { throw 'native wildcard listing showed RootDirectory FileRenameInfo source' }
 if (`$nativeTxtNames -contains 'lower-symlink.txt') { throw 'native wildcard listing showed whiteouted lower symlink' }
 `$nativeExactHost = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'host.txt', 12, 8, 12)
 if (`$nativeExactHost -ne 'host.txt') { throw 'native exact listing lost upper replacement over lower file' }
@@ -1088,8 +1150,12 @@ if (`$nativeExactHost -ne 'host.txt') { throw 'native exact listing lost upper r
 if (`$nativeExactCaseRename -ne 'case-renamed.txt') { throw 'native exact listing lost case-insensitive renamed file' }
 `$nativeExactRenameTarget = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'rename-target.txt', 12, 8, 12)
 if (`$nativeExactRenameTarget -ne 'rename-target.txt') { throw 'native exact listing lost recreated upper file over lower target' }
+`$nativeExactRootDirRenameTarget = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'rootdir-renamed.txt', 12, 8, 12)
+if (`$nativeExactRootDirRenameTarget -ne 'rootdir-renamed.txt') { throw 'native exact listing lost RootDirectory FileRenameInfo target' }
 `$nativeExactDeleted = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'delete-me.txt', 12, 8, 12)
 if (`$nativeExactDeleted -contains 'delete-me.txt') { throw 'native exact listing showed whiteouted lower file' }
+`$nativeExactRootDirRenameSource = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'rootdir-rename-source.txt', 12, 8, 12)
+if (`$nativeExactRootDirRenameSource -contains 'rootdir-rename-source.txt') { throw 'native exact listing showed RootDirectory FileRenameInfo source' }
 `$nativeExactDispositionDeleted = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'disposition-delete.txt', 12, 8, 12)
 if (`$nativeExactDispositionDeleted -contains 'disposition-delete.txt') { throw 'native exact listing showed FileDispositionInfo-deleted lower file' }
 `$nativeExactCaseRenameSource = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, 'caserename.txt', 12, 8, 12)
@@ -1108,11 +1174,14 @@ if ((Get-ChildItem -Name casedirrename -ErrorAction SilentlyContinue) -contains 
 if ((Get-ChildItem -Name delete-lower-dir -ErrorAction SilentlyContinue) -contains 'delete-lower-dir') { throw 'exact listing showed whiteouted lower directory' }
 if ((Get-ChildItem -Name lower-symlink.txt -ErrorAction SilentlyContinue) -contains 'lower-symlink.txt') { throw 'exact listing showed whiteouted lower symlink' }
 if ((Get-ChildItem -Name rename-target.txt) -ne 'rename-target.txt') { throw 'exact listing lost recreated upper file over lower target' }
+if ((Get-ChildItem -Name rootdir-renamed.txt) -ne 'rootdir-renamed.txt') { throw 'exact listing lost RootDirectory FileRenameInfo target' }
+if ((Get-ChildItem -Name rootdir-rename-source.txt -ErrorAction SilentlyContinue) -contains 'rootdir-rename-source.txt') { throw 'exact listing showed RootDirectory FileRenameInfo source' }
 `$singleNames = [AgentFsNativeMove]::QueryDirectoryNamesSingleEntry((Get-Location).Path, 12, 8, 12)
 if (`$singleNames -notcontains 'host.txt') { throw 'single-entry listing lost upper replacement over lower file' }
 if (`$singleNames -notcontains 'rename-target.txt') { throw 'single-entry listing lost upper file renamed onto deleted target' }
 if (`$singleNames -notcontains 'case-renamed.txt') { throw 'single-entry listing lost case-insensitive renamed file' }
 if (`$singleNames -notcontains 'case-dir-renamed') { throw 'single-entry listing lost case-insensitive renamed directory' }
+if (`$singleNames -notcontains 'rootdir-renamed.txt') { throw 'single-entry listing lost RootDirectory FileRenameInfo target' }
 if (`$singleNames -notcontains 'upper-only-dir') { throw 'single-entry listing lost upper-only directory' }
 if (`$singleNames -contains 'delete-me.txt') { throw 'single-entry listing showed whiteouted lower file' }
 if (`$singleNames -contains 'disposition-delete.txt') { throw 'single-entry listing showed FileDispositionInfo-deleted lower file' }
@@ -1122,10 +1191,12 @@ if (`$singleNames -contains 'CaseDirDelete') { throw 'single-entry listing showe
 if (`$singleNames -contains 'CaseDirRename') { throw 'single-entry listing showed case-insensitive renamed directory source' }
 if (`$singleNames -contains 'delete-lower-dir') { throw 'single-entry listing showed whiteouted lower directory' }
 if (`$singleNames -contains 'lower-symlink.txt') { throw 'single-entry listing showed whiteouted lower symlink' }
+if (`$singleNames -contains 'rootdir-rename-source.txt') { throw 'single-entry listing showed RootDirectory FileRenameInfo source' }
 `$fileIdExtdNames = [AgentFsNativeMove]::QueryDirectoryNames((Get-Location).Path, 60, 60, 88)
 if (`$fileIdExtdNames -notcontains 'host.txt') { throw 'FileIdExtdDirectoryInformation lost lower file' }
 if (`$fileIdExtdNames -notcontains 'case-renamed.txt') { throw 'FileIdExtdDirectoryInformation lost case-insensitive renamed file' }
 if (`$fileIdExtdNames -notcontains 'case-dir-renamed') { throw 'FileIdExtdDirectoryInformation lost case-insensitive renamed directory' }
+if (`$fileIdExtdNames -notcontains 'rootdir-renamed.txt') { throw 'FileIdExtdDirectoryInformation lost RootDirectory FileRenameInfo target' }
 if (`$fileIdExtdNames -notcontains 'upper-only-dir') { throw 'FileIdExtdDirectoryInformation lost upper directory' }
 if (`$fileIdExtdNames -contains 'delete-me.txt') { throw 'FileIdExtdDirectoryInformation showed whiteouted lower file' }
 if (`$fileIdExtdNames -contains 'disposition-delete.txt') { throw 'FileIdExtdDirectoryInformation showed FileDispositionInfo-deleted lower file' }
@@ -1134,10 +1205,12 @@ if (`$fileIdExtdNames -contains 'CaseRename.TXT') { throw 'FileIdExtdDirectoryIn
 if (`$fileIdExtdNames -contains 'CaseDirDelete') { throw 'FileIdExtdDirectoryInformation showed case-insensitive whiteouted lower directory' }
 if (`$fileIdExtdNames -contains 'CaseDirRename') { throw 'FileIdExtdDirectoryInformation showed case-insensitive renamed directory source' }
 if (`$fileIdExtdNames -contains 'lower-symlink.txt') { throw 'FileIdExtdDirectoryInformation showed whiteouted lower symlink' }
+if (`$fileIdExtdNames -contains 'rootdir-rename-source.txt') { throw 'FileIdExtdDirectoryInformation showed RootDirectory FileRenameInfo source' }
 `$fileIdExtdBothNames = [AgentFsNativeMove]::QueryDirectoryNames((Get-Location).Path, 63, 60, 114)
 if (`$fileIdExtdBothNames -notcontains 'host.txt') { throw 'FileIdExtdBothDirectoryInformation lost lower file' }
 if (`$fileIdExtdBothNames -notcontains 'case-renamed.txt') { throw 'FileIdExtdBothDirectoryInformation lost case-insensitive renamed file' }
 if (`$fileIdExtdBothNames -notcontains 'case-dir-renamed') { throw 'FileIdExtdBothDirectoryInformation lost case-insensitive renamed directory' }
+if (`$fileIdExtdBothNames -notcontains 'rootdir-renamed.txt') { throw 'FileIdExtdBothDirectoryInformation lost RootDirectory FileRenameInfo target' }
 if (`$fileIdExtdBothNames -notcontains 'upper-only-dir') { throw 'FileIdExtdBothDirectoryInformation lost upper directory' }
 if (`$fileIdExtdBothNames -contains 'delete-me.txt') { throw 'FileIdExtdBothDirectoryInformation showed whiteouted lower file' }
 if (`$fileIdExtdBothNames -contains 'disposition-delete.txt') { throw 'FileIdExtdBothDirectoryInformation showed FileDispositionInfo-deleted lower file' }
@@ -1146,10 +1219,12 @@ if (`$fileIdExtdBothNames -contains 'CaseRename.TXT') { throw 'FileIdExtdBothDir
 if (`$fileIdExtdBothNames -contains 'CaseDirDelete') { throw 'FileIdExtdBothDirectoryInformation showed case-insensitive whiteouted lower directory' }
 if (`$fileIdExtdBothNames -contains 'CaseDirRename') { throw 'FileIdExtdBothDirectoryInformation showed case-insensitive renamed directory source' }
 if (`$fileIdExtdBothNames -contains 'lower-symlink.txt') { throw 'FileIdExtdBothDirectoryInformation showed whiteouted lower symlink' }
+if (`$fileIdExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'FileIdExtdBothDirectoryInformation showed RootDirectory FileRenameInfo source' }
 `$fileId64ExtdNames = [AgentFsNativeMove]::QueryDirectoryNames((Get-Location).Path, 78, 60, 80)
 if (`$fileId64ExtdNames -notcontains 'host.txt') { throw 'FileId64ExtdDirectoryInformation lost lower file' }
 if (`$fileId64ExtdNames -notcontains 'case-renamed.txt') { throw 'FileId64ExtdDirectoryInformation lost case-insensitive renamed file' }
 if (`$fileId64ExtdNames -notcontains 'case-dir-renamed') { throw 'FileId64ExtdDirectoryInformation lost case-insensitive renamed directory' }
+if (`$fileId64ExtdNames -notcontains 'rootdir-renamed.txt') { throw 'FileId64ExtdDirectoryInformation lost RootDirectory FileRenameInfo target' }
 if (`$fileId64ExtdNames -notcontains 'upper-only-dir') { throw 'FileId64ExtdDirectoryInformation lost upper directory' }
 if (`$fileId64ExtdNames -contains 'delete-me.txt') { throw 'FileId64ExtdDirectoryInformation showed whiteouted lower file' }
 if (`$fileId64ExtdNames -contains 'disposition-delete.txt') { throw 'FileId64ExtdDirectoryInformation showed FileDispositionInfo-deleted lower file' }
@@ -1158,10 +1233,12 @@ if (`$fileId64ExtdNames -contains 'CaseRename.TXT') { throw 'FileId64ExtdDirecto
 if (`$fileId64ExtdNames -contains 'CaseDirDelete') { throw 'FileId64ExtdDirectoryInformation showed case-insensitive whiteouted lower directory' }
 if (`$fileId64ExtdNames -contains 'CaseDirRename') { throw 'FileId64ExtdDirectoryInformation showed case-insensitive renamed directory source' }
 if (`$fileId64ExtdNames -contains 'lower-symlink.txt') { throw 'FileId64ExtdDirectoryInformation showed whiteouted lower symlink' }
+if (`$fileId64ExtdNames -contains 'rootdir-rename-source.txt') { throw 'FileId64ExtdDirectoryInformation showed RootDirectory FileRenameInfo source' }
 `$fileId64ExtdBothNames = [AgentFsNativeMove]::QueryDirectoryNames((Get-Location).Path, 79, 60, 106)
 if (`$fileId64ExtdBothNames -notcontains 'host.txt') { throw 'FileId64ExtdBothDirectoryInformation lost lower file' }
 if (`$fileId64ExtdBothNames -notcontains 'case-renamed.txt') { throw 'FileId64ExtdBothDirectoryInformation lost case-insensitive renamed file' }
 if (`$fileId64ExtdBothNames -notcontains 'case-dir-renamed') { throw 'FileId64ExtdBothDirectoryInformation lost case-insensitive renamed directory' }
+if (`$fileId64ExtdBothNames -notcontains 'rootdir-renamed.txt') { throw 'FileId64ExtdBothDirectoryInformation lost RootDirectory FileRenameInfo target' }
 if (`$fileId64ExtdBothNames -notcontains 'upper-only-dir') { throw 'FileId64ExtdBothDirectoryInformation lost upper directory' }
 if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBothDirectoryInformation showed whiteouted lower file' }
 if (`$fileId64ExtdBothNames -contains 'disposition-delete.txt') { throw 'FileId64ExtdBothDirectoryInformation showed FileDispositionInfo-deleted lower file' }
@@ -1170,6 +1247,7 @@ if (`$fileId64ExtdBothNames -contains 'CaseRename.TXT') { throw 'FileId64ExtdBot
 if (`$fileId64ExtdBothNames -contains 'CaseDirDelete') { throw 'FileId64ExtdBothDirectoryInformation showed case-insensitive whiteouted lower directory' }
 if (`$fileId64ExtdBothNames -contains 'CaseDirRename') { throw 'FileId64ExtdBothDirectoryInformation showed case-insensitive renamed directory source' }
 if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64ExtdBothDirectoryInformation showed whiteouted lower symlink' }
+if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'FileId64ExtdBothDirectoryInformation showed RootDirectory FileRenameInfo source' }
 "@
 
     & $agentctl --agentfs $agentfs session create $EnvId logtest -- powershell.exe -NoProfile -Command "Write-Output 'session-log-stdout'; [Console]::Error.WriteLine('session-log-stderr')"
@@ -1246,6 +1324,12 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     }
     if ((Get-Content (Join-Path $source "disposition-delete.txt")) -ne "disposition-delete-original") {
         throw "host disposition-delete.txt was modified"
+    }
+    if ((Get-Content (Join-Path $source "rootdir-rename-source.txt")) -ne "rootdir-rename-original") {
+        throw "host rootdir-rename-source.txt was modified"
+    }
+    if (Test-Path (Join-Path $source "rootdir-renamed.txt")) {
+        throw "host RootDirectory FileRenameInfo target was created"
     }
     if ((Get-Content (Join-Path $source "CaseDelete.TXT")) -ne "case-delete-original") {
         throw "host CaseDelete.TXT was modified"
@@ -1461,6 +1545,12 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     if ((Get-Content (Join-Path $upperSource "rename-target.txt")) -ne "env-created") {
         throw "file renamed onto deleted target was not written to upper"
     }
+    if ((Get-Content (Join-Path $upperSource "rootdir-renamed.txt")) -ne "rootdir-rename-original") {
+        throw "RootDirectory FileRenameInfo target was not written to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "rootdir-rename-source.txt")) {
+        throw "RootDirectory FileRenameInfo source was copied to upper"
+    }
     if (Test-Path (Join-Path $upperSource "readonly-replace-source.txt")) {
         throw "FileRenameInfoEx readonly replace source remained in upper"
     }
@@ -1602,6 +1692,9 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "disposition-delete.txt"))) {
         throw "FileDispositionInfo delete whiteout was not created"
+    }
+    if (-not (Test-Path (Join-Path $whiteoutSource "rootdir-rename-source.txt"))) {
+        throw "RootDirectory FileRenameInfo source whiteout was not created"
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "casedelete.txt"))) {
         throw "case-insensitive delete whiteout was not created"
