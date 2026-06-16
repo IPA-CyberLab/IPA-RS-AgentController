@@ -360,6 +360,10 @@ try {
     Set-Content -Path $readonlyDelete -Value "readonly-delete-original"
     $readonlyDeleteItem = Get-Item $readonlyDelete
     $readonlyDeleteItem.Attributes = $readonlyDeleteItem.Attributes -bor [IO.FileAttributes]::ReadOnly
+    $readonlyAttributes = Join-Path $source "readonly-attributes.txt"
+    Set-Content -Path $readonlyAttributes -Value "readonly-attributes-original"
+    $readonlyAttributesItem = Get-Item $readonlyAttributes
+    $readonlyAttributesItem.Attributes = $readonlyAttributesItem.Attributes -bor [IO.FileAttributes]::ReadOnly
     Set-Content -Path (Join-Path $source "recreate-me.txt") -Value "recreate-original"
     Set-Content -Path (Join-Path $source "rename-target.txt") -Value "rename-target-original"
     Set-Content -Path (Join-Path $source "metadata.txt") -Value "metadata-original"
@@ -481,6 +485,11 @@ try {
     `$truncateFile.Dispose()
 }
 if ([IO.File]::ReadAllText((Join-Path (Get-Location) 'truncate.txt')) -ne 'truncate') { throw 'truncated lower file did not show env length' }
+`$readonlyAttributesItem = Get-Item readonly-attributes.txt
+`$readonlyAttributesItem.Attributes = `$readonlyAttributesItem.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
+Set-Content readonly-attributes.txt 'readonly-attributes-env'
+if ((Get-Content readonly-attributes.txt) -ne 'readonly-attributes-env') { throw 'readonly attribute copy-up write readback failed' }
+if (((Get-Item readonly-attributes.txt).Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) { throw 'readonly attribute clear was not visible in env' }
 Set-Content host.txt 'env-modified'
 Set-Content created.txt 'env-created'
 & powershell.exe -NoProfile -Command "Set-Content child-process.txt 'child-env'; & powershell.exe -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAZwByAGEAbgBkAGMAaABpAGwAZAAtAHAAcgBvAGMAZQBzAHMALgB0AHgAdAAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAOwAgAGkAZgAgACgAKABHAGUAdAAtAEMAbwBuAHQAZQBuAHQAIABnAHIAYQBuAGQAYwBoAGkAbABkAC0AcAByAG8AYwBlAHMAcwAuAHQAeAB0ACkAIAAtAG4AZQAgACcAZwByAGEAbgBkAGMAaABpAGwAZAAtAGUAbgB2ACcAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAGcAcgBhAG4AZABjAGgAaQBsAGQAIABwAHIAbwBjAGUAcwBzACAAdwByAGkAdABlACAAcgBlAGEAZABiAGEAYwBrACAAZgBhAGkAbABlAGQAJwAgAH0A; if (`$LASTEXITCODE -ne 0) { throw 'grandchild process overlay command failed' }; if ((Get-Content child-process.txt) -ne 'child-env') { throw 'child process write readback failed' }"
@@ -951,6 +960,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if (((Get-Item (Join-Path $source "readonly-delete.txt")).Attributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
         throw "host readonly-delete.txt lost the readonly attribute"
     }
+    if ((Get-Content (Join-Path $source "readonly-attributes.txt")) -ne "readonly-attributes-original") {
+        throw "host readonly-attributes.txt was modified"
+    }
+    if (((Get-Item (Join-Path $source "readonly-attributes.txt")).Attributes -band [IO.FileAttributes]::ReadOnly) -eq 0) {
+        throw "host readonly-attributes.txt lost the readonly attribute"
+    }
     if ((Get-Content (Join-Path $source "delete-lower-dir\child\lower-file.txt")) -ne "delete-lower-dir-original") {
         throw "host delete-lower-dir tree was modified"
     }
@@ -1140,6 +1155,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ([IO.File]::ReadAllText((Join-Path $upperSource "truncate.txt")) -ne "truncate") {
         throw "truncated file was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "readonly-attributes.txt")) -ne "readonly-attributes-env") {
+        throw "readonly attribute write was not redirected to upper"
+    }
+    if (((Get-Item (Join-Path $upperSource "readonly-attributes.txt")).Attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+        throw "readonly attribute clear was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "mapped.txt")) -ne "mapped-env") {
         throw "memory-mapped write was not redirected to upper"
