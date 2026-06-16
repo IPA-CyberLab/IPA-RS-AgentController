@@ -1511,7 +1511,6 @@ static BOOLEAN AgentFsWriteIntent(_In_ ACCESS_MASK DesiredAccess, _In_ ULONG Opt
             FILE_APPEND_DATA |
             FILE_WRITE_EA |
             FILE_WRITE_ATTRIBUTES |
-            DELETE |
             WRITE_DAC |
             WRITE_OWNER)) != 0) {
         return TRUE;

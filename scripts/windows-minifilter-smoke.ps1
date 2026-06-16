@@ -335,6 +335,7 @@ $repo = Resolve-Path (Join-Path $PSScriptRoot "..")
 $agentfs = Join-Path $env:TEMP ("agentfs-minifilter-" + [Guid]::NewGuid().ToString("N"))
 $source = Join-Path $env:TEMP ("agentfs-source-" + [Guid]::NewGuid().ToString("N"))
 $outsideMoveSource = Join-Path $env:TEMP ("agentfs-outside-move-" + [Guid]::NewGuid().ToString("N") + ".txt")
+$outsideMoveTarget = Join-Path $env:TEMP ("agentfs-outside-move-target-" + [Guid]::NewGuid().ToString("N") + ".txt")
 $outsideLinkSource = Join-Path $env:TEMP ("agentfs-outside-link-" + [Guid]::NewGuid().ToString("N") + ".txt")
 $driverProject = Join-Path $repo "drivers\windows-minifilter\agentfs.vcxproj"
 $driverSys = Join-Path $repo "drivers\windows-minifilter\$Platform\$Configuration\agentfs.sys"
@@ -393,6 +394,8 @@ try {
     Set-Content -Path (Join-Path $source "overwrite.txt") -Value "overwrite-original"
     [IO.File]::WriteAllText((Join-Path $source "open-or-create-existing.txt"), "open-or-create-existing-original")
     [IO.File]::WriteAllText((Join-Path $source "create-new-existing.txt"), "create-new-existing-original")
+    [IO.File]::WriteAllText((Join-Path $source "delete-access-open-only.txt"), "delete-access-open-only-original")
+    [IO.File]::WriteAllText((Join-Path $source "cross-boundary-out-source.txt"), "cross-boundary-out-source-original")
     [IO.File]::WriteAllText((Join-Path $source "mapped.txt"), "0000000000")
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
     Set-Content -Path (Join-Path $source "locked-rename.txt") -Value "locked-rename-original"
@@ -607,6 +610,8 @@ try {
     `$createNewFile.Dispose()
 }
 if ([IO.File]::ReadAllText(`$createNewPath) -ne 'create-new-env') { throw 'create-new file was not visible in env' }
+[AgentFsNativeMove]::OpenDeleteAccessOnly((Join-Path (Get-Location) 'delete-access-open-only.txt'))
+if ((Get-Content delete-access-open-only.txt) -ne 'delete-access-open-only-original') { throw 'DELETE access open-only changed visible content' }
 `$readonlyAttributesItem = Get-Item readonly-attributes.txt
 `$readonlyAttributesItem.Attributes = `$readonlyAttributesItem.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
 Set-Content readonly-attributes.txt 'readonly-attributes-env'
@@ -979,6 +984,21 @@ public static class AgentFsNativeMove {
         }
     }
 
+    public static void OpenDeleteAccessOnly(string path) {
+        using (SafeFileHandle handle = CreateFile(
+            path,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero)) {
+            if (handle.IsInvalid) {
+                throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+            }
+        }
+    }
+
     public static void DeleteWithPosixSemantics(string path) {
         using (SafeFileHandle handle = CreateFile(
             path,
@@ -1307,6 +1327,13 @@ if (-not [AgentFsNativeMove]::MoveFileEx('$outsideMoveSource', (Join-Path (Get-L
 if (-not `$crossBoundaryMoveFailed) { throw 'external file rename into overlay unexpectedly succeeded' }
 if (-not (Test-Path '$outsideMoveSource')) { throw 'failed external rename removed outside source' }
 if (Test-Path cross-boundary-move.txt) { throw 'failed external rename created managed target' }
+`$crossBoundaryOutFailed = `$false
+if (-not [AgentFsNativeMove]::MoveFileEx((Join-Path (Get-Location) 'cross-boundary-out-source.txt'), '$outsideMoveTarget', 0)) {
+    `$crossBoundaryOutFailed = `$true
+}
+if (-not `$crossBoundaryOutFailed) { throw 'managed rename out of overlay unexpectedly succeeded' }
+if ((Get-Content cross-boundary-out-source.txt) -ne 'cross-boundary-out-source-original') { throw 'failed managed rename out changed source readback' }
+if (Test-Path '$outsideMoveTarget') { throw 'failed managed rename out created outside target' }
 if ([AgentFsNativeMove]::CreateHardLink((Join-Path (Get-Location) 'cross-boundary-link.txt'), '$outsideLinkSource', [IntPtr]::Zero)) {
     throw 'external hardlink into overlay unexpectedly succeeded'
 }
@@ -1624,6 +1651,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if ((Get-Content $outsideMoveSource) -ne "outside-move-original") {
         throw "outside move source was modified"
     }
+    if (Test-Path $outsideMoveTarget) {
+        throw "outside move target was created"
+    }
     if ((Get-Content $outsideLinkSource) -ne "outside-link-original") {
         throw "outside link source was modified"
     }
@@ -1752,6 +1782,12 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if (Test-Path (Join-Path $source "create-new.txt")) {
         throw "host create-new.txt was created"
+    }
+    if ([IO.File]::ReadAllText((Join-Path $source "delete-access-open-only.txt")) -ne "delete-access-open-only-original") {
+        throw "host delete-access-open-only.txt was modified"
+    }
+    if ([IO.File]::ReadAllText((Join-Path $source "cross-boundary-out-source.txt")) -ne "cross-boundary-out-source-original") {
+        throw "host cross-boundary-out-source.txt was modified"
     }
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
@@ -2015,6 +2051,12 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if ([IO.File]::ReadAllText((Join-Path $upperSource "create-new.txt")) -ne "create-new-env") {
         throw "create-new file was not redirected to upper"
     }
+    if (Test-Path (Join-Path $upperSource "delete-access-open-only.txt")) {
+        throw "DELETE access open-only unexpectedly copied lower file to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "cross-boundary-out-source.txt")) {
+        throw "failed managed rename out copied source to upper"
+    }
     if ((Get-Content (Join-Path $upperSource "readonly-attributes.txt")) -ne "readonly-attributes-env") {
         throw "readonly attribute write was not redirected to upper"
     }
@@ -2086,6 +2128,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if (Test-Path (Join-Path $upperSource "cross-boundary-link.txt")) {
         throw "cross-boundary hardlink target was unexpectedly created in upper"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "cross-boundary-out-source.txt")) {
+        throw "failed managed rename out created source whiteout"
     }
     if (Test-Path (Join-Path $upperSource "lower-symlink.txt")) {
         throw "lower symlink was unexpectedly copied to upper"
@@ -2213,5 +2258,5 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
         Stop-Process -Id $daemonProcess.Id -Force -ErrorAction SilentlyContinue
     }
     fltmc unload agentfs 2>$null | Out-Null
-    Remove-Item -Recurse -Force $agentfs, $source, $outsideMoveSource, $outsideLinkSource -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $agentfs, $source, $outsideMoveSource, $outsideMoveTarget, $outsideLinkSource -ErrorAction SilentlyContinue
 }
