@@ -374,6 +374,7 @@ try {
     Set-Content -Path (Join-Path $source "truncate.txt") -Value "truncate-original"
     Set-Content -Path (Join-Path $source "append.txt") -Value "append-original"
     Set-Content -Path (Join-Path $source "overwrite.txt") -Value "overwrite-original"
+    [IO.File]::WriteAllText((Join-Path $source "open-or-create-existing.txt"), "open-or-create-existing-original")
     [IO.File]::WriteAllText((Join-Path $source "mapped.txt"), "0000000000")
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
     Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
@@ -517,6 +518,25 @@ try {
     `$overwriteFile.Dispose()
 }
 if ([IO.File]::ReadAllText(`$overwritePath) -ne 'overwrite-env') { throw 'overwrite create disposition was not visible in env' }
+`$openIfExistingPath = Join-Path (Get-Location) 'open-or-create-existing.txt'
+`$openIfExistingBytes = [Text.Encoding]::UTF8.GetBytes('open-or-create-existing-env')
+`$openIfExistingFile = [IO.File]::Open(`$openIfExistingPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+try {
+    `$openIfExistingFile.SetLength(0)
+    `$openIfExistingFile.Write(`$openIfExistingBytes, 0, `$openIfExistingBytes.Length)
+} finally {
+    `$openIfExistingFile.Dispose()
+}
+if ([IO.File]::ReadAllText(`$openIfExistingPath) -ne 'open-or-create-existing-env') { throw 'open-or-create existing lower file was not visible in env' }
+`$openIfNewPath = Join-Path (Get-Location) 'open-or-create-new.txt'
+`$openIfNewBytes = [Text.Encoding]::UTF8.GetBytes('open-or-create-new-env')
+`$openIfNewFile = [IO.File]::Open(`$openIfNewPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+try {
+    `$openIfNewFile.Write(`$openIfNewBytes, 0, `$openIfNewBytes.Length)
+} finally {
+    `$openIfNewFile.Dispose()
+}
+if ([IO.File]::ReadAllText(`$openIfNewPath) -ne 'open-or-create-new-env') { throw 'open-or-create new file was not visible in env' }
 `$readonlyAttributesItem = Get-Item readonly-attributes.txt
 `$readonlyAttributesItem.Attributes = `$readonlyAttributesItem.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
 Set-Content readonly-attributes.txt 'readonly-attributes-env'
@@ -1046,6 +1066,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     if ((Get-Content (Join-Path $source "overwrite.txt")) -ne "overwrite-original") {
         throw "host overwrite.txt was modified"
     }
+    if ([IO.File]::ReadAllText((Join-Path $source "open-or-create-existing.txt")) -ne "open-or-create-existing-original") {
+        throw "host open-or-create-existing.txt was modified"
+    }
+    if (Test-Path (Join-Path $source "open-or-create-new.txt")) {
+        throw "host open-or-create-new.txt was created"
+    }
     if ((Get-Content (Join-Path $source "mapped.txt")) -ne "0000000000") {
         throw "host mapped.txt was modified"
     }
@@ -1220,6 +1246,12 @@ if (`$fileId64ExtdBothNames -contains 'delete-me.txt') { throw 'FileId64ExtdBoth
     }
     if ([IO.File]::ReadAllText((Join-Path $upperSource "overwrite.txt")) -ne "overwrite-env") {
         throw "overwrite create disposition was not redirected to upper"
+    }
+    if ([IO.File]::ReadAllText((Join-Path $upperSource "open-or-create-existing.txt")) -ne "open-or-create-existing-env") {
+        throw "open-or-create existing lower file was not redirected to upper"
+    }
+    if ([IO.File]::ReadAllText((Join-Path $upperSource "open-or-create-new.txt")) -ne "open-or-create-new-env") {
+        throw "open-or-create new file was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "readonly-attributes.txt")) -ne "readonly-attributes-env") {
         throw "readonly attribute write was not redirected to upper"
