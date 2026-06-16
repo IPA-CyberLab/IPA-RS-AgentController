@@ -714,6 +714,13 @@ public static class AgentFsNativeMove {
         public UIntPtr Information;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct UNICODE_STRING {
+        public ushort Length;
+        public ushort MaximumLength;
+        public IntPtr Buffer;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool MoveFileEx(string existingFileName, string newFileName, int flags);
 
@@ -766,7 +773,15 @@ public static class AgentFsNativeMove {
         return QueryDirectoryNames(path, fileInformationClass, fileNameLengthOffset, fileNameOffset, true);
     }
 
+    public static string[] QueryDirectoryNamesPattern(string path, string pattern, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset) {
+        return QueryDirectoryNames(path, fileInformationClass, fileNameLengthOffset, fileNameOffset, false, pattern);
+    }
+
     private static string[] QueryDirectoryNames(string path, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset, bool returnSingleEntry) {
+        return QueryDirectoryNames(path, fileInformationClass, fileNameLengthOffset, fileNameOffset, returnSingleEntry, null);
+    }
+
+    private static string[] QueryDirectoryNames(string path, int fileInformationClass, int fileNameLengthOffset, int fileNameOffset, bool returnSingleEntry, string pattern) {
         using (SafeFileHandle handle = CreateFile(
             path,
             FILE_LIST_DIRECTORY,
@@ -782,39 +797,63 @@ public static class AgentFsNativeMove {
             List<string> names = new List<string>();
             byte[] buffer = new byte[64 * 1024];
             bool restartScan = true;
-            for (;;) {
-                Array.Clear(buffer, 0, buffer.Length);
-                IO_STATUS_BLOCK iosb;
-                int status = NtQueryDirectoryFile(
-                    handle,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    out iosb,
-                    buffer,
-                    (uint)buffer.Length,
-                    fileInformationClass,
-                    returnSingleEntry,
-                    IntPtr.Zero,
-                    restartScan);
-                restartScan = false;
-                if (status == STATUS_NO_MORE_FILES) {
-                    break;
-                }
-                if (status < 0) {
-                    throw new IOException("NtQueryDirectoryFile failed: 0x" + status.ToString("x8"));
+            IntPtr patternBuffer = IntPtr.Zero;
+            IntPtr patternString = IntPtr.Zero;
+            try {
+                if (!String.IsNullOrEmpty(pattern)) {
+                    byte[] patternBytes = System.Text.Encoding.Unicode.GetBytes(pattern);
+                    patternBuffer = Marshal.AllocHGlobal(patternBytes.Length + 2);
+                    Marshal.Copy(patternBytes, 0, patternBuffer, patternBytes.Length);
+                    Marshal.WriteInt16(patternBuffer, patternBytes.Length, 0);
+                    UNICODE_STRING unicodePattern = new UNICODE_STRING();
+                    unicodePattern.Length = (ushort)patternBytes.Length;
+                    unicodePattern.MaximumLength = (ushort)(patternBytes.Length + 2);
+                    unicodePattern.Buffer = patternBuffer;
+                    patternString = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(UNICODE_STRING)));
+                    Marshal.StructureToPtr(unicodePattern, patternString, false);
                 }
 
-                int offset = 0;
-                int returned = (int)iosb.Information;
-                while (offset < returned) {
-                    int next = BitConverter.ToInt32(buffer, offset);
-                    int nameLength = BitConverter.ToInt32(buffer, offset + fileNameLengthOffset);
-                    names.Add(System.Text.Encoding.Unicode.GetString(buffer, offset + fileNameOffset, nameLength));
-                    if (next == 0) {
+                for (;;) {
+                    Array.Clear(buffer, 0, buffer.Length);
+                    IO_STATUS_BLOCK iosb;
+                    int status = NtQueryDirectoryFile(
+                        handle,
+                        IntPtr.Zero,
+                        IntPtr.Zero,
+                        IntPtr.Zero,
+                        out iosb,
+                        buffer,
+                        (uint)buffer.Length,
+                        fileInformationClass,
+                        returnSingleEntry,
+                        patternString,
+                        restartScan);
+                    restartScan = false;
+                    if (status == STATUS_NO_MORE_FILES) {
                         break;
                     }
-                    offset += next;
+                    if (status < 0) {
+                        throw new IOException("NtQueryDirectoryFile failed: 0x" + status.ToString("x8"));
+                    }
+
+                    int offset = 0;
+                    int returned = (int)iosb.Information;
+                    while (offset < returned) {
+                        int next = BitConverter.ToInt32(buffer, offset);
+                        int nameLength = BitConverter.ToInt32(buffer, offset + fileNameLengthOffset);
+                        names.Add(System.Text.Encoding.Unicode.GetString(buffer, offset + fileNameOffset, nameLength));
+                        if (next == 0) {
+                            break;
+                        }
+                        offset += next;
+                    }
+                }
+            } finally {
+                if (patternString != IntPtr.Zero) {
+                    Marshal.FreeHGlobal(patternString);
+                }
+                if (patternBuffer != IntPtr.Zero) {
+                    Marshal.FreeHGlobal(patternBuffer);
                 }
             }
             names.Sort(StringComparer.OrdinalIgnoreCase);
@@ -992,6 +1031,16 @@ if (`$txtNames -contains 'CaseRename.TXT') { throw 'wildcard listing showed case
 if (`$txtNames -contains 'readonly-delete.txt') { throw 'wildcard listing showed readonly disposition-deleted lower file' }
 if (`$txtNames -contains 'replace-file-source.txt') { throw 'wildcard listing showed replaced lower file source' }
 if (`$txtNames -contains 'lower-symlink.txt') { throw 'wildcard listing showed whiteouted lower symlink' }
+`$nativeTxtNames = [AgentFsNativeMove]::QueryDirectoryNamesPattern((Get-Location).Path, '*.txt', 12, 8, 12)
+if (`$nativeTxtNames -notcontains 'host.txt') { throw 'native wildcard listing lost upper replacement over lower file' }
+if (`$nativeTxtNames -notcontains 'case-renamed.txt') { throw 'native wildcard listing lost case-insensitive renamed file' }
+if (`$nativeTxtNames -notcontains 'replace-file-target.txt') { throw 'native wildcard listing lost replaced lower file target' }
+if (`$nativeTxtNames -contains 'delete-me.txt') { throw 'native wildcard listing showed whiteouted lower file' }
+if (`$nativeTxtNames -contains 'CaseDelete.TXT') { throw 'native wildcard listing showed case-insensitive whiteouted lower file' }
+if (`$nativeTxtNames -contains 'CaseRename.TXT') { throw 'native wildcard listing showed case-insensitive renamed source' }
+if (`$nativeTxtNames -contains 'readonly-delete.txt') { throw 'native wildcard listing showed readonly disposition-deleted lower file' }
+if (`$nativeTxtNames -contains 'replace-file-source.txt') { throw 'native wildcard listing showed replaced lower file source' }
+if (`$nativeTxtNames -contains 'lower-symlink.txt') { throw 'native wildcard listing showed whiteouted lower symlink' }
 if ((Get-ChildItem -Name host.txt) -ne 'host.txt') { throw 'exact listing lost upper replacement over lower file' }
 if ((Get-ChildItem -Name case-renamed.txt) -ne 'case-renamed.txt') { throw 'exact listing lost case-insensitive renamed file' }
 if ((Get-ChildItem -Name case-dir-renamed) -ne 'case-dir-renamed') { throw 'exact listing lost case-insensitive renamed directory' }
