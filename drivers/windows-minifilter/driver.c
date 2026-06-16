@@ -1798,35 +1798,40 @@ static NTSTATUS AgentFsAppendDirectoryEntry(
     return STATUS_SUCCESS;
 }
 
-static BOOLEAN AgentFsEntryHiddenByUpperOrWhiteout(
+static NTSTATUS AgentFsEntryHiddenByUpperOrWhiteout(
     _In_ PFLT_INSTANCE Instance,
     _In_ PAGENTFS_DIR_CONTEXT Context,
     _In_reads_bytes_(NameLength) PCWCH Name,
     _In_ ULONG NameLength,
-    _In_ BOOLEAN CheckUpper)
+    _In_ BOOLEAN CheckUpper,
+    _Out_ PBOOLEAN Hidden)
 {
+    *Hidden = FALSE;
     UNICODE_STRING child;
     RtlZeroMemory(&child, sizeof(child));
     NTSTATUS status = AgentFsJoinChildPath(&child, &Context->WhiteoutPath, Name, NameLength);
-    if (NT_SUCCESS(status)) {
-        BOOLEAN exists = AgentFsPathExists(Instance, &child);
-        AgentFsFreeUnicode(&child);
-        if (exists) {
-            return TRUE;
-        }
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    BOOLEAN exists = AgentFsPathExists(Instance, &child);
+    AgentFsFreeUnicode(&child);
+    if (exists) {
+        *Hidden = TRUE;
+        return STATUS_SUCCESS;
     }
     if (!CheckUpper) {
-        return FALSE;
+        return STATUS_SUCCESS;
     }
     status = AgentFsJoinChildPath(&child, &Context->UpperPath, Name, NameLength);
-    if (NT_SUCCESS(status)) {
-        BOOLEAN exists = AgentFsPathExists(Instance, &child);
-        AgentFsFreeUnicode(&child);
-        if (exists) {
-            return TRUE;
-        }
+    if (!NT_SUCCESS(status)) {
+        return status;
     }
-    return FALSE;
+    exists = AgentFsPathExists(Instance, &child);
+    AgentFsFreeUnicode(&child);
+    if (exists) {
+        *Hidden = TRUE;
+    }
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS AgentFsSelectRedirect(
@@ -2712,7 +2717,7 @@ static NTSTATUS AgentFsAppendUpperDirectoryEntries(
         0,
         0);
     if (!NT_SUCCESS(status)) {
-        return STATUS_SUCCESS;
+        return status;
     }
 
     PVOID temp = ExAllocatePool2(POOL_FLAG_NON_PAGED, 64 * 1024, AGENTFS_TAG);
@@ -2771,7 +2776,12 @@ static NTSTATUS AgentFsAppendUpperDirectoryEntries(
                 offset += next;
                 continue;
             }
-            if (!AgentFsEntryHiddenByUpperOrWhiteout(Instance, Context, name, nameLength, FALSE)) {
+            BOOLEAN hidden = FALSE;
+            status = AgentFsEntryHiddenByUpperOrWhiteout(Instance, Context, name, nameLength, FALSE, &hidden);
+            if (!NT_SUCCESS(status)) {
+                goto Exit;
+            }
+            if (!hidden) {
                 NTSTATUS appendStatus = AgentFsAppendDirectoryEntry(Output, Capacity, Used, LastOffset, entry, entrySize);
                 if (!NT_SUCCESS(appendStatus)) {
                     if (Exhausted != NULL) {
@@ -2866,6 +2876,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     ULONG lastOffset = 0;
     ULONG inputUsed = (ULONG)Data->IoStatus.Information;
     BOOLEAN lowerEntryFiltered = FALSE;
+    NTSTATUS mergeStatus = STATUS_SUCCESS;
     if (NT_SUCCESS(Data->IoStatus.Status) && inputUsed > 0) {
         ULONG offset = 0;
         while (offset < inputUsed) {
@@ -2874,12 +2885,18 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
             ULONG entrySize = AgentFsEntryRecordSize(entry, remaining, nameLengthOffset, nameOffset);
             ULONG nameLength = *(PULONG)((PUCHAR)entry + nameLengthOffset);
             PCWCH name = (PCWCH)((PUCHAR)entry + nameOffset);
-            if (!AgentFsEntryHiddenByUpperOrWhiteout(
-                    FltObjects->Instance,
-                    context,
-                    name,
-                    nameLength,
-                    !context->EnumeratingUpperPath)) {
+            BOOLEAN hidden = FALSE;
+            mergeStatus = AgentFsEntryHiddenByUpperOrWhiteout(
+                FltObjects->Instance,
+                context,
+                name,
+                nameLength,
+                !context->EnumeratingUpperPath,
+                &hidden);
+            if (!NT_SUCCESS(mergeStatus)) {
+                break;
+            }
+            if (!hidden) {
                 if (!NT_SUCCESS(AgentFsAppendDirectoryEntry(output, capacity, &used, &lastOffset, entry, entrySize))) {
                     break;
                 }
@@ -2895,7 +2912,8 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
     }
 
     BOOLEAN lowerEntriesAllFiltered = lowerEntryFiltered && used == 0;
-    if (!context->EnumeratingUpperPath &&
+    if (NT_SUCCESS(mergeStatus) &&
+        !context->EnumeratingUpperPath &&
         AgentFsShouldAppendUpperDirectoryEntries(Data, FltObjects, context, lowerEntriesAllFiltered)) {
         if (context->ReturnSingleEntry) {
             UNICODE_STRING cursor;
@@ -2904,7 +2922,7 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
             RtlZeroMemory(&cursor, sizeof(cursor));
             RtlZeroMemory(&lastEmitted, sizeof(lastEmitted));
             (VOID)AgentFsSnapshotDirUpperSingleCursor(FltObjects->FileObject, &cursor);
-            (VOID)AgentFsAppendUpperDirectoryEntries(
+            mergeStatus = AgentFsAppendUpperDirectoryEntries(
                 FltObjects->Instance,
                 context,
                 infoClass,
@@ -2919,15 +2937,17 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
                 &lastOffset,
                 &lastEmitted,
                 &exhausted);
-            AgentFsUpdateDirUpperSingleCursor(
-                FltObjects->FileObject,
-                lastEmitted.Buffer != NULL ? &lastEmitted : NULL,
-                exhausted);
+            if (NT_SUCCESS(mergeStatus)) {
+                AgentFsUpdateDirUpperSingleCursor(
+                    FltObjects->FileObject,
+                    lastEmitted.Buffer != NULL ? &lastEmitted : NULL,
+                    exhausted);
+            }
             AgentFsFreeUnicode(&lastEmitted);
             AgentFsFreeUnicode(&cursor);
         } else if (!AgentFsDirUpperAlreadyMerged(FltObjects->FileObject)) {
             BOOLEAN exhausted = FALSE;
-            (VOID)AgentFsAppendUpperDirectoryEntries(
+            mergeStatus = AgentFsAppendUpperDirectoryEntries(
                 FltObjects->Instance,
                 context,
                 infoClass,
@@ -2942,13 +2962,16 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
                 &lastOffset,
                 NULL,
                 &exhausted);
-            if (exhausted) {
+            if (NT_SUCCESS(mergeStatus) && exhausted) {
                 AgentFsMarkDirUpperMerged(FltObjects->FileObject);
             }
         }
     }
 
-    if (used == 0) {
+    if (!NT_SUCCESS(mergeStatus)) {
+        Data->IoStatus.Status = mergeStatus;
+        Data->IoStatus.Information = 0;
+    } else if (used == 0) {
         Data->IoStatus.Status = STATUS_NO_MORE_FILES;
         Data->IoStatus.Information = 0;
     } else {
