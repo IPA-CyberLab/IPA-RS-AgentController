@@ -367,6 +367,7 @@ try {
     Set-Content -Path (Join-Path $source "CaseDirRename\child\lower-file.txt") -Value "case-dir-rename-original"
     Set-Content -Path (Join-Path $source "rootdir-rename-source.txt") -Value "rootdir-rename-original"
     Set-Content -Path (Join-Path $source "create-new-after-delete.txt") -Value "create-new-after-delete-original"
+    Set-Content -Path (Join-Path $source "open-or-create-after-delete.txt") -Value "open-or-create-after-delete-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     Set-Content -Path (Join-Path $source "disposition-delete.txt") -Value "disposition-delete-original"
     Set-Content -Path (Join-Path $source "posix-delete.txt") -Value "posix-delete-original"
@@ -1383,6 +1384,16 @@ try {
     `$createNewAfterDeleteFile.Dispose()
 }
 if ([IO.File]::ReadAllText(`$createNewAfterDeletePath) -ne 'create-new-after-delete-env') { throw 'CreateNew after whiteout was not visible in env' }
+Remove-Item open-or-create-after-delete.txt
+`$openIfAfterDeletePath = Join-Path (Get-Location) 'open-or-create-after-delete.txt'
+`$openIfAfterDeleteBytes = [Text.Encoding]::UTF8.GetBytes('open-or-create-after-delete-env')
+`$openIfAfterDeleteFile = [IO.File]::Open(`$openIfAfterDeletePath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+try {
+    `$openIfAfterDeleteFile.Write(`$openIfAfterDeleteBytes, 0, `$openIfAfterDeleteBytes.Length)
+} finally {
+    `$openIfAfterDeleteFile.Dispose()
+}
+if ([IO.File]::ReadAllText(`$openIfAfterDeletePath) -ne 'open-or-create-after-delete-env') { throw 'OpenOrCreate after whiteout was not visible in env' }
 Remove-Item rename-target.txt
 Rename-Item created.txt rename-target.txt
 `$names = Get-ChildItem -Name | Sort-Object
@@ -1752,6 +1763,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if ((Get-Content (Join-Path $source "create-new-after-delete.txt")) -ne "create-new-after-delete-original") {
         throw "host create-new-after-delete.txt was modified"
     }
+    if ((Get-Content (Join-Path $source "open-or-create-after-delete.txt")) -ne "open-or-create-after-delete-original") {
+        throw "host open-or-create-after-delete.txt was modified"
+    }
     if ((Get-Content (Join-Path $source "rename-target.txt")) -ne "rename-target-original") {
         throw "host rename-target.txt was modified"
     }
@@ -2002,6 +2016,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if ([IO.File]::ReadAllText((Join-Path $upperSource "create-new-after-delete.txt")) -ne "create-new-after-delete-env") {
         throw "CreateNew after whiteout was not written to upper"
     }
+    if ([IO.File]::ReadAllText((Join-Path $upperSource "open-or-create-after-delete.txt")) -ne "open-or-create-after-delete-env") {
+        throw "OpenOrCreate after whiteout was not written to upper"
+    }
     if (-not (Test-Path (Join-Path $upperSource "stale-dir"))) {
         throw "recreated upper directory was not present in upper"
     }
@@ -2246,6 +2263,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if (Test-Path (Join-Path $whiteoutSource "create-new-after-delete.txt")) {
         throw "CreateNew after whiteout left a whiteout"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "open-or-create-after-delete.txt")) {
+        throw "OpenOrCreate after whiteout left a whiteout"
     }
     if (Test-Path (Join-Path $whiteoutSource "posix-rename-source.txt")) {
         throw "POSIX FileRenameInfoEx upper-only rename created a source whiteout"
