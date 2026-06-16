@@ -366,6 +366,7 @@ try {
     Set-Content -Path (Join-Path $source "CaseDirDelete\child\lower-file.txt") -Value "case-dir-delete-original"
     Set-Content -Path (Join-Path $source "CaseDirRename\child\lower-file.txt") -Value "case-dir-rename-original"
     Set-Content -Path (Join-Path $source "rootdir-rename-source.txt") -Value "rootdir-rename-original"
+    Set-Content -Path (Join-Path $source "create-new-after-delete.txt") -Value "create-new-after-delete-original"
     Set-Content -Path (Join-Path $source "delete-me.txt") -Value "delete-original"
     Set-Content -Path (Join-Path $source "disposition-delete.txt") -Value "disposition-delete-original"
     Set-Content -Path (Join-Path $source "posix-delete.txt") -Value "posix-delete-original"
@@ -1372,6 +1373,16 @@ if (Test-Path casedirdelete) { throw 'case-insensitive directory delete left low
 Remove-Item -Recurse delete-lower-dir
 Remove-Item recreate-me.txt
 Set-Content recreate-me.txt 'recreated-in-env'
+Remove-Item create-new-after-delete.txt
+`$createNewAfterDeletePath = Join-Path (Get-Location) 'create-new-after-delete.txt'
+`$createNewAfterDeleteBytes = [Text.Encoding]::UTF8.GetBytes('create-new-after-delete-env')
+`$createNewAfterDeleteFile = [IO.File]::Open(`$createNewAfterDeletePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+try {
+    `$createNewAfterDeleteFile.Write(`$createNewAfterDeleteBytes, 0, `$createNewAfterDeleteBytes.Length)
+} finally {
+    `$createNewAfterDeleteFile.Dispose()
+}
+if ([IO.File]::ReadAllText(`$createNewAfterDeletePath) -ne 'create-new-after-delete-env') { throw 'CreateNew after whiteout was not visible in env' }
 Remove-Item rename-target.txt
 Rename-Item created.txt rename-target.txt
 `$names = Get-ChildItem -Name | Sort-Object
@@ -1738,6 +1749,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if ((Get-Content (Join-Path $source "recreate-me.txt")) -ne "recreate-original") {
         throw "host recreate-me.txt was modified"
     }
+    if ((Get-Content (Join-Path $source "create-new-after-delete.txt")) -ne "create-new-after-delete-original") {
+        throw "host create-new-after-delete.txt was modified"
+    }
     if ((Get-Content (Join-Path $source "rename-target.txt")) -ne "rename-target-original") {
         throw "host rename-target.txt was modified"
     }
@@ -1985,6 +1999,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if ((Get-Content (Join-Path $upperSource "recreate-me.txt")) -ne "recreated-in-env") {
         throw "recreated file was not written to upper"
     }
+    if ([IO.File]::ReadAllText((Join-Path $upperSource "create-new-after-delete.txt")) -ne "create-new-after-delete-env") {
+        throw "CreateNew after whiteout was not written to upper"
+    }
     if (-not (Test-Path (Join-Path $upperSource "stale-dir"))) {
         throw "recreated upper directory was not present in upper"
     }
@@ -2226,6 +2243,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if (Test-Path (Join-Path $whiteoutSource "recreate-me.txt")) {
         throw "recreated file still has a whiteout"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "create-new-after-delete.txt")) {
+        throw "CreateNew after whiteout left a whiteout"
     }
     if (Test-Path (Join-Path $whiteoutSource "posix-rename-source.txt")) {
         throw "POSIX FileRenameInfoEx upper-only rename created a source whiteout"
