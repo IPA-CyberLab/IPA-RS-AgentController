@@ -745,6 +745,7 @@ public static class AgentFsNativeMove {
     private const uint FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE = 0x00000010;
     private const uint FILE_RENAME_REPLACE_IF_EXISTS = 0x00000001;
     private const uint FILE_RENAME_POSIX_SEMANTICS = 0x00000002;
+    private const uint FILE_RENAME_SUPPRESS_PIN_STATE_INHERITANCE = 0x00000004;
     private const uint FILE_RENAME_IGNORE_READONLY_ATTRIBUTE = 0x00000040;
     private const int FileDispositionInfo = 4;
     private const int FileRenameInfo = 3;
@@ -1111,6 +1112,32 @@ public static class AgentFsNativeMove {
         }
     }
 
+    public static void RenameSuppressPinStateInheritance(string sourcePath, string targetPath) {
+        using (SafeFileHandle handle = CreateFile(
+            sourcePath,
+            DELETE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            IntPtr.Zero)) {
+            if (handle.IsInvalid) {
+                throw new IOException("CreateFile failed: " + Marshal.GetLastWin32Error());
+            }
+
+            byte[] targetBytes = System.Text.Encoding.Unicode.GetBytes(targetPath);
+            byte[] info = new byte[20 + targetBytes.Length];
+            BitConverter.GetBytes(FILE_RENAME_SUPPRESS_PIN_STATE_INHERITANCE).CopyTo(info, 0);
+            BitConverter.GetBytes((long)0).CopyTo(info, 8);
+            BitConverter.GetBytes(targetBytes.Length).CopyTo(info, 16);
+            Buffer.BlockCopy(targetBytes, 0, info, 20, targetBytes.Length);
+
+            if (!SetFileInformationByHandleBuffer(handle, FileRenameInfoEx, info, info.Length)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
+
     public static void RenameWithRootDirectory(string sourcePath, string targetDirectory, string targetFileName) {
         using (SafeFileHandle sourceHandle = CreateFile(
             sourcePath,
@@ -1229,6 +1256,12 @@ Set-Content posix-rename-source.txt 'posix-rename-source-env'
     (Join-Path (Get-Location) 'posix-rename-target.txt'))
 if (Test-Path posix-rename-source.txt) { throw 'FileRenameInfoEx POSIX flag left source visible' }
 if ((Get-Content posix-rename-target.txt) -ne 'posix-rename-source-env') { throw 'FileRenameInfoEx POSIX flag target readback failed' }
+Set-Content suppress-pin-rename-source.txt 'suppress-pin-rename-source-env'
+[AgentFsNativeMove]::RenameSuppressPinStateInheritance(
+    (Join-Path (Get-Location) 'suppress-pin-rename-source.txt'),
+    (Join-Path (Get-Location) 'suppress-pin-rename-target.txt'))
+if (Test-Path suppress-pin-rename-source.txt) { throw 'FileRenameInfoEx suppress-pin flag left source visible' }
+if ((Get-Content suppress-pin-rename-target.txt) -ne 'suppress-pin-rename-source-env') { throw 'FileRenameInfoEx suppress-pin flag target readback failed' }
 `$crossBoundaryMoveFailed = `$false
 if (-not [AgentFsNativeMove]::MoveFileEx('$outsideMoveSource', (Join-Path (Get-Location) 'cross-boundary-move.txt'), 0)) {
     `$crossBoundaryMoveFailed = `$true
@@ -1589,6 +1622,12 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if (Test-Path (Join-Path $source "posix-rename-target.txt")) {
         throw "host POSIX FileRenameInfoEx target was created"
     }
+    if (Test-Path (Join-Path $source "suppress-pin-rename-source.txt")) {
+        throw "host suppress-pin FileRenameInfoEx source was created"
+    }
+    if (Test-Path (Join-Path $source "suppress-pin-rename-target.txt")) {
+        throw "host suppress-pin FileRenameInfoEx target was created"
+    }
     if ((Get-Content (Join-Path $source "CaseDelete.TXT")) -ne "case-delete-original") {
         throw "host CaseDelete.TXT was modified"
     }
@@ -1845,6 +1884,12 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if ((Get-Content (Join-Path $upperSource "posix-rename-target.txt")) -ne "posix-rename-source-env") {
         throw "POSIX FileRenameInfoEx target was not written to upper"
     }
+    if (Test-Path (Join-Path $upperSource "suppress-pin-rename-source.txt")) {
+        throw "suppress-pin FileRenameInfoEx source remained in upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "suppress-pin-rename-target.txt")) -ne "suppress-pin-rename-source-env") {
+        throw "suppress-pin FileRenameInfoEx target was not written to upper"
+    }
     if ((Get-Content (Join-Path $upperSource "replace-file-target.txt")) -ne "replace-file-source-original") {
         throw "replaced lower file target was not written to upper"
     }
@@ -2092,6 +2137,12 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if (Test-Path (Join-Path $whiteoutSource "posix-rename-target.txt")) {
         throw "POSIX FileRenameInfoEx upper-only rename created a target whiteout"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "suppress-pin-rename-source.txt")) {
+        throw "suppress-pin FileRenameInfoEx upper-only rename created a source whiteout"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "suppress-pin-rename-target.txt")) {
+        throw "suppress-pin FileRenameInfoEx upper-only rename created a target whiteout"
     }
 
     Write-Host "Windows minifilter smoke passed"

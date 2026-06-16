@@ -20,6 +20,9 @@
 #ifndef FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
 #define FILE_RENAME_IGNORE_READONLY_ATTRIBUTE 0x00000040
 #endif
+#ifndef FILE_RENAME_SUPPRESS_PIN_STATE_INHERITANCE
+#define FILE_RENAME_SUPPRESS_PIN_STATE_INHERITANCE 0x00000004
+#endif
 
 typedef struct _AGENTFS_ENV {
     LIST_ENTRY Link;
@@ -1563,6 +1566,7 @@ static NTSTATUS AgentFsValidateRenameInformation(
         ULONG supportedFlags =
             FILE_RENAME_REPLACE_IF_EXISTS |
             FILE_RENAME_POSIX_SEMANTICS |
+            FILE_RENAME_SUPPRESS_PIN_STATE_INHERITANCE |
             FILE_RENAME_IGNORE_READONLY_ATTRIBUTE;
         if ((RenameInfo->Flags & ~supportedFlags) != 0) {
             return STATUS_NOT_SUPPORTED;
