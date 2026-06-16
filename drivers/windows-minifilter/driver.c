@@ -2032,10 +2032,19 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreCreate(
         &nameInfo);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     status = FltParseFileNameInformation(nameInfo);
-    if (!NT_SUCCESS(status) || !AgentFsStartsWithPath(&nameInfo->Name, &env->SourceRoot)) {
+    if (!NT_SUCCESS(status)) {
+        FltReleaseFileNameInformation(nameInfo);
+        AgentFsFreeEnv(env);
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
+    }
+    if (!AgentFsStartsWithPath(&nameInfo->Name, &env->SourceRoot)) {
         FltReleaseFileNameInformation(nameInfo);
         AgentFsFreeEnv(env);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
@@ -2123,12 +2132,19 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreFileSystemControl(
         &nameInfo);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     status = FltParseFileNameInformation(nameInfo);
-    if (NT_SUCCESS(status)) {
-        status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &visible);
+    if (!NT_SUCCESS(status)) {
+        FltReleaseFileNameInformation(nameInfo);
+        AgentFsFreeEnv(env);
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
+    status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &visible);
     FltReleaseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeEnv(env);
@@ -2187,13 +2203,17 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
         &nameInfo);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     status = FltParseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status)) {
         FltReleaseFileNameInformation(nameInfo);
         AgentFsFreeEnv(env);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
 
     UNICODE_STRING visible;
