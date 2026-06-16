@@ -2153,6 +2153,11 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreFileSystemControl(
     FltReleaseFileNameInformation(nameInfo);
     if (!NT_SUCCESS(status)) {
         AgentFsFreeEnv(env);
+        if (status != STATUS_NOT_FOUND) {
+            Data->IoStatus.Status = status;
+            Data->IoStatus.Information = 0;
+            return FLT_PREOP_COMPLETE;
+        }
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -2233,6 +2238,12 @@ static FLT_PREOP_CALLBACK_STATUS AgentFsPreSetInformation(
     status = AgentFsVisiblePathFromName(env, &nameInfo->Name, &visible);
     if (NT_SUCCESS(status)) {
         sourceManaged = AgentFsStartsWithPath(&visible, &env->SourceRoot);
+    } else if (status != STATUS_NOT_FOUND) {
+        FltReleaseFileNameInformation(nameInfo);
+        AgentFsFreeEnv(env);
+        Data->IoStatus.Status = status;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
     }
     if (!sourceManaged &&
         (infoClass == FileRenameInformation ||
