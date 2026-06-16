@@ -414,6 +414,19 @@ try {
     $aclChangeExpected = Get-Acl $aclChangeSource
     $aclChangeExpected.PurgeAccessRules($administrators)
     $aclChangeExpectedSddl = $aclChangeExpected.Sddl
+    $ownerChangeSource = Join-Path $source "owner-change-source.txt"
+    Set-Content -Path $ownerChangeSource -Value "owner-change-original"
+    $ownerChange = Get-Acl $ownerChangeSource
+    $ownerChange.SetAccessRuleProtection($true, $false)
+    $ownerChange.SetOwner($currentUser)
+    $ownerChange.SetGroup($currentUser)
+    $ownerChange.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($currentUser, "FullControl", "Allow"))
+    $ownerChange.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($administrators, "FullControl", "Allow")) | Out-Null
+    Set-Acl -Path $ownerChangeSource -AclObject $ownerChange
+    $ownerChangeSourceSddl = (Get-Acl $ownerChangeSource).Sddl
+    $ownerChangeExpected = Get-Acl $ownerChangeSource
+    $ownerChangeExpected.SetOwner($administrators)
+    $ownerChangeExpectedSddl = $ownerChangeExpected.Sddl
     Set-Content -Path (Join-Path $source "collision-source.txt") -Value "collision-source-original"
     Set-Content -Path (Join-Path $source "collision-target.txt") -Value "collision-target-original"
     Set-Content -Path (Join-Path $source "replace-file-source.txt") -Value "replace-file-source-original"
@@ -577,6 +590,9 @@ Set-Content acl-source.txt 'acl-env'
 `$aclChange = Get-Acl acl-change-source.txt
 `$aclChange.PurgeAccessRules([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
 Set-Acl -Path acl-change-source.txt -AclObject `$aclChange
+`$ownerChange = Get-Acl owner-change-source.txt
+`$ownerChange.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+Set-Acl -Path owner-change-source.txt -AclObject `$ownerChange
 `$mappedPath = Join-Path (Get-Location) 'mapped.txt'
 `$mappedBytes = [Text.Encoding]::UTF8.GetBytes('mapped-env')
 `$mappedFile = [IO.File]::Open(`$mappedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
@@ -1199,6 +1215,12 @@ if (`$fileId64ExtdBothNames -contains 'CaseDirRename') { throw 'FileId64ExtdBoth
     if ((Get-Acl (Join-Path $source "acl-change-source.txt")).Sddl -ne $aclChangeSourceSddl) {
         throw "host acl-change-source.txt security descriptor was modified"
     }
+    if ((Get-Content (Join-Path $source "owner-change-source.txt")) -ne "owner-change-original") {
+        throw "host owner-change-source.txt was modified"
+    }
+    if ((Get-Acl (Join-Path $source "owner-change-source.txt")).Sddl -ne $ownerChangeSourceSddl) {
+        throw "host owner-change-source.txt security descriptor was modified"
+    }
     if ((Get-Content (Join-Path $source "stream-source.txt") -Stream lower) -ne "lower-stream-original") {
         throw "host lower ADS was modified"
     }
@@ -1406,6 +1428,12 @@ if (`$fileId64ExtdBothNames -contains 'CaseDirRename') { throw 'FileId64ExtdBoth
     }
     if ((Get-Acl (Join-Path $upperSource "acl-change-source.txt")).Sddl -ne $aclChangeExpectedSddl) {
         throw "ACL-only write was not redirected to upper"
+    }
+    if ((Get-Content (Join-Path $upperSource "owner-change-source.txt")) -ne "owner-change-original") {
+        throw "owner-only write did not copy lower content to upper"
+    }
+    if ((Get-Acl (Join-Path $upperSource "owner-change-source.txt")).Sddl -ne $ownerChangeExpectedSddl) {
+        throw "owner-only write was not redirected to upper"
     }
     if ((Get-Content (Join-Path $upperSource "stream-source.txt")) -ne "stream-main-env") {
         throw "ADS source main stream write was not redirected to upper"
