@@ -2947,22 +2947,27 @@ static FLT_POSTOP_CALLBACK_STATUS AgentFsPostDirectoryControl(
             BOOLEAN exhausted = FALSE;
             RtlZeroMemory(&cursor, sizeof(cursor));
             RtlZeroMemory(&lastEmitted, sizeof(lastEmitted));
-            (VOID)AgentFsSnapshotDirUpperSingleCursor(FltObjects->FileObject, &cursor);
-            mergeStatus = AgentFsAppendUpperDirectoryEntries(
-                FltObjects->Instance,
-                context,
-                infoClass,
-                Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName,
-                cursor.Buffer != NULL ? &cursor : NULL,
-                1,
-                nameLengthOffset,
-                nameOffset,
-                output,
-                capacity,
-                &used,
-                &lastOffset,
-                &lastEmitted,
-                &exhausted);
+            mergeStatus = AgentFsSnapshotDirUpperSingleCursor(FltObjects->FileObject, &cursor);
+            if (mergeStatus == STATUS_NOT_FOUND) {
+                mergeStatus = STATUS_SUCCESS;
+            }
+            if (NT_SUCCESS(mergeStatus)) {
+                mergeStatus = AgentFsAppendUpperDirectoryEntries(
+                    FltObjects->Instance,
+                    context,
+                    infoClass,
+                    Data->Iopb->Parameters.DirectoryControl.QueryDirectory.FileName,
+                    cursor.Buffer != NULL ? &cursor : NULL,
+                    1,
+                    nameLengthOffset,
+                    nameOffset,
+                    output,
+                    capacity,
+                    &used,
+                    &lastOffset,
+                    &lastEmitted,
+                    &exhausted);
+            }
             if (NT_SUCCESS(mergeStatus)) {
                 mergeStatus = AgentFsUpdateDirUpperSingleCursor(
                     FltObjects->FileObject,
