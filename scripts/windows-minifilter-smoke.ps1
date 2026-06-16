@@ -513,6 +513,14 @@ try {
     `$lockedWriteFailed = `$true
 }
 if (-not `$lockedWriteFailed) { throw 'write to exclusively locked lower file unexpectedly succeeded' }
+`$lockedDeleteFailed = `$false
+try {
+    Remove-Item locked.txt
+} catch {
+    `$lockedDeleteFailed = `$true
+}
+if (-not `$lockedDeleteFailed) { throw 'delete of exclusively locked lower file unexpectedly succeeded' }
+if (-not (Test-Path locked.txt)) { throw 'failed locked lower delete hid the file' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 (Get-Item metadata-dir).LastWriteTimeUtc = [DateTimeOffset]::Parse('2021-03-04T05:06:07Z').UtcDateTime
 [AgentFsEa]::SetDirectoryEa((Join-Path (Get-Location) 'metadata-dir'), 'agentfs.metadata.dir.ea', 'env-dir-ea')
@@ -1496,6 +1504,9 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
     }
     if (-not (Test-Path (Join-Path $whiteoutSource "lower-symlink.txt"))) {
         throw "lower symlink delete whiteout was not created"
+    }
+    if (Test-Path (Join-Path $whiteoutSource "locked.txt")) {
+        throw "failed locked lower delete created a whiteout"
     }
     if (Test-Path (Join-Path $whiteoutSource "collision-source.txt")) {
         throw "failed rename collision created a source whiteout"
