@@ -346,6 +346,7 @@ $daemon = Join-Path $binDir "agent-forkd.exe"
 $filterctl = Join-Path $binDir "agent-minifilterctl.exe"
 $wdkVersion = Get-WdkBuildVersion
 $lockedStream = $null
+$lockedRenameStream = $null
 
 try {
     New-Item -ItemType Directory -Force -Path $source | Out-Null
@@ -387,6 +388,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $source "create-new-existing.txt"), "create-new-existing-original")
     [IO.File]::WriteAllText((Join-Path $source "mapped.txt"), "0000000000")
     Set-Content -Path (Join-Path $source "locked.txt") -Value "locked-original"
+    Set-Content -Path (Join-Path $source "locked-rename.txt") -Value "locked-rename-original"
     Set-Content -Path (Join-Path $source "ea-source.txt") -Value "ea-main-original"
     [AgentFsEa]::SetEa((Join-Path $source "ea-source.txt"), "agentfs.ea", "lower-ea-original")
     Set-Content -Path (Join-Path $source "stream-source.txt") -Value "stream-main-original"
@@ -505,6 +507,8 @@ try {
 
     $lockedPath = Join-Path $source "locked.txt"
     $lockedStream = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $lockedRenamePath = Join-Path $source "locked-rename.txt"
+    $lockedRenameStream = [IO.File]::Open($lockedRenamePath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 
     & $agentctl --agentfs $agentfs new -t $EnvId --from $source -- powershell.exe -NoProfile -Command @"
 `$ErrorActionPreference = 'Stop'
@@ -525,6 +529,15 @@ try {
 }
 if (-not `$lockedDeleteFailed) { throw 'delete of exclusively locked lower file unexpectedly succeeded' }
 if (-not (Test-Path locked.txt)) { throw 'failed locked lower delete hid the file' }
+`$lockedRenameFailed = `$false
+try {
+    Rename-Item locked-rename.txt locked-renamed.txt
+} catch {
+    `$lockedRenameFailed = `$true
+}
+if (-not `$lockedRenameFailed) { throw 'rename of exclusively locked lower file unexpectedly succeeded' }
+if (-not (Test-Path locked-rename.txt)) { throw 'failed locked lower rename hid the source' }
+if (Test-Path locked-renamed.txt) { throw 'failed locked lower rename created target' }
 (Get-Item metadata.txt).LastWriteTimeUtc = [DateTimeOffset]::Parse('2020-02-03T04:05:06Z').UtcDateTime
 (Get-Item metadata-dir).LastWriteTimeUtc = [DateTimeOffset]::Parse('2021-03-04T05:06:07Z').UtcDateTime
 [AgentFsEa]::SetDirectoryEa((Join-Path (Get-Location) 'metadata-dir'), 'agentfs.metadata.dir.ea', 'env-dir-ea')
@@ -1258,6 +1271,15 @@ if (`$fileId64ExtdBothNames -contains 'lower-symlink.txt') { throw 'FileId64Extd
 if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'FileId64ExtdBothDirectoryInformation showed RootDirectory FileRenameInfo source' }
 "@
 
+    if ($lockedStream) {
+        $lockedStream.Dispose()
+        $lockedStream = $null
+    }
+    if ($lockedRenameStream) {
+        $lockedRenameStream.Dispose()
+        $lockedRenameStream = $null
+    }
+
     & $agentctl --agentfs $agentfs session create $EnvId logtest -- powershell.exe -NoProfile -Command "Write-Output 'session-log-stdout'; [Console]::Error.WriteLine('session-log-stderr')"
     $sessionLogText = ""
     for ($i = 0; $i -lt 40; $i++) {
@@ -1419,6 +1441,12 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     }
     if ((Get-Content (Join-Path $source "locked.txt")) -ne "locked-original") {
         throw "host locked.txt was modified"
+    }
+    if ((Get-Content (Join-Path $source "locked-rename.txt")) -ne "locked-rename-original") {
+        throw "host locked-rename.txt was modified"
+    }
+    if (Test-Path (Join-Path $source "locked-renamed.txt")) {
+        throw "host locked-renamed.txt was created"
     }
     if ((Get-Content (Join-Path $source "ea-source.txt")) -ne "ea-main-original") {
         throw "host ea-source.txt was modified"
@@ -1652,6 +1680,12 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if (Test-Path (Join-Path $upperSource "locked.txt")) {
         throw "locked lower file was unexpectedly copied to upper"
     }
+    if (Test-Path (Join-Path $upperSource "locked-rename.txt")) {
+        throw "failed locked lower rename copied source to upper"
+    }
+    if (Test-Path (Join-Path $upperSource "locked-renamed.txt")) {
+        throw "failed locked lower rename created target in upper"
+    }
     if ((Get-Content (Join-Path $upperSource "ea-source.txt")) -ne "ea-main-env") {
         throw "EA source main stream write was not redirected to upper"
     }
@@ -1746,6 +1780,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
     if (Test-Path (Join-Path $whiteoutSource "locked.txt")) {
         throw "failed locked lower delete created a whiteout"
     }
+    if (Test-Path (Join-Path $whiteoutSource "locked-rename.txt")) {
+        throw "failed locked lower rename created a source whiteout"
+    }
     if (Test-Path (Join-Path $whiteoutSource "collision-source.txt")) {
         throw "failed rename collision created a source whiteout"
     }
@@ -1784,6 +1821,9 @@ if (`$fileId64ExtdBothNames -contains 'rootdir-rename-source.txt') { throw 'File
 } finally {
     if ($lockedStream) {
         $lockedStream.Dispose()
+    }
+    if ($lockedRenameStream) {
+        $lockedRenameStream.Dispose()
     }
     if ($daemonProcess -and -not $daemonProcess.HasExited) {
         Stop-Process -Id $daemonProcess.Id -Force -ErrorAction SilentlyContinue
