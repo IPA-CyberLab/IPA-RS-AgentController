@@ -303,7 +303,7 @@ impl DesktopService {
             _ => self.layout.base_rootfs(name),
         };
         let clone_target = desktop_base_clone_target(&backend, &rootfs, from)?;
-        if let Err(error) = reflink::clone_tree(from, &clone_target) {
+        if let Err(error) = clone_desktop_tree(from, &clone_target) {
             let _ = remove_dir_all_if_exists(&base_dir).await;
             return Err(error);
         }
@@ -399,7 +399,7 @@ impl DesktopService {
         let rootfs = match base.backend {
             RootfsBackend::PathPreservingOverlay | RootfsBackend::WindowsMinifilterOverlay => {
                 let lower = self.layout.env_lower(id);
-                if let Err(error) = reflink::clone_tree(&base.rootfs_path, &lower) {
+                if let Err(error) = clone_desktop_tree(&base.rootfs_path, &lower) {
                     let _ = remove_dir_all_if_exists(&env_dir).await;
                     return Err(error);
                 }
@@ -408,7 +408,7 @@ impl DesktopService {
             }
             _ => {
                 let rootfs = self.layout.env_rootfs(id);
-                if let Err(error) = reflink::clone_tree(&base.rootfs_path, &rootfs) {
+                if let Err(error) = clone_desktop_tree(&base.rootfs_path, &rootfs) {
                     let _ = remove_dir_all_if_exists(&env_dir).await;
                     return Err(error);
                 }
@@ -1630,6 +1630,17 @@ fn desktop_base_clone_target(
         Ok(rootfs.join(absolute_path_as_overlay_relative(from)?))
     } else {
         Ok(rootfs.to_path_buf())
+    }
+}
+
+fn clone_desktop_tree(src: &Path, dst: &Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        reflink::clone_tree_with_copy_fallback(src, dst)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        reflink::clone_tree(src, dst)
     }
 }
 

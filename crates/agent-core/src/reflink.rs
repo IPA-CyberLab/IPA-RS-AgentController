@@ -36,6 +36,67 @@ pub fn clone_tree(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn clone_tree_with_copy_fallback(src: &Path, dst: &Path) -> Result<()> {
+    if dst.exists() {
+        return Err(anyhow!("{} already exists", dst.display()));
+    }
+    match clone_tree(src, dst) {
+        Ok(()) => Ok(()),
+        Err(clone_error) => {
+            let _ = std::fs::remove_dir_all(dst);
+            copy_tree(src, dst).with_context(|| {
+                format!(
+                    "failed to copy {} to {} after reflink failed: {clone_error:#}",
+                    src.display(),
+                    dst.display()
+                )
+            })
+        }
+    }
+}
+
+pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    if !src.is_dir() {
+        return Err(anyhow!("{} is not a directory", src.display()));
+    }
+    if dst.exists() {
+        return Err(anyhow!("{} already exists", dst.display()));
+    }
+    std::fs::create_dir_all(dst)?;
+    let root_metadata = std::fs::symlink_metadata(src)?;
+    std::fs::set_permissions(dst, root_metadata.permissions())
+        .with_context(|| format!("failed to copy permissions to {}", dst.display()))?;
+    for entry in WalkDir::new(src).follow_links(false).min_depth(1) {
+        let entry = entry?;
+        let relative = entry.path().strip_prefix(src)?;
+        let target = dst.join(relative);
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if metadata.is_dir() {
+            std::fs::create_dir_all(&target)
+                .with_context(|| format!("failed to create directory {}", target.display()))?;
+            std::fs::set_permissions(&target, metadata.permissions())
+                .with_context(|| format!("failed to copy permissions to {}", target.display()))?;
+        } else if metadata.file_type().is_symlink() {
+            clone_symlink(entry.path(), &target)
+                .with_context(|| format!("failed to copy symlink {}", entry.path().display()))?;
+        } else if metadata.is_file() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(entry.path(), &target).with_context(|| {
+                format!(
+                    "failed to copy file {} to {}",
+                    entry.path().display(),
+                    target.display()
+                )
+            })?;
+            std::fs::set_permissions(&target, metadata.permissions())
+                .with_context(|| format!("failed to copy permissions to {}", target.display()))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn platform_clone_file(src: &Path, dst: &Path) -> Result<()> {
     use std::ffi::CString;
