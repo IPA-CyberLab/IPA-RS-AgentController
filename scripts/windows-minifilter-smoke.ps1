@@ -1,7 +1,8 @@
 param(
     [string]$Configuration = "Release",
     [string]$Platform = "x64",
-    [string]$EnvId = "codex-smoke"
+    [string]$EnvId = "codex-smoke",
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -473,14 +474,21 @@ try {
     Set-Content -Path $outsideMoveSource -Value "outside-move-original"
     Set-Content -Path $outsideLinkSource -Value "outside-link-original"
 
-    Push-Location $repo
-    Invoke-Logged { cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc }
-    Install-WdkMsbuildBridge -WdkVersion $wdkVersion
-    Invoke-Logged { msbuild $driverProject /p:Configuration=$Configuration /p:Platform=$Platform /p:WindowsTargetPlatformVersion=$wdkVersion /p:EnableTestSign=false }
-    Pop-Location
+    if (-not $SkipBuild) {
+        Push-Location $repo
+        Invoke-Logged { cargo build -p agentctl -p agent-forkd -p agent-minifilterctl --target x86_64-pc-windows-msvc }
+        Install-WdkMsbuildBridge -WdkVersion $wdkVersion
+        Invoke-Logged { msbuild $driverProject /p:Configuration=$Configuration /p:Platform=$Platform /p:WindowsTargetPlatformVersion=$wdkVersion /p:EnableTestSign=false }
+        Pop-Location
+    }
 
     if (-not (Test-Path $driverSys)) {
         throw "driver binary was not produced at $driverSys"
+    }
+    foreach ($helper in @($agentctl, $daemon, $filterctl)) {
+        if (-not (Test-Path $helper)) {
+            throw "Windows helper was not produced at $helper"
+        }
     }
     Invoke-AgentFsPackageSigning -DriverDirectory $driverDir -DriverSys $driverSys -WdkVersion $wdkVersion
 

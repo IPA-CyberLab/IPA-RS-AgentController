@@ -11,7 +11,9 @@ on:
       - "crates/agent-minifilterctl/**"
       - "crates/agentctl/**"
       - "drivers/windows-minifilter/**"
+      - "scripts/windows-minifilter-project-smoke.ps1"
       - "scripts/windows-minifilter-smoke.ps1"
+      - "scripts/windows-minifilter-ssh-smoke.sh"
   workflow_dispatch:
 
 permissions:
@@ -129,8 +131,11 @@ jobs:
       - name: Upload driver artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: agentfs-driver-x64
+          name: agentfs-windows-x64
           path: |
+            target/x86_64-pc-windows-msvc/debug/agentctl.exe
+            target/x86_64-pc-windows-msvc/debug/agent-forkd.exe
+            target/x86_64-pc-windows-msvc/debug/agent-minifilterctl.exe
             drivers/windows-minifilter/x64/Release/agentfs.sys
             drivers/windows-minifilter/x64/Release/agentfs.pdb
             drivers/windows-minifilter/agentfs.inf

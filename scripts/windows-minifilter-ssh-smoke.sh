@@ -11,6 +11,7 @@ Defaults:
   key:              ./.key
   remote repo path: C:\Users\mizuame\Desktop\script\IPA-RS-IsolatedAgent
   branch:           current local git branch
+  skip build:       set AGENT_WINDOWS_SKIP_BUILD=1 to use prebuilt artifacts
 
 The remote checkout must be clean. The script fetches origin, checks out the
 current branch, fast-forwards it, and runs scripts\windows-minifilter-smoke.ps1
@@ -28,6 +29,7 @@ target="$1"
 remote_repo="${2:-C:\\Users\\mizuame\\Desktop\\script\\IPA-RS-IsolatedAgent}"
 key="${AGENT_WINDOWS_SSH_KEY:-.key}"
 branch="${AGENT_WINDOWS_BRANCH:-$(git branch --show-current)}"
+skip_build="${AGENT_WINDOWS_SKIP_BUILD:-0}"
 
 if [[ -z "$branch" ]]; then
   echo "Could not determine current git branch; set AGENT_WINDOWS_BRANCH." >&2
@@ -54,11 +56,13 @@ ps_quote() {
 
 remote_repo_ps="$(ps_quote "$remote_repo")"
 branch_ps="$(ps_quote "$branch")"
+skip_build_ps="$(ps_quote "$skip_build")"
 
 remote_script=$(cat <<'POWERSHELL'
 $ErrorActionPreference = "Stop"
 $repo = __REMOTE_REPO__
 $branch = __BRANCH__
+$skipBuild = __SKIP_BUILD__
 
 if (-not (Test-Path $repo)) {
     throw "Remote repo path does not exist: $repo"
@@ -80,16 +84,22 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw "SSH session is not elevated/admin; Windows minifilter smoke needs admin rights."
 }
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows-minifilter-smoke.ps1
+if ($skipBuild -eq '1') {
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows-minifilter-smoke.ps1 -SkipBuild
+} else {
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows-minifilter-smoke.ps1
+}
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows-minifilter-project-smoke.ps1 -Repo $repo
 POWERSHELL
 )
 remote_script="${remote_script/__REMOTE_REPO__/$remote_repo_ps}"
 remote_script="${remote_script/__BRANCH__/$branch_ps}"
+remote_script="${remote_script/__SKIP_BUILD__/$skip_build_ps}"
 
 echo "Running Windows minifilter smoke on $target"
 echo "Remote repo: $remote_repo"
 echo "Branch: $branch"
+echo "Skip build: $skip_build"
 
 printf '%s' "$remote_script" | ssh "${ssh_opts[@]}" "$target" \
   "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command -"
