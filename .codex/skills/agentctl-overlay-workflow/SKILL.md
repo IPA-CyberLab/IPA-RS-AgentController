@@ -1,12 +1,12 @@
 ---
 name: agentctl-overlay-workflow
 description: >-
-  Use agentctl/agctl native isolated development environments for Codex or Claude Code on macOS, including path-preserving overlay behavior, launching codex or claude inside envs, checking env state, diff/export inspection, applying overlay changes back to the host with agctl apply, handling conflicts, rebuilding/installing helper binaries, and avoiding accidental host writes. Use when the user mentions agctl, agentctl, IPA-RS-IsolatedAgent, path-preserving overlay, view-root, env upper/whiteouts/lower, syncing/applying env changes to host, running Codex or Claude Code inside an agentctl environment, or confusion about whether changes are inside or outside the env.
+  Use agentctl/agctl native isolated development environments for Codex or Claude Code on macOS or Windows, including path-preserving overlay behavior, Windows default clone backend behavior, optional Windows minifilter backend handling, launching codex or claude inside envs, checking env state, diff/export inspection, applying overlay changes back to the host with agctl apply, handling conflicts, rebuilding/installing helper binaries, and avoiding accidental host writes. Use when the user mentions agctl, agentctl, IPA-RS-IsolatedAgent, path-preserving overlay, view-root, env upper/whiteouts/lower, syncing/applying env changes to host, running Codex or Claude Code inside an agentctl environment, Windows minifilter, or confusion about whether changes are inside or outside the env.
 ---
 
 # Agentctl Overlay Workflow
 
-Use this skill when operating this repository's `agentctl` / `agctl` workflow on macOS.
+Use this skill when operating this repository's `agentctl` / `agctl` workflow on macOS or Windows.
 
 ## Mental Model
 
@@ -17,6 +17,20 @@ Use this skill when operating this repository's `agentctl` / `agctl` workflow on
 - Host `HOME` is shared intentionally so Codex, Claude Code, MCP, auth, Keychain, and app databases work normally.
 - Process sandboxing is intentionally disabled for this backend. Do not reintroduce `CODEX_HOME` hacks or `sandbox-exec` workarounds unless the user explicitly asks.
 - Because there is no process sandbox, absolute writes to the original host source path can bypass the overlay. Keep repo edits inside the env cwd/view-root unless the user explicitly wants direct host edits.
+
+## Backend Selection
+
+- macOS default native desktop backend is `apfs-clone`.
+- Windows default native desktop backend is `windows-block-clone`; it does not preserve the original host path. The env command runs under the cloned env rootfs, and host source files should remain unchanged.
+- Windows `windows-block-clone` may fall back to ordinary copying when `FSCTL_DUPLICATE_EXTENTS_TO_FILE` is unsupported by the filesystem or policy.
+- Path-preserving Windows minifilter behavior is opt-in only:
+
+```sh
+agentctl new -t codex --backend windows-minifilter-overlay --from <project>
+```
+
+- Do not switch Windows users to `windows-minifilter-overlay` unless they explicitly ask for the kernel-driver backend.
+- The minifilter backend requires a signed/loadable kernel driver. Test-signed drivers are blocked when Secure Boot is enabled and test signing is off; production or attestation signing is needed for that environment.
 
 ## Common Commands
 
@@ -116,6 +130,8 @@ agctl rm codex
 agctl new -t codex
 ```
 
+On Windows, local builds or downloaded CI artifacts may be blocked by Windows Defender Application Control/App Control if the binaries are unsigned. If the user has provided a real Windows test machine and wants execution there, prefer CI-built artifacts, then verify `agentctl.exe` and `agent-forkd.exe` can run. A local trusted code-signing certificate can make user-mode test binaries executable on that machine, but it does not solve kernel driver loading under Secure Boot.
+
 ## Troubleshooting
 
 - If Codex or Claude Code auth/MCP/network/Keychain fails inside env, first confirm the installed helper is current. The backend should not block those services.
@@ -123,3 +139,6 @@ agctl new -t codex
 - If terminal/PTY operations fail with `Operation not permitted`, suspect stale helper from the old sandboxed implementation.
 - If `agctl apply` reports a host conflict, inspect the host file and env changed path before using `--force`.
 - If files appear in env but not host, that is expected until `agctl apply <env>` is run.
+- On Windows default backend, seeing an env cwd under `.agentfs\envs\<env>\rootfs` is expected; same-path visibility requires the opt-in minifilter backend.
+- On Windows, `FSCTL_DUPLICATE_EXTENTS_TO_FILE failed` means block clone is unavailable for that source/target; use a build with copy fallback or expect env creation to fail.
+- For Windows minifilter failures, check `Confirm-SecureBootUEFI`, `bcdedit /enum {current}`, and `fltmc load agentfs` output before debugging overlay semantics.
