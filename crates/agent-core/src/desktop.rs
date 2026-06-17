@@ -1033,6 +1033,9 @@ async fn remove_file_if_exists(path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 async fn process_running(runner: &CommandRunner, pid: u32) -> Result<bool> {
+    if pid <= 1 {
+        return Ok(false);
+    }
     let output = runner
         .run("kill", vec!["-0".to_string(), pid.to_string()])
         .await?;
@@ -1064,14 +1067,75 @@ async fn process_running(runner: &CommandRunner, pid: u32) -> Result<bool> {
 
 #[cfg(unix)]
 async fn kill_process_tree(runner: &CommandRunner, pid: u32) -> Result<()> {
-    let output = runner
-        .run("kill", vec!["-TERM".to_string(), format!("-{pid}")])
-        .await?;
-    if output.status == 0 {
-        return Ok(());
+    ensure_safe_desktop_session_pid(pid)?;
+
+    let mut targets = process_descendants(runner, pid).await?;
+    targets.push(pid);
+    targets.sort_unstable();
+    targets.dedup();
+
+    for target in targets.into_iter().rev() {
+        terminate_pid(runner, target).await?;
     }
-    let output = runner.run("kill", vec![pid.to_string()]).await?;
-    if output.status == 0 {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_safe_desktop_session_pid(pid: u32) -> Result<()> {
+    if pid <= 1 {
+        bail!("refusing to signal unsafe native desktop session pid {pid}");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn process_descendants(runner: &CommandRunner, pid: u32) -> Result<Vec<u32>> {
+    let output = runner
+        .run("ps", vec!["-eo".to_string(), "pid=,ppid=".to_string()])
+        .await?;
+    if output.status != 0 {
+        return Err(anyhow!(
+            "failed to list native desktop session descendants for pid {pid}: {}{}",
+            output.stdout,
+            output.stderr
+        ));
+    }
+    Ok(descendant_pids_from_ps(&output.stdout, pid))
+}
+
+#[cfg(unix)]
+fn descendant_pids_from_ps(ps_output: &str, root_pid: u32) -> Vec<u32> {
+    let processes = ps_output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let ppid = fields.next()?.parse::<u32>().ok()?;
+            Some((pid, ppid))
+        })
+        .collect::<Vec<_>>();
+
+    let mut descendants = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut queue = vec![root_pid];
+    while let Some(parent) = queue.pop() {
+        for (pid, ppid) in &processes {
+            if *ppid == parent && seen.insert(*pid) {
+                descendants.push(*pid);
+                queue.push(*pid);
+            }
+        }
+    }
+    descendants
+}
+
+#[cfg(unix)]
+async fn terminate_pid(runner: &CommandRunner, pid: u32) -> Result<()> {
+    ensure_safe_desktop_session_pid(pid)?;
+    let output = runner
+        .run("kill", vec!["-TERM".to_string(), pid.to_string()])
+        .await?;
+    if output.status == 0 || !process_running(runner, pid).await? {
         Ok(())
     } else {
         Err(anyhow!(
@@ -1767,6 +1831,7 @@ mod tests {
     use crate::export::ExportType;
     use crate::model::{
         machine_name, Base, Env, EnvState, LimitOverrides, Limits, NetworkPolicy, RootfsBackend,
+        Session, SessionState, SessionType,
     };
     use crate::path_overlay::PathOverlay;
     use crate::protocol::Response;
@@ -2176,6 +2241,59 @@ mod tests {
         service.session_kill("codex-1", "dev").await.unwrap();
         let sessions = service.session_list("codex-1").await.unwrap();
         assert_eq!(sessions[0].state, crate::model::SessionState::Stopped);
+    }
+
+    #[test]
+    fn descendant_pids_from_ps_collects_only_the_requested_tree() {
+        let ps = "\
+              1       0\n\
+             10       1\n\
+             11      10\n\
+             12      10\n\
+             13      12\n\
+             20       1\n\
+             21      20\n";
+        let mut descendants = super::descendant_pids_from_ps(ps, 10);
+        descendants.sort_unstable();
+        assert_eq!(descendants, vec![11, 12, 13]);
+    }
+
+    #[tokio::test]
+    async fn desktop_session_kill_refuses_pid_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
+        service.init().await.unwrap();
+        create_native_env_fixture(&service).await;
+
+        let env_id = "codex-1";
+        let session_id = "dev";
+        let log_path = super::desktop_session_log_path(&service.layout, env_id, session_id);
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        service
+            .layout
+            .write_session(&Session {
+                id: session_id.to_string(),
+                env_id: env_id.to_string(),
+                command: "sleep 30".to_string(),
+                state: SessionState::Running,
+                created_at: Utc::now(),
+                session_type: SessionType::Pty,
+                log_path,
+            })
+            .await
+            .unwrap();
+        fs::write(
+            super::desktop_session_pid_path(&service.layout, env_id, session_id),
+            "1\n",
+        )
+        .unwrap();
+
+        let error = service
+            .session_kill(env_id, session_id)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsafe native desktop session pid 1"));
     }
 
     #[cfg(not(target_os = "macos"))]
