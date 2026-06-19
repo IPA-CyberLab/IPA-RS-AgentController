@@ -34,6 +34,8 @@ function App() {
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingRemove, setPendingRemove] = useState("");
+  const [removing, setRemoving] = useState(false);
+  const [removeMessage, setRemoveMessage] = useState("");
 
   const targetName = sanitizeWorldName(target);
   const targetExists = useMemo(
@@ -70,10 +72,8 @@ function App() {
     try {
       const response = await listEnvs(runtime);
       setEnvs(response.envs);
-      const nextSelection = chooseSelection(response.envs, preferredSelection || selected);
-      if (nextSelection) {
-        setSelected(nextSelection);
-      }
+      const nextSelection = chooseSelection(response.envs, preferredSelection ?? selected);
+      setSelected(nextSelection);
       setStatus(`${response.envs.length} worlds`);
     } catch (error) {
       setStatus(errorMessage(error));
@@ -186,20 +186,23 @@ function App() {
   }
 
   async function confirmRemove() {
-    if (!pendingRemove) {
+    if (!pendingRemove || removing) {
       return;
     }
-    const removing = pendingRemove;
+    const removingTarget = pendingRemove;
+    setRemoving(true);
+    setRemoveMessage("");
     try {
-      await removeLane(runtime, removing);
+      await removeLane(runtime, removingTarget);
       setPendingRemove("");
-      if (selected === removing) {
-        setSelected("");
-      }
-      await refresh();
-      setStatus(`Removed ${removing}`);
+      await refresh("");
+      setStatus(`Removed ${removingTarget}`);
     } catch (error) {
-      setStatus(errorMessage(error));
+      const message = errorMessage(error);
+      setRemoveMessage(message);
+      setStatus(message);
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -320,7 +323,10 @@ function App() {
             {selected ? (
               <button
                 className="danger"
-                onClick={() => setPendingRemove(selected)}
+                onClick={() => {
+                  setRemoveMessage("");
+                  setPendingRemove(selected);
+                }}
               >
                 <Trash2 size={16} />
                 Remove
@@ -377,9 +383,14 @@ function App() {
               <strong>Remove World</strong>
               <button
                 className="iconButton ghost"
-                onClick={() => setPendingRemove("")}
+                onClick={() => {
+                  if (!removing) {
+                    setPendingRemove("");
+                  }
+                }}
                 title="Close"
                 type="button"
+                disabled={removing}
               >
                 <X size={16} />
               </button>
@@ -395,13 +406,24 @@ function App() {
                 {envs.find((item) => item.env.id === pendingRemove)?.env.rootfs_path || "-"}
               </strong>
             </div>
+            {removeMessage ? <div className="formMessage">{removeMessage}</div> : null}
             <div className="confirmActions">
-              <button className="ghost" onClick={() => setPendingRemove("")} type="button">
+              <button
+                className="ghost"
+                onClick={() => setPendingRemove("")}
+                type="button"
+                disabled={removing}
+              >
                 Cancel
               </button>
-              <button className="danger" onClick={() => void confirmRemove()} type="button">
+              <button
+                className="danger"
+                onClick={() => void confirmRemove()}
+                type="button"
+                disabled={removing}
+              >
                 <Trash2 size={16} />
-                Remove World
+                {removing ? "Removing" : "Remove World"}
               </button>
             </div>
           </section>

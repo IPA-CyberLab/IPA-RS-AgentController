@@ -119,7 +119,24 @@ fn create_lane(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value,
 
 #[tauri::command]
 fn remove_lane(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
-    call_value(&options, Request::EnvDestroy { id: input.env_id })
+    let config = load_config(&options).map_err(error_string)?;
+    let env_id = input.env_id.trim().to_string();
+    validate_id(&env_id).map_err(error_string)?;
+    match call_value_with_config(&config, Request::EnvDestroy { id: env_id.clone() }) {
+        Ok(value) => Ok(value),
+        Err(error) if should_try_direct_remove(&error) => {
+            direct_remove_native_clone_env(&config, &env_id)
+                .map(|()| json!({ "type": "ok", "fallback": "direct-remove" }))
+                .map_err(|fallback| {
+                    format!(
+                        "agent-forkd remove failed: {}; direct remove failed: {}",
+                        error_string(error),
+                        error_string(fallback)
+                    )
+                })
+        }
+        Err(error) => Err(error_string(error)),
+    }
 }
 
 #[tauri::command]
@@ -159,14 +176,106 @@ fn open_shell(options: RuntimeOptions, input: EnvInput) -> Result<Value, String>
     Ok(json!({ "opened": true, "command": command }))
 }
 
-fn call_value(options: &RuntimeOptions, request: Request) -> Result<Value, String> {
-    let config = load_config(options).map_err(error_string)?;
-    call_value_with_config(&config, request).map_err(error_string)
-}
-
 fn call_value_with_config(config: &AgentConfig, request: Request) -> Result<Value> {
     let response = call_control(config, request)?;
     Ok(serde_json::to_value(ok_response(response)?)?)
+}
+
+fn should_try_direct_remove(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("failed to connect") || message.contains("Operation not permitted")
+}
+
+fn direct_remove_native_clone_env(config: &AgentConfig, env_id: &str) -> Result<()> {
+    let env_dir = config.agentfs.join("envs").join(env_id);
+    ensure_env_dir_path(config, env_id, &env_dir)?;
+    let metadata = env_dir.join("meta.json");
+    if !metadata.exists() {
+        return remove_dir_all_force(&env_dir);
+    }
+    let env = read_env_metadata(&metadata)?;
+    match env.backend {
+        RootfsBackend::ApfsClone | RootfsBackend::WindowsBlockClone => {
+            ensure_env_dir_path(config, &env.id, &env_dir)?;
+            ensure_env_rootfs_path(&env_dir, &env.rootfs_path)?;
+            remove_dir_all_force(&env_dir)
+        }
+        other => bail!("direct remove is only supported for native clone envs, got {other:?}"),
+    }
+}
+
+fn ensure_env_dir_path(config: &AgentConfig, env_id: &str, env_dir: &Path) -> Result<()> {
+    validate_id(env_id)?;
+    let expected = config.agentfs.join("envs").join(env_id);
+    if env_dir != expected {
+        bail!(
+            "refusing to remove unexpected env path {}",
+            env_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_env_rootfs_path(env_dir: &Path, rootfs: &Path) -> Result<()> {
+    if rootfs.starts_with(env_dir) {
+        Ok(())
+    } else {
+        bail!(
+            "refusing direct remove: rootfs {} is outside env {}",
+            rootfs.display(),
+            env_dir.display()
+        )
+    }
+}
+
+fn remove_dir_all_force(path: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {}
+    }
+    clear_removal_restrictions(path);
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            let output = Command::new("/bin/rm")
+                .arg("-rf")
+                .arg(path)
+                .output()
+                .with_context(|| format!("failed to launch /bin/rm for {}", path.display()))?;
+            if output.status.success() || !path.exists() {
+                Ok(())
+            } else {
+                bail!(
+                    "{}{}{}",
+                    error,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            }
+        }
+    }
+}
+
+fn clear_removal_restrictions(path: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("chflags")
+            .args(["-R", "nouchg,noschg"])
+            .arg(path)
+            .status();
+        let _ = Command::new("chmod")
+            .args(["-R", "u+rwX"])
+            .arg(path)
+            .status();
+        let _ = Command::new("chmod").args(["-R", "-N"]).arg(path).status();
+        let _ = Command::new("xattr").args(["-cr"]).arg(path).status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+    }
 }
 
 fn ok_response(response: Response) -> Result<Response> {
