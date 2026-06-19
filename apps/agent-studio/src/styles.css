@@ -440,7 +440,7 @@ pre {
 
 .metric strong {
   min-width: 0;
-  color: var(--green);
+  color: #ededf0;
   font-size: 13px;
   font-weight: 680;
   overflow-wrap: anywhere;

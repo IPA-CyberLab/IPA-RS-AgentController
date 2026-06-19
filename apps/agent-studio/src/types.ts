@@ -9,6 +9,10 @@ export type StudioConfig = {
   platform: "macos" | "windows" | "linux";
 };
 
+export type PathResponse = {
+  path?: string;
+};
+
 export type EnvState =
   | "created"
   | "running"

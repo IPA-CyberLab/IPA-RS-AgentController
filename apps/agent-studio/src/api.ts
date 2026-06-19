@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   EnvsResponse,
+  PathResponse,
   RuntimeOptions,
   StudioConfig
 } from "./types";
@@ -24,6 +25,10 @@ export async function createLane(
   }
 ) {
   return invoke("create_lane", { options, input });
+}
+
+export async function pickSourceRoot(initial?: string) {
+  return invoke<PathResponse>("pick_source_root", { input: { initial } });
 }
 
 export async function removeLane(options: RuntimeOptions, envId: string) {

@@ -14,6 +14,7 @@ import {
   listEnvs,
   openIde,
   openShell,
+  pickSourceRoot,
   removeLane
 } from "./api";
 import type { EnvStatus, RuntimeOptions } from "./types";
@@ -28,6 +29,7 @@ function App() {
   const [source, setSource] = useState("");
   const [status, setStatus] = useState("Starting");
   const [creating, setCreating] = useState(false);
+  const [selectingSource, setSelectingSource] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
   const selectedWorld = useMemo(
@@ -74,10 +76,27 @@ function App() {
     setStatus(`World: ${envId}`);
   }
 
-  function updateSource(value: string) {
-    setSource(value);
-    if (!target.trim()) {
-      setTarget(suggestWorldName(value));
+  async function startNewWorld() {
+    if (selectingSource) {
+      return;
+    }
+    setSelectingSource(true);
+    setMenuOpen(false);
+    setStatus("Choosing root folder");
+    try {
+      const response = await pickSourceRoot(source || undefined);
+      if (!response.path) {
+        setStatus("Folder selection cancelled");
+        return;
+      }
+      setSource(response.path);
+      setTarget(suggestWorldName(response.path));
+      setMenuOpen(true);
+      setStatus(`Selected ${response.path}`);
+    } catch (error) {
+      setStatus(String(error));
+    } finally {
+      setSelectingSource(false);
     }
   }
 
@@ -142,8 +161,9 @@ function App() {
     <main className="workbench">
       <aside className="activityBar">
         <button
-          className={`activityButton ${menuOpen ? "active" : ""}`}
-          onClick={() => setMenuOpen((value) => !value)}
+          className={`activityButton ${menuOpen || selectingSource ? "active" : ""}`}
+          onClick={() => void startNewWorld()}
+          disabled={selectingSource}
           title="New World"
         >
           <MoreHorizontal size={22} />
@@ -158,12 +178,10 @@ function App() {
               <X size={16} />
             </button>
           </header>
-          <label>Root</label>
-          <input
-            value={source}
-            onChange={(event) => updateSource(event.target.value)}
-            placeholder="/Users/mizuame/Desktop/script/project"
-          />
+          <div className="rootSummary">
+            <span>Root</span>
+            <strong>{source}</strong>
+          </div>
           <label>Name</label>
           <input value={target} onChange={(event) => setTarget(event.target.value)} />
           <button

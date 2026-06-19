@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 #[derive(Debug, Clone, Deserialize)]
 struct RuntimeOptions {
@@ -40,6 +40,16 @@ struct OpenIdeInput {
     env_id: String,
     app: String,
     relative_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PickFolderInput {
+    initial: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+struct PathResponse {
+    path: Option<PathBuf>,
 }
 
 #[tauri::command]
@@ -107,6 +117,13 @@ fn create_lane(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value,
 #[tauri::command]
 fn remove_lane(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
     call_value(&options, Request::EnvDestroy { id: input.env_id })
+}
+
+#[tauri::command]
+fn pick_source_root(input: PickFolderInput) -> Result<PathResponse, String> {
+    pick_folder(input.initial.as_deref())
+        .map(|path| PathResponse { path })
+        .map_err(error_string)
 }
 
 #[tauri::command]
@@ -373,6 +390,107 @@ fn spawn_detached(program: &str, args: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn pick_folder(initial: Option<&Path>) -> Result<Option<PathBuf>> {
+    let script = if let Some(path) = initial.filter(|path| path.exists()) {
+        format!(
+            "set defaultFolder to POSIX file {} as alias\nPOSIX path of (choose folder with prompt \"Choose root folder\" default location defaultFolder)",
+            apple_script_string(&path.display().to_string())
+        )
+    } else {
+        "POSIX path of (choose folder with prompt \"Choose root folder\")".to_string()
+    };
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .context("failed to open folder picker")?;
+    folder_output(output, &["User canceled"])
+}
+
+#[cfg(target_os = "windows")]
+fn pick_folder(initial: Option<&Path>) -> Result<Option<PathBuf>> {
+    let selected_path = initial
+        .filter(|path| path.exists())
+        .map(|path| {
+            format!(
+                "if (Test-Path -LiteralPath {}) {{ $dialog.SelectedPath = {} }};",
+                powershell_string(&path.display().to_string()),
+                powershell_string(&path.display().to_string())
+            )
+        })
+        .unwrap_or_default();
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; \
+         $dialog.Description = 'Choose root folder'; \
+         $dialog.ShowNewFolderButton = $false; \
+         {selected_path} \
+         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ \
+           [Console]::Out.WriteLine($dialog.SelectedPath) \
+         }}"
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-STA", "-Command", &script])
+        .output()
+        .context("failed to open folder picker")?;
+    folder_output(output, &[])
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn pick_folder(initial: Option<&Path>) -> Result<Option<PathBuf>> {
+    let initial = initial
+        .filter(|path| path.exists())
+        .map(|path| path.display().to_string());
+    let zenity_args = if let Some(path) = &initial {
+        vec![
+            "--file-selection",
+            "--directory",
+            "--filename",
+            path.as_str(),
+        ]
+    } else {
+        vec!["--file-selection", "--directory"]
+    };
+    let kdialog_args = if let Some(path) = &initial {
+        vec!["--getexistingdirectory", path.as_str()]
+    } else {
+        vec!["--getexistingdirectory"]
+    };
+    for (program, args) in [("zenity", zenity_args), ("kdialog", kdialog_args)] {
+        match Command::new(program).args(args).output() {
+            Ok(output) => return folder_output(output, &["No file selected"]),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("failed to run {program}")),
+        }
+    }
+    bail!("failed to find a folder picker command");
+}
+
+fn folder_output(output: Output, cancel_markers: &[&str]) -> Result<Option<PathBuf>> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let selected = stdout.trim();
+    if output.status.success() {
+        return Ok((!selected.is_empty()).then(|| PathBuf::from(selected)));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = stderr.trim();
+    if cancel_markers
+        .iter()
+        .any(|marker| message.contains(marker) || selected.contains(marker))
+    {
+        return Ok(None);
+    }
+    bail!(
+        "{}",
+        if message.is_empty() {
+            format!("folder picker exited with {}", output.status)
+        } else {
+            message.to_string()
+        }
+    )
+}
+
 fn agentctl_shell_command(
     options: &RuntimeOptions,
     config: &AgentConfig,
@@ -413,6 +531,11 @@ fn agentctl_program() -> PathBuf {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[cfg(target_os = "macos")]
@@ -489,6 +612,7 @@ fn main() {
             list_envs,
             create_lane,
             remove_lane,
+            pick_source_root,
             open_ide,
             open_shell,
         ])
