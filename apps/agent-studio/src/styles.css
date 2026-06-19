@@ -169,6 +169,34 @@ pre {
   width: 100%;
 }
 
+.actionMenu {
+  position: absolute;
+  top: 8px;
+  left: 56px;
+  z-index: 12;
+  width: 220px;
+  padding: 5px;
+  border: 1px solid #343640;
+  border-radius: 8px;
+  background: #18191e;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
+}
+
+.actionMenuItem {
+  width: 100%;
+  min-height: 32px;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 5px 8px;
+  color: #ededf0;
+}
+
+.actionMenuItem:hover {
+  background: #2a2c33;
+}
+
 .newWorldMenu {
   position: absolute;
   top: 8px;
@@ -223,6 +251,22 @@ pre {
   overflow-wrap: anywhere;
   color: #d7d7dc;
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.formMessage {
+  margin-top: 8px;
+  color: #f0b4ab;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.formMessage.warning {
+  color: #e6c56f;
+}
+
+.newWorldActions {
+  margin-top: 16px;
 }
 
 .worldPanel {

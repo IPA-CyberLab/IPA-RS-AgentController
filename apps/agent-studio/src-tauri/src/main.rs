@@ -1,6 +1,7 @@
 use agent_core::config::{default_agentfs, AgentConfig};
 use agent_core::model::{Base, Env, LimitOverrides, RootfsBackend};
 use agent_core::protocol::{Request, Response};
+use agent_core::storage::validate_id;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -71,6 +72,11 @@ fn list_envs(options: RuntimeOptions) -> Result<Value, String> {
 #[tauri::command]
 fn create_lane(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
+    let target = input.target.trim().to_string();
+    if target.is_empty() {
+        return Err("world name is required".to_string());
+    }
+    validate_id(&target).map_err(error_string)?;
     let source = normalize_source(&input.source).map_err(error_string)?;
     let backend = backend_from_ui(input.backend.as_deref()).map_err(error_string)?;
     let base = default_base_for_source(&source);
@@ -91,27 +97,24 @@ fn create_lane(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value,
         },
     ))
     .map_err(error_string)?;
-    ok_or_already_exists(call_control(
-        &config,
-        Request::EnvCreate {
-            id: input.target.clone(),
-            base,
-            profile,
-            limits,
-        },
-    ))
-    .map_err(error_string)?;
     ok_response(
         call_control(
             &config,
-            Request::EnvStart {
-                id: input.target.clone(),
+            Request::EnvCreate {
+                id: target.clone(),
+                base,
+                profile,
+                limits,
             },
         )
         .map_err(error_string)?,
     )
     .map_err(error_string)?;
-    env_status_from_metadata(&config, &input.target).map_err(error_string)
+    ok_response(
+        call_control(&config, Request::EnvStart { id: target.clone() }).map_err(error_string)?,
+    )
+    .map_err(error_string)?;
+    env_status_from_metadata(&config, &target).map_err(error_string)
 }
 
 #[tauri::command]
