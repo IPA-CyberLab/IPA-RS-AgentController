@@ -54,7 +54,11 @@ struct PathResponse {
 }
 
 #[tauri::command]
-fn app_config(options: RuntimeOptions) -> Result<StudioConfig, String> {
+async fn app_config(options: RuntimeOptions) -> Result<StudioConfig, String> {
+    run_blocking(move || app_config_blocking(options)).await
+}
+
+fn app_config_blocking(options: RuntimeOptions) -> Result<StudioConfig, String> {
     let config = load_config(&options).map_err(error_string)?;
     Ok(StudioConfig {
         agentfs: config.agentfs,
@@ -64,13 +68,21 @@ fn app_config(options: RuntimeOptions) -> Result<StudioConfig, String> {
 }
 
 #[tauri::command]
-fn list_envs(options: RuntimeOptions) -> Result<Value, String> {
+async fn list_envs(options: RuntimeOptions) -> Result<Value, String> {
+    run_blocking(move || list_envs_blocking(options)).await
+}
+
+fn list_envs_blocking(options: RuntimeOptions) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
     envs_from_metadata(&config).map_err(error_string)
 }
 
 #[tauri::command]
-fn create_lane(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value, String> {
+async fn create_lane(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value, String> {
+    run_blocking(move || create_lane_blocking(options, input)).await
+}
+
+fn create_lane_blocking(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
     let target = input.target.trim().to_string();
     if target.is_empty() {
@@ -118,7 +130,11 @@ fn create_lane(options: RuntimeOptions, input: CreateLaneInput) -> Result<Value,
 }
 
 #[tauri::command]
-fn remove_lane(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
+async fn remove_lane(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
+    run_blocking(move || remove_lane_blocking(options, input)).await
+}
+
+fn remove_lane_blocking(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
     let env_id = input.env_id.trim().to_string();
     validate_id(&env_id).map_err(error_string)?;
@@ -139,15 +155,32 @@ fn remove_lane(options: RuntimeOptions, input: EnvInput) -> Result<Value, String
     }
 }
 
-#[tauri::command]
-fn pick_source_root(input: PickFolderInput) -> Result<PathResponse, String> {
-    pick_folder(input.initial.as_deref())
-        .map(|path| PathResponse { path })
-        .map_err(error_string)
+async fn run_blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn open_ide(options: RuntimeOptions, input: OpenIdeInput) -> Result<Value, String> {
+async fn pick_source_root(input: PickFolderInput) -> Result<PathResponse, String> {
+    run_blocking(move || {
+        pick_folder(input.initial.as_deref())
+            .map(|path| PathResponse { path })
+            .map_err(error_string)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn open_ide(options: RuntimeOptions, input: OpenIdeInput) -> Result<Value, String> {
+    run_blocking(move || open_ide_blocking(options, input)).await
+}
+
+fn open_ide_blocking(options: RuntimeOptions, input: OpenIdeInput) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
     let rootfs = env_rootfs_from_metadata(&config, &input.env_id).map_err(error_string)?;
     let relative = input.relative_path.unwrap_or_default();
@@ -157,7 +190,11 @@ fn open_ide(options: RuntimeOptions, input: OpenIdeInput) -> Result<Value, Strin
 }
 
 #[tauri::command]
-fn open_shell(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
+async fn open_shell(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
+    run_blocking(move || open_shell_blocking(options, input)).await
+}
+
+fn open_shell_blocking(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
     let env = read_env_metadata(
         &config

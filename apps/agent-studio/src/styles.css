@@ -574,6 +574,56 @@ pre {
   margin-top: 14px;
 }
 
+.busyOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.56);
+  cursor: progress;
+}
+
+.busyPanel {
+  min-width: 220px;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  border: 1px solid #363944;
+  border-radius: 8px;
+  background: #15161b;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  padding: 20px;
+}
+
+.busyPanel strong {
+  color: #f4f4f6;
+  font-size: 14px;
+}
+
+.busyPanel span {
+  max-width: 320px;
+  color: #a9abb3;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #333842;
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 1080px) {
   .launchStrip {
     gap: 12px;

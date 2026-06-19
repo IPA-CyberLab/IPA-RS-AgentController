@@ -95,6 +95,7 @@ function App() {
     setFormMessage("");
     setStatus("Choosing root folder");
     try {
+      await nextFrame();
       const response = await pickSourceRoot(source || undefined);
       if (!response.path) {
         setStatus("Folder selection cancelled");
@@ -143,6 +144,7 @@ function App() {
     setStatus(`Creating ${nextTarget}`);
     const startedAt = Date.now();
     try {
+      await nextFrame();
       await createLane(runtime, { target: nextTarget, source: nextSource });
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       setMenuOpen(false);
@@ -193,6 +195,7 @@ function App() {
     setRemoving(true);
     setRemoveMessage("");
     try {
+      await nextFrame();
       await removeLane(runtime, removingTarget);
       setPendingRemove("");
       await refresh("");
@@ -429,6 +432,16 @@ function App() {
           </section>
         </div>
       ) : null}
+
+      {creating ? (
+        <div className="busyOverlay" role="alert" aria-live="assertive">
+          <div className="busyPanel">
+            <div className="spinner" aria-hidden="true" />
+            <strong>Creating Fork</strong>
+            <span>{sanitizeWorldName(target) || "world"}</span>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -487,6 +500,12 @@ function formatDate(value: string) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function nextFrame() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
 }
 
 export default App;
