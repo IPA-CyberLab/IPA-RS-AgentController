@@ -1,5 +1,4 @@
 import {
-  Code2,
   FolderOpen,
   GitCompare,
   MoreHorizontal,
@@ -17,16 +16,14 @@ import {
   listEnvs,
   openIde,
   openShell,
-  pickSourceRoot,
   removeLane
 } from "./api";
-import type { EnvStatus, RuntimeOptions, StudioConfig } from "./types";
+import type { EnvStatus, RuntimeOptions } from "./types";
 
 const defaultRuntime: RuntimeOptions = {};
 
 function App() {
   const [runtime] = useState(defaultRuntime);
-  const [config, setConfig] = useState<StudioConfig | null>(null);
   const [envs, setEnvs] = useState<EnvStatus[]>([]);
   const [selected, setSelected] = useState("");
   const [target, setTarget] = useState("");
@@ -34,7 +31,6 @@ function App() {
   const [status, setStatus] = useState("Starting");
   const [creating, setCreating] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [shellNotes, setShellNotes] = useState<Record<string, string>>({});
 
   const selectedWorld = useMemo(
     () => envs.find((item) => item.env.id === selected),
@@ -43,14 +39,10 @@ function App() {
   const selectedEnv = selectedWorld?.env;
   const selectedSourceRoot = selectedWorld?.source_root || "";
   const selectedEnvPath = selectedWorld?.env_path || "";
-  const selectedShellNote = selected ? shellNotes[selected] || "" : "";
 
   useEffect(() => {
     void appConfig(runtime)
-      .then((value) => {
-        setConfig(value);
-        setStatus(`${value.platform} / ${value.agentfs}`);
-      })
+      .then((value) => setStatus(`${value.platform} / ${value.agentfs}`))
       .catch((error) => setStatus(String(error)));
     void refresh();
   }, [runtime]);
@@ -81,32 +73,13 @@ function App() {
 
   function selectWorld(envId: string) {
     setSelected(envId);
-    setStatus(`Shell: ${envId}`);
+    setStatus(`World: ${envId}`);
   }
 
-  function noteShell(envId: string, text: string) {
-    setShellNotes((current) => ({
-      ...current,
-      [envId]: text
-    }));
-  }
-
-  async function chooseRoot() {
-    setStatus("Opening folder");
-    try {
-      const picked = await pickSourceRoot(runtime, source);
-      if (picked) {
-        setSource(picked);
-        setTarget(suggestWorldName(picked));
-        setStatus(picked);
-      } else {
-        setStatus("Folder selection cancelled");
-      }
-    } catch (error) {
-      setStatus(String(error));
-      if (selected) {
-        noteShell(selected, String(error));
-      }
+  function updateSource(value: string) {
+    setSource(value);
+    if (!target.trim()) {
+      setTarget(suggestWorldName(value));
     }
   }
 
@@ -128,14 +101,12 @@ function App() {
     try {
       await createLane(runtime, { target, source });
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      noteShell(target, `created ${target} in ${elapsed}s`);
       setStatus(`Created ${target} in ${elapsed}s`);
       selectWorld(target);
       setMenuOpen(false);
       await refresh();
     } catch (error) {
       setStatus(String(error));
-      noteShell(target || "system", String(error));
     } finally {
       setCreating(false);
     }
@@ -148,11 +119,10 @@ function App() {
     }
     try {
       const result = await action(selected);
-      noteShell(selected, JSON.stringify(result, null, 2));
+      setStatus(JSON.stringify(result));
       await refresh();
     } catch (error) {
       setStatus(String(error));
-      noteShell(selected, String(error));
     }
   }
 
@@ -165,10 +135,8 @@ function App() {
       await openShell(runtime, selected);
       const message = `opened agentctl shell ${selected}`;
       setStatus(message);
-      noteShell(selected, message);
     } catch (error) {
       setStatus(String(error));
-      noteShell(selected, String(error));
     }
   }
 
@@ -192,28 +160,22 @@ function App() {
               <X size={16} />
             </button>
           </header>
-          <button className={source ? "wide" : "primary wide"} onClick={chooseRoot}>
-            <FolderOpen size={16} />
-            {source ? "Change Folder" : "Open Folder"}
+          <label>Root</label>
+          <input
+            value={source}
+            onChange={(event) => updateSource(event.target.value)}
+            placeholder="/Users/mizuame/Desktop/script/project"
+          />
+          <label>Name</label>
+          <input value={target} onChange={(event) => setTarget(event.target.value)} />
+          <button
+            className="primary wide"
+            onClick={create}
+            disabled={!source.trim() || !target.trim() || creating}
+          >
+            <Plus size={16} />
+            {creating ? "Creating" : "Create"}
           </button>
-          {source ? (
-            <>
-              <div className="rootSummary">
-                <span>Root</span>
-                <strong>{source}</strong>
-              </div>
-              <label>Name</label>
-              <input value={target} onChange={(event) => setTarget(event.target.value)} />
-              <button
-                className="primary wide"
-                onClick={create}
-                disabled={!target.trim() || creating}
-              >
-                <Plus size={16} />
-                {creating ? "Creating" : "Create"}
-              </button>
-            </>
-          ) : null}
         </section>
       ) : null}
 
@@ -248,25 +210,12 @@ function App() {
             <span>{selectedEnv ? selectedSourceRoot || selectedEnv.rootfs_path : status}</span>
           </div>
           <div className="toolbarActions">
-            <button onClick={() => void withEnv((id) => openIde(runtime, id, "code", ""))}>
-              <Code2 size={16} />
-              VSCode
-            </button>
-            <button onClick={() => void withEnv((id) => openIde(runtime, id, "cursor", ""))}>
-              <Code2 size={16} />
-              Cursor
-            </button>
-            <button onClick={() => void withEnv((id) => openIde(runtime, id, "reveal", ""))}>
-              <FolderOpen size={16} />
-              Folder
+            <button className="ghost" onClick={refresh} title="Refresh">
+              <RefreshCw size={16} />
             </button>
             <button onClick={() => void withEnv((id) => changedPaths(runtime, id))}>
               <GitCompare size={16} />
               Changed
-            </button>
-            <button onClick={() => void openNativeShell()}>
-              <Terminal size={16} />
-              Shell
             </button>
             {selected ? (
               <button
@@ -275,7 +224,7 @@ function App() {
                   void removeLane(runtime, selected)
                     .then(() => refresh())
                     .then(() => setSelected(""))
-                    .catch((error) => noteShell(selected, String(error)))
+                    .catch((error) => setStatus(String(error)))
                 }
               >
                 <Trash2 size={16} />
@@ -287,46 +236,34 @@ function App() {
 
         <section className="editorPane">
           {selectedEnv ? (
-            <div className="detailPanel">
-              <header>
-                <strong>Details</strong>
-                <span>docker ps style</span>
-              </header>
-              <div className="detailTableWrap">
-                <table className="detailTable">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Status</th>
-                      <th>Backend</th>
-                      <th>Base</th>
-                      <th>Fork Root</th>
-                      <th>AgentFS Env</th>
-                      <th>Rootfs</th>
-                      <th>Profile</th>
-                      <th>Created</th>
-                      <th>Sessions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td className="strongCell">{selectedEnv.id}</td>
-                      <td>
-                        <span className={`worldState ${selectedEnv.state}`}>
-                          {selectedEnv.state}
-                        </span>
-                      </td>
-                      <td>{selectedEnv.backend}</td>
-                      <td className="monoCell">{selectedEnv.base_id}</td>
-                      <td className="pathCell">{selectedSourceRoot || "-"}</td>
-                      <td className="pathCell">{selectedEnvPath || "-"}</td>
-                      <td className="pathCell">{selectedEnv.rootfs_path}</td>
-                      <td>{selectedEnv.profile}</td>
-                      <td>{formatDate(selectedEnv.created_at)}</td>
-                      <td>{selectedEnv.sessions.length ? selectedEnv.sessions.join(", ") : "-"}</td>
-                    </tr>
-                  </tbody>
-                </table>
+            <div className="worldDashboard">
+              <div className="launchStrip">
+                <button
+                  className="launchButton"
+                  onClick={() => void withEnv((id) => openIde(runtime, id, "reveal", ""))}
+                >
+                  <FolderOpen size={28} />
+                  <span>File</span>
+                </button>
+                <button className="launchButton" onClick={() => void openNativeShell()}>
+                  <Terminal size={28} />
+                  <span>Terminal</span>
+                </button>
+              </div>
+
+              <div className="metricStrip">
+                <Metric label="Status" value={selectedEnv.state} />
+                <Metric label="Backend" value={selectedEnv.backend} />
+                <Metric label="Base" value={selectedEnv.base_id} />
+                <Metric
+                  label="Sessions"
+                  value={selectedEnv.sessions.length ? selectedEnv.sessions.join(", ") : "-"}
+                />
+                <Metric label="Profile" value={selectedEnv.profile} />
+                <Metric label="Created" value={formatDate(selectedEnv.created_at)} />
+                <Metric label="Fork Root" value={selectedSourceRoot || "-"} wide />
+                <Metric label="AgentFS Env" value={selectedEnvPath || "-"} wide />
+                <Metric label="Rootfs" value={selectedEnv.rootfs_path} wide />
               </div>
             </div>
           ) : (
@@ -336,33 +273,25 @@ function App() {
             </div>
           )}
         </section>
-
-        <section className="terminalPane">
-          <header>
-            <div>
-              <Terminal size={15} />
-              <strong>Shell</strong>
-              <span>{selectedEnv ? `agentctl shell ${selectedEnv.id}` : "Select a world"}</span>
-            </div>
-          </header>
-          <div className="nativeShell">
-            <div>
-              <strong>{selectedEnv ? selectedEnv.id : "No world selected"}</strong>
-              <span>
-                {selectedEnv
-                  ? "Opens the existing agentctl shell in your terminal."
-                  : "Select a world from the left panel."}
-              </span>
-            </div>
-            <button className="primary" onClick={() => void openNativeShell()} disabled={!selectedEnv}>
-              <Terminal size={16} />
-              Open Shell
-            </button>
-            <pre>{selectedShellNote}</pre>
-          </div>
-        </section>
       </section>
     </main>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  wide = false
+}: {
+  label: string;
+  value: string;
+  wide?: boolean;
+}) {
+  return (
+    <div className={wide ? "metric wideMetric" : "metric"}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 

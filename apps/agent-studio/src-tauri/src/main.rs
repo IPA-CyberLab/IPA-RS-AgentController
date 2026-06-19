@@ -31,11 +31,6 @@ struct CreateLaneInput {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct PickFolderInput {
-    default_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 struct EnvInput {
     env_id: String,
 }
@@ -55,15 +50,6 @@ fn app_config(options: RuntimeOptions) -> Result<StudioConfig, String> {
         default_source: std::env::var_os("AGENT_STUDIO_SOURCE").map(PathBuf::from),
         platform: platform_name(),
     })
-}
-
-#[tauri::command]
-fn pick_source_root(
-    _options: RuntimeOptions,
-    input: PickFolderInput,
-) -> Result<serde_json::Value, String> {
-    let path = pick_folder(input.default_path.as_deref()).map_err(error_string)?;
-    Ok(json!({ "path": path }))
 }
 
 #[tauri::command]
@@ -483,92 +469,9 @@ fn launch_native_terminal(command: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn pick_folder(default_path: Option<&Path>) -> Result<Option<PathBuf>> {
-    let mut script = String::from("POSIX path of (choose folder with prompt \"Open Folder\"");
-    if let Some(default_path) = default_path.filter(|path| path.exists()) {
-        script.push_str(" default location POSIX file ");
-        script.push_str(&apple_script_string(&default_path.display().to_string()));
-    }
-    script.push(')');
-    folder_output(Command::new("osascript").arg("-e").arg(script).output())
-}
-
-#[cfg(target_os = "windows")]
-fn pick_folder(default_path: Option<&Path>) -> Result<Option<PathBuf>> {
-    let selected_path = default_path
-        .filter(|path| path.exists())
-        .map(|path| powershell_string(&path.display().to_string()))
-        .unwrap_or_else(|| "''".to_string());
-    let script = format!(
-        r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = 'Open Folder'
-if ({selected_path}.Length -gt 0) {{ $dialog.SelectedPath = {selected_path} }}
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
-  [Console]::Out.Write($dialog.SelectedPath)
-}}
-"#
-    );
-    folder_output(
-        Command::new("powershell.exe")
-            .args(["-NoProfile", "-STA", "-Command", &script])
-            .output(),
-    )
-}
-
-#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-fn pick_folder(default_path: Option<&Path>) -> Result<Option<PathBuf>> {
-    let mut zenity = Command::new("zenity");
-    zenity.args(["--file-selection", "--directory", "--title", "Open Folder"]);
-    if let Some(default_path) = default_path.filter(|path| path.exists()) {
-        zenity.arg("--filename").arg(default_path);
-    }
-    match folder_output(zenity.output()) {
-        Ok(path) => Ok(path),
-        Err(zenity_error) => {
-            let mut kdialog = Command::new("kdialog");
-            kdialog.arg("--getexistingdirectory");
-            if let Some(default_path) = default_path.filter(|path| path.exists()) {
-                kdialog.arg(default_path);
-            }
-            folder_output(kdialog.output()).with_context(|| {
-                format!(
-                    "failed to open folder picker with zenity or kdialog; zenity error: {zenity_error}"
-                )
-            })
-        }
-    }
-}
-
-fn folder_output(output: std::io::Result<std::process::Output>) -> Result<Option<PathBuf>> {
-    let output = output.context("failed to start folder picker")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.success() {
-        let value = stdout.trim();
-        return Ok((!value.is_empty()).then(|| PathBuf::from(value)));
-    }
-    let message = stderr.trim();
-    if message.contains("-128")
-        || message.contains("User canceled")
-        || message.contains("cancel")
-        || output.status.code() == Some(1)
-    {
-        return Ok(None);
-    }
-    bail!("folder picker failed: {message}");
-}
-
-#[cfg(target_os = "macos")]
 fn apple_script_string(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
-}
-
-#[cfg(target_os = "windows")]
-fn powershell_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn platform_name() -> &'static str {
@@ -594,7 +497,6 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             app_config,
-            pick_source_root,
             list_envs,
             create_lane,
             remove_lane,

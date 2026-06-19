@@ -54,7 +54,3 @@ export type TextResponse = {
   type: "text";
   text: string;
 };
-
-export type PathResponse = {
-  path?: string | null;
-};
