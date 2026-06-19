@@ -33,6 +33,7 @@ function App() {
   const [selectingSource, setSelectingSource] = useState(false);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState("");
 
   const targetName = sanitizeWorldName(target);
   const targetExists = useMemo(
@@ -184,6 +185,24 @@ function App() {
     }
   }
 
+  async function confirmRemove() {
+    if (!pendingRemove) {
+      return;
+    }
+    const removing = pendingRemove;
+    try {
+      await removeLane(runtime, removing);
+      setPendingRemove("");
+      if (selected === removing) {
+        setSelected("");
+      }
+      await refresh();
+      setStatus(`Removed ${removing}`);
+    } catch (error) {
+      setStatus(errorMessage(error));
+    }
+  }
+
   return (
     <main className="workbench">
       <aside className="activityBar">
@@ -301,12 +320,7 @@ function App() {
             {selected ? (
               <button
                 className="danger"
-                onClick={() =>
-                  void removeLane(runtime, selected)
-                    .then(() => refresh())
-                    .then(() => setSelected(""))
-                    .catch((error) => setStatus(errorMessage(error)))
-                }
+                onClick={() => setPendingRemove(selected)}
               >
                 <Trash2 size={16} />
                 Remove
@@ -355,6 +369,44 @@ function App() {
           )}
         </section>
       </section>
+
+      {pendingRemove ? (
+        <div className="modalBackdrop" role="presentation">
+          <section className="confirmDialog" role="dialog" aria-modal="true">
+            <header>
+              <strong>Remove World</strong>
+              <button
+                className="iconButton ghost"
+                onClick={() => setPendingRemove("")}
+                title="Close"
+                type="button"
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <p>
+              This removes the isolated world and its env files. Host source files are not removed.
+            </p>
+            <div className="removeSummary">
+              <span>Name</span>
+              <strong>{pendingRemove}</strong>
+              <span>Root</span>
+              <strong>
+                {envs.find((item) => item.env.id === pendingRemove)?.env.rootfs_path || "-"}
+              </strong>
+            </div>
+            <div className="confirmActions">
+              <button className="ghost" onClick={() => setPendingRemove("")} type="button">
+                Cancel
+              </button>
+              <button className="danger" onClick={() => void confirmRemove()} type="button">
+                <Trash2 size={16} />
+                Remove World
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

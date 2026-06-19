@@ -506,6 +506,74 @@ pre {
   color: var(--muted);
 }
 
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.48);
+}
+
+.confirmDialog {
+  width: min(420px, calc(100vw - 40px));
+  border: 1px solid #3a2d2d;
+  border-radius: 8px;
+  background: #15161b;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  padding: 14px;
+}
+
+.confirmDialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.confirmDialog header strong {
+  color: #f3f3f5;
+  font-size: 14px;
+}
+
+.confirmDialog p {
+  margin: 12px 0;
+  color: #b7b8bf;
+  font-size: 12px;
+}
+
+.removeSummary {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 7px 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #101114;
+}
+
+.removeSummary span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.removeSummary strong {
+  min-width: 0;
+  color: #ededf0;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
 @media (max-width: 1080px) {
   .launchStrip {
     gap: 12px;
