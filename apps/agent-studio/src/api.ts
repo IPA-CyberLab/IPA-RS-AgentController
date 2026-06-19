@@ -2,8 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   EnvsResponse,
   RuntimeOptions,
-  StudioConfig,
-  TextResponse
+  StudioConfig
 } from "./types";
 
 export async function appConfig(options: RuntimeOptions) {
@@ -29,13 +28,6 @@ export async function createLane(
 
 export async function removeLane(options: RuntimeOptions, envId: string) {
   return invoke("remove_lane", { options, input: { env_id: envId } });
-}
-
-export async function changedPaths(options: RuntimeOptions, envId: string) {
-  return invoke<TextResponse>("changed_paths", {
-    options,
-    input: { env_id: envId }
-  });
 }
 
 export async function openIde(

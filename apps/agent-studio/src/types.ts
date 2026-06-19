@@ -49,8 +49,3 @@ export type EnvsResponse = {
   type: "envs";
   envs: EnvStatus[];
 };
-
-export type TextResponse = {
-  type: "text";
-  text: string;
-};

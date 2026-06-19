@@ -1,6 +1,5 @@
 import {
   FolderOpen,
-  GitCompare,
   MoreHorizontal,
   Plus,
   RefreshCw,
@@ -11,7 +10,6 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   appConfig,
-  changedPaths,
   createLane,
   listEnvs,
   openIde,
@@ -213,10 +211,6 @@ function App() {
             <button className="ghost" onClick={refresh} title="Refresh">
               <RefreshCw size={16} />
             </button>
-            <button onClick={() => void withEnv((id) => changedPaths(runtime, id))}>
-              <GitCompare size={16} />
-              Changed
-            </button>
             {selected ? (
               <button
                 className="danger"
@@ -242,11 +236,11 @@ function App() {
                   className="launchButton"
                   onClick={() => void withEnv((id) => openIde(runtime, id, "reveal", ""))}
                 >
-                  <FolderOpen size={28} />
+                  <FolderOpen size={18} />
                   <span>File</span>
                 </button>
                 <button className="launchButton" onClick={() => void openNativeShell()}>
-                  <Terminal size={28} />
+                  <Terminal size={18} />
                   <span>Terminal</span>
                 </button>
               </div>

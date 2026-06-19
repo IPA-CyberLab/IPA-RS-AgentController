@@ -110,17 +110,6 @@ fn remove_lane(options: RuntimeOptions, input: EnvInput) -> Result<Value, String
 }
 
 #[tauri::command]
-fn changed_paths(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
-    call_value(
-        &options,
-        Request::Export {
-            env_id: input.env_id,
-            export_type: "rootfs-changed-paths".to_string(),
-        },
-    )
-}
-
-#[tauri::command]
 fn open_ide(options: RuntimeOptions, input: OpenIdeInput) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
     let rootfs = env_rootfs_from_metadata(&config, &input.env_id).map_err(error_string)?;
@@ -500,7 +489,6 @@ fn main() {
             list_envs,
             create_lane,
             remove_lane,
-            changed_paths,
             open_ide,
             open_shell,
         ])
