@@ -2,3 +2,6 @@ docs/goal.md
 /target/
 **/*.log
 .key
+apps/agent-studio/dist/
+apps/agent-studio/node_modules/
+apps/agent-studio/src-tauri/target/

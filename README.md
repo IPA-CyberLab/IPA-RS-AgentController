@@ -275,6 +275,26 @@ On native macOS and Windows, `agentctl new -t <env-id>` uses `$HOME/.agentfs`
 and clones the current directory by default. Pass `--from <path>` to choose a
 different native source tree.
 
+Agent Studio is a Tauri + React desktop frontend for parallel world management:
+
+```bash
+cd apps/agent-studio
+npm install
+npm run tauri:dev
+```
+
+The app starts by opening a root folder, including directories above or outside
+a Git repository, then creates isolated worlds from that root. It can open each
+world in VSCode/Cursor or a file manager. This is a thin native UI over the same
+daemon protocol as `agentctl new`, `agentctl ls`,
+`agentctl export --type rootfs-changed-paths`, and `agentctl rm`.
+
+`agentctl studio` is also available as a lightweight local browser fallback:
+
+```bash
+agentctl studio --source "$PWD"
+```
+
 `agentctl shell <env-id>` creates or reuses a persistent `shell` tmux session
 inside the child and attaches the current terminal to it. `agentctl diff`
 prints the `/workspace` Git patch when that directory is a Git repository, and

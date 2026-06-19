@@ -12,6 +12,8 @@ use tokio::net::TcpStream;
 #[cfg(target_os = "linux")]
 use tokio::net::UnixStream;
 
+mod studio;
+
 #[derive(Debug, Parser)]
 #[command(name = "agentctl", about = "Control forked dev environments")]
 struct RawCli {
@@ -131,6 +133,7 @@ enum Command {
     },
     Export(ExportArgs),
     Apply(ApplyArgs),
+    Studio(StudioArgs),
 }
 
 #[derive(Debug, Args)]
@@ -321,6 +324,16 @@ struct ApplyArgs {
     force: bool,
 }
 
+#[derive(Debug, Clone, Args)]
+pub(crate) struct StudioArgs {
+    #[arg(long, default_value = "127.0.0.1:38580")]
+    pub(crate) addr: String,
+    #[arg(long = "source", default_value_os_t = default_new_source())]
+    pub(crate) source: PathBuf,
+    #[arg(long = "no-open")]
+    pub(crate) no_open: bool,
+}
+
 #[derive(Debug, Clone, ValueEnum)]
 enum ExportKind {
     WorkspacePatch,
@@ -341,11 +354,17 @@ impl ExportKind {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::try_from(RawCli::parse())?;
+    if matches!(cli.command, Command::Studio(_)) && cli.remote.is_some() {
+        return Err(anyhow!("studio does not support --remote yet"));
+    }
     if let Some(remote) = &cli.remote {
         exec_remote(remote, &cli)?;
     }
     let config =
         AgentConfig::load_or_default(cli.config.as_deref(), effective_agentfs(&cli)).await?;
+    if let Command::Studio(args) = &cli.command {
+        return studio::run(config, args.clone()).await;
+    }
     let request = to_request(&cli, &config)?;
     let response = call(&config, request).await?;
     print_response(response)
@@ -533,6 +552,15 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
                 args.push("--force".to_string());
             }
         }
+        Command::Studio(studio) => {
+            args.push("studio".to_string());
+            args.push("--addr".to_string());
+            args.push(studio.addr.clone());
+            push_path(args, "--source", Some(&studio.source));
+            if studio.no_open {
+                args.push("--no-open".to_string());
+            }
+        }
     }
 }
 
@@ -713,6 +741,7 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             env_id: args.env_id.clone(),
             force: args.force,
         }),
+        Command::Studio(_) => Err(anyhow!("studio is handled locally")),
     }
 }
 
@@ -721,7 +750,7 @@ async fn call(config: &AgentConfig, request: Request) -> Result<Response> {
 }
 
 #[cfg(target_os = "linux")]
-async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
+pub(crate) async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
     let mut stream = UnixStream::connect(&config.socket_path)
         .await
         .map_err(|error| {
@@ -742,7 +771,7 @@ async fn call_control(config: &AgentConfig, request: Request) -> Result<Response
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
+pub(crate) async fn call_control(config: &AgentConfig, request: Request) -> Result<Response> {
     let mut stream = TcpStream::connect(&config.tcp_addr)
         .await
         .map_err(|error| anyhow!("failed to connect {}: {error}", config.tcp_addr))?;
