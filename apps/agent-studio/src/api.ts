@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   EnvsResponse,
-  ExecResponse,
   PathResponse,
   RuntimeOptions,
   StudioConfig,
@@ -50,17 +49,6 @@ export async function changedPaths(options: RuntimeOptions, envId: string) {
   });
 }
 
-export async function runCommand(
-  options: RuntimeOptions,
-  envId: string,
-  command: string
-) {
-  return invoke<ExecResponse>("run_command", {
-    options,
-    input: { env_id: envId, command }
-  });
-}
-
 export async function openIde(
   options: RuntimeOptions,
   envId: string,
@@ -71,4 +59,8 @@ export async function openIde(
     options,
     input: { env_id: envId, app, relative_path: relativePath }
   });
+}
+
+export async function openShell(options: RuntimeOptions, envId: string) {
+  return invoke("open_shell", { options, input: { env_id: envId } });
 }

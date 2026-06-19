@@ -41,18 +41,13 @@ export type Env = {
 export type EnvStatus = {
   env: Env;
   disk_used?: string;
+  source_root?: string;
+  env_path?: string;
 };
 
 export type EnvsResponse = {
   type: "envs";
   envs: EnvStatus[];
-};
-
-export type ExecResponse = {
-  type: "exec";
-  status: number;
-  stdout: string;
-  stderr: string;
 };
 
 export type TextResponse = {

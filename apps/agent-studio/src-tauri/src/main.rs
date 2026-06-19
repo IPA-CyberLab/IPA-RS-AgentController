@@ -1,5 +1,5 @@
 use agent_core::config::{default_agentfs, AgentConfig};
-use agent_core::model::{Env, EnvStatus, LimitOverrides, RootfsBackend};
+use agent_core::model::{Base, Env, LimitOverrides, RootfsBackend};
 use agent_core::protocol::{Request, Response};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -45,12 +45,6 @@ struct OpenIdeInput {
     env_id: String,
     app: String,
     relative_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ExecInput {
-    env_id: String,
-    command: String,
 }
 
 #[tauri::command]
@@ -141,18 +135,6 @@ fn changed_paths(options: RuntimeOptions, input: EnvInput) -> Result<Value, Stri
 }
 
 #[tauri::command]
-fn run_command(options: RuntimeOptions, input: ExecInput) -> Result<Value, String> {
-    call_value(
-        &options,
-        Request::Exec {
-            id: input.env_id,
-            command: shell_command(&input.command),
-            cwd: None,
-        },
-    )
-}
-
-#[tauri::command]
 fn open_ide(options: RuntimeOptions, input: OpenIdeInput) -> Result<Value, String> {
     let config = load_config(&options).map_err(error_string)?;
     let rootfs = env_rootfs_from_metadata(&config, &input.env_id).map_err(error_string)?;
@@ -160,6 +142,26 @@ fn open_ide(options: RuntimeOptions, input: OpenIdeInput) -> Result<Value, Strin
     let path = rootfs.join(safe_relative_path(&relative).map_err(error_string)?);
     launch_known_app(&input.app, &path).map_err(error_string)?;
     Ok(json!({ "path": path }))
+}
+
+#[tauri::command]
+fn open_shell(options: RuntimeOptions, input: EnvInput) -> Result<Value, String> {
+    let config = load_config(&options).map_err(error_string)?;
+    let env = read_env_metadata(
+        &config
+            .agentfs
+            .join("envs")
+            .join(&input.env_id)
+            .join("meta.json"),
+    )
+    .map_err(error_string)?;
+    let source_root = read_base_source(&config, &env.base_id)
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let command = agentctl_shell_command(&options, &config, &env.id, source_root.as_deref());
+    launch_native_terminal(&command).map_err(error_string)?;
+    Ok(json!({ "opened": true, "command": command }))
 }
 
 fn call_value(options: &RuntimeOptions, request: Request) -> Result<Value, String> {
@@ -198,26 +200,27 @@ fn envs_from_metadata(config: &AgentConfig) -> Result<Value> {
             let entry = entry?;
             let path = entry.path().join("meta.json");
             if path.exists() {
-                let env = read_env_metadata(&path)?;
-                envs.push(EnvStatus {
-                    env,
-                    disk_used: None,
-                });
+                envs.push(env_status_value(config, read_env_metadata(&path)?)?);
             }
         }
     }
-    envs.sort_by(|a, b| a.env.id.cmp(&b.env.id));
-    Ok(serde_json::to_value(Response::Envs { envs })?)
+    envs.sort_by(|a, b| {
+        let a = a
+            .get("env")
+            .and_then(|env| env.get("id"))
+            .and_then(Value::as_str);
+        let b = b
+            .get("env")
+            .and_then(|env| env.get("id"))
+            .and_then(Value::as_str);
+        a.cmp(&b)
+    });
+    Ok(json!({ "type": "envs", "envs": envs }))
 }
 
 fn env_status_from_metadata(config: &AgentConfig, env_id: &str) -> Result<Value> {
     let env = read_env_metadata(&config.agentfs.join("envs").join(env_id).join("meta.json"))?;
-    Ok(serde_json::to_value(Response::EnvStatus {
-        status: Box::new(EnvStatus {
-            env,
-            disk_used: None,
-        }),
-    })?)
+    Ok(json!({ "type": "env_status", "status": env_status_value(config, env)? }))
 }
 
 fn env_rootfs_from_metadata(config: &AgentConfig, env_id: &str) -> Result<PathBuf> {
@@ -230,6 +233,30 @@ fn read_env_metadata(path: &Path) -> Result<Env> {
         std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_slice(&bytes)
         .with_context(|| format!("invalid env metadata {}", path.display()))
+}
+
+fn env_status_value(config: &AgentConfig, env: Env) -> Result<Value> {
+    let source_root = read_base_source(config, &env.base_id).ok();
+    let env_path = config.agentfs.join("envs").join(&env.id);
+    Ok(json!({
+        "env": env,
+        "disk_used": null,
+        "source_root": source_root,
+        "env_path": env_path,
+    }))
+}
+
+fn read_base_source(config: &AgentConfig, base_id: &str) -> Result<String> {
+    let path = config
+        .agentfs
+        .join("bases")
+        .join(base_id)
+        .join("manifest.json");
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let base: Base = serde_json::from_slice(&bytes)
+        .with_context(|| format!("invalid base metadata {}", path.display()))?;
+    Ok(base.source)
 }
 
 fn load_config(options: &RuntimeOptions) -> Result<AgentConfig> {
@@ -336,21 +363,6 @@ fn safe_relative_path(value: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn shell_command(command: &str) -> Vec<String> {
-    #[cfg(target_os = "windows")]
-    {
-        vec!["cmd.exe".to_string(), "/C".to_string(), command.to_string()]
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        vec![
-            "/bin/sh".to_string(),
-            "-lc".to_string(),
-            command.to_string(),
-        ]
-    }
-}
-
 fn launch_known_app(app: &str, path: &Path) -> Result<()> {
     match app {
         "code" => spawn_detached("code", &[path.to_path_buf()]),
@@ -384,6 +396,90 @@ fn spawn_detached(program: &str, args: &[PathBuf]) -> Result<()> {
         .spawn()
         .with_context(|| format!("failed to launch {program}"))?;
     Ok(())
+}
+
+fn agentctl_shell_command(
+    options: &RuntimeOptions,
+    config: &AgentConfig,
+    env_id: &str,
+    source_root: Option<&Path>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(source_root) = source_root {
+        parts.push("cd".to_string());
+        parts.push(shell_quote(&source_root.display().to_string()));
+        parts.push("&&".to_string());
+    }
+    parts.push(shell_quote(&agentctl_program().display().to_string()));
+    if let Some(config_path) = &options.config {
+        parts.push("--config".to_string());
+        parts.push(shell_quote(&config_path.display().to_string()));
+    } else {
+        parts.push("--agentfs".to_string());
+        parts.push(shell_quote(&config.agentfs.display().to_string()));
+    }
+    parts.push("shell".to_string());
+    parts.push(shell_quote(env_id));
+    parts.join(" ")
+}
+
+fn agentctl_program() -> PathBuf {
+    if let Some(path) = std::env::var_os("AGENT_STUDIO_AGENTCTL") {
+        return PathBuf::from(path);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let candidate = PathBuf::from(home).join(".local/bin/agentctl");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("agentctl")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn launch_native_terminal(command: &str) -> Result<()> {
+    let script = format!(
+        "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+        apple_script_string(command)
+    );
+    Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .spawn()
+        .context("failed to launch Terminal.app")?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn launch_native_terminal(command: &str) -> Result<()> {
+    Command::new("cmd.exe")
+        .args(["/C", "start", "", "cmd.exe", "/K", command])
+        .spawn()
+        .context("failed to launch cmd.exe")?;
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn launch_native_terminal(command: &str) -> Result<()> {
+    let command = format!("{command}; exec ${{SHELL:-/bin/sh}}");
+    let candidates: &[(&str, &[&str])] = &[
+        ("x-terminal-emulator", &["-e", "sh", "-lc"]),
+        ("gnome-terminal", &["--", "sh", "-lc"]),
+        ("konsole", &["-e", "sh", "-lc"]),
+        ("xterm", &["-e", "sh", "-lc"]),
+    ];
+    for (program, args) in candidates {
+        let mut child = Command::new(program);
+        child.args(*args).arg(&command);
+        if child.spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    bail!("failed to find a terminal emulator for agentctl shell");
 }
 
 #[cfg(target_os = "macos")]
@@ -503,8 +599,8 @@ fn main() {
             create_lane,
             remove_lane,
             changed_paths,
-            run_command,
             open_ide,
+            open_shell,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Agent Studio");
