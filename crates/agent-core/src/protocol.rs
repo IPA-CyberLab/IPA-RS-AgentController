@@ -56,6 +56,8 @@ pub enum Request {
         id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        persistent: bool,
     },
     SessionCreate {
         env_id: String,
@@ -143,6 +145,10 @@ pub fn parse_response_json(line: &str) -> Result<Response, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn parse_protocol_value(line: &str) -> Result<Value, String> {
     serde_json::from_str(line).map_err(|error| error.to_string())
 }
@@ -179,7 +185,7 @@ fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]>
         "base_freeze" => &["type", "name", "from", "backend"],
         "env_create" => &["type", "id", "base", "profile", "limits"],
         "env_start" | "env_stop" | "env_destroy" | "env_status" => &["type", "id"],
-        "shell" => &["type", "id", "cwd"],
+        "shell" => &["type", "id", "cwd", "persistent"],
         "env_list" | "ping" => &["type"],
         "exec" => &["type", "id", "command", "cwd"],
         "session_create" => &["type", "env_id", "session_id", "command", "cwd"],
@@ -327,6 +333,7 @@ mod tests {
             Request::Shell {
                 id: "codex-1".to_string(),
                 cwd: Some("/workspace".into()),
+                persistent: false,
             },
             Request::SessionCreate {
                 env_id: "codex-1".to_string(),

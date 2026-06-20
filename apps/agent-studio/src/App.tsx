@@ -173,14 +173,16 @@ function App() {
     }
   }
 
-  async function openNativeShell() {
+  async function openNativeShell(persistent = false) {
     if (!selected) {
       setStatus("Select a world");
       return;
     }
     try {
-      await openShell(runtime, selected);
-      const message = `opened agentctl shell ${selected}`;
+      await openShell(runtime, selected, persistent);
+      const message = persistent
+        ? `opened persistent shell ${selected}`
+        : `opened agentctl shell ${selected}`;
       setStatus(message);
     } catch (error) {
       setStatus(errorMessage(error));
@@ -352,6 +354,13 @@ function App() {
                 <button className="launchButton" onClick={() => void openNativeShell()}>
                   <Terminal size={18} />
                   <span>Terminal</span>
+                </button>
+                <button
+                  className="launchButton"
+                  onClick={() => void openNativeShell(true)}
+                >
+                  <Terminal size={18} />
+                  <span>Persistent</span>
                 </button>
               </div>
 

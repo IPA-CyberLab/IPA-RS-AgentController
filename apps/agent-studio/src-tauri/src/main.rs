@@ -34,6 +34,8 @@ struct CreateLaneInput {
 #[derive(Debug, Clone, Deserialize)]
 struct EnvInput {
     env_id: String,
+    #[serde(default)]
+    persistent: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -208,7 +210,13 @@ fn open_shell_blocking(options: RuntimeOptions, input: EnvInput) -> Result<Value
         .ok()
         .map(PathBuf::from)
         .filter(|path| path.is_absolute());
-    let command = agentctl_shell_command(&options, &config, &env.id, source_root.as_deref());
+    let command = agentctl_shell_command(
+        &options,
+        &config,
+        &env.id,
+        source_root.as_deref(),
+        input.persistent,
+    );
     launch_native_terminal(&command).map_err(error_string)?;
     Ok(json!({ "opened": true, "command": command }))
 }
@@ -645,6 +653,7 @@ fn agentctl_shell_command(
     config: &AgentConfig,
     env_id: &str,
     source_root: Option<&Path>,
+    persistent: bool,
 ) -> String {
     let mut parts = Vec::new();
     if let Some(source_root) = source_root {
@@ -661,6 +670,9 @@ fn agentctl_shell_command(
         parts.push(shell_quote(&config.agentfs.display().to_string()));
     }
     parts.push("shell".to_string());
+    if persistent {
+        parts.push("--persistent".to_string());
+    }
     parts.push(shell_quote(env_id));
     parts.join(" ")
 }

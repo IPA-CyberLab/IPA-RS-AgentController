@@ -2,6 +2,8 @@
 use crate::command::macos_sandbox_profile;
 #[cfg(windows)]
 use crate::command::{forget_desktop_session_job, terminate_desktop_session_job};
+#[cfg(target_os = "macos")]
+use crate::command::{shell_join, shell_quote};
 use crate::command::{CmdOutput, CommandRunner};
 use crate::config::AgentConfig;
 use crate::export::{ExportType, Exporter};
@@ -147,7 +149,11 @@ impl DesktopService {
                     stderr: output.stderr,
                 })
             }
-            Request::Shell { id, cwd } => {
+            Request::Shell {
+                id,
+                cwd,
+                persistent,
+            } => {
                 let env = self.shell_target(&id).await?;
                 let base = self.layout.read_base(&env.base_id).await?;
                 let preserved_cwd = path_preserving_cwd_for_backend(
@@ -164,6 +170,7 @@ impl DesktopService {
                         &env.id,
                         Some(&preserved_cwd),
                         &env.limits,
+                        persistent,
                     ),
                     rootfs_path: env.rootfs_path,
                 })
@@ -256,6 +263,7 @@ impl DesktopService {
                     &env.id,
                     Some(&preserved_cwd),
                     &env.limits,
+                    false,
                 ),
                 rootfs_path: env.rootfs_path,
             })
@@ -1039,7 +1047,10 @@ async fn process_running(runner: &CommandRunner, pid: u32) -> Result<bool> {
     let output = runner
         .run("kill", vec!["-0".to_string(), pid.to_string()])
         .await?;
-    Ok(output.status == 0)
+    if output.status == 0 {
+        return Ok(true);
+    }
+    process_group_running(runner, pid).await
 }
 
 #[cfg(windows)]
@@ -1069,6 +1080,10 @@ async fn process_running(runner: &CommandRunner, pid: u32) -> Result<bool> {
 async fn kill_process_tree(runner: &CommandRunner, pid: u32) -> Result<()> {
     ensure_safe_desktop_session_pid(pid)?;
 
+    if terminate_process_group(runner, pid).await? {
+        return Ok(());
+    }
+
     let mut targets = process_descendants(runner, pid).await?;
     targets.push(pid);
     targets.sort_unstable();
@@ -1078,6 +1093,35 @@ async fn kill_process_tree(runner: &CommandRunner, pid: u32) -> Result<()> {
         terminate_pid(runner, target).await?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+async fn process_group_running(runner: &CommandRunner, pgid: u32) -> Result<bool> {
+    ensure_safe_desktop_session_pid(pgid)?;
+    let Ok(output) = runner
+        .run(
+            "ps",
+            vec![
+                "-o".to_string(),
+                "pid=".to_string(),
+                "-g".to_string(),
+                pgid.to_string(),
+            ],
+        )
+        .await
+    else {
+        return Ok(false);
+    };
+    Ok(output.status == 0 && output.stdout.lines().any(|line| !line.trim().is_empty()))
+}
+
+#[cfg(unix)]
+async fn terminate_process_group(runner: &CommandRunner, pgid: u32) -> Result<bool> {
+    ensure_safe_desktop_session_pid(pgid)?;
+    let output = runner
+        .run("kill", vec!["-TERM".to_string(), format!("-{pgid}")])
+        .await?;
+    Ok(output.status == 0)
 }
 
 #[cfg(unix)]
@@ -1552,6 +1596,7 @@ fn desktop_shell_command(
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
+    persistent: bool,
 ) -> Vec<String> {
     platform_desktop_shell_command(
         rootfs_path,
@@ -1560,6 +1605,7 @@ fn desktop_shell_command(
         env_id,
         host_workspace,
         limits,
+        persistent,
     )
 }
 
@@ -1571,6 +1617,7 @@ fn platform_desktop_shell_command(
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
+    persistent: bool,
 ) -> Vec<String> {
     if backend == RootfsBackend::PathPreservingOverlay {
         return macos_path_preserving_shell_command(
@@ -1579,6 +1626,7 @@ fn platform_desktop_shell_command(
             env_id,
             host_workspace,
             limits,
+            persistent,
         );
     }
     let tmpdir = rootfs_path.join(".tmp");
@@ -1601,7 +1649,11 @@ fn platform_desktop_shell_command(
     if let Some(host_workspace) = host_workspace {
         command.push(format!("HOST_WORKSPACE={host_workspace}"));
     }
-    push_agent_shell_command(&mut command, shell);
+    if persistent {
+        push_persistent_agent_shell_command(&mut command, rootfs_path, shell);
+    } else {
+        push_agent_shell_command(&mut command, shell);
+    }
     command
 }
 
@@ -1612,6 +1664,7 @@ fn macos_path_preserving_shell_command(
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
+    persistent: bool,
 ) -> Vec<String> {
     let preserved_cwd = host_workspace.unwrap_or("/");
     let env_dir = view_root.parent().unwrap_or_else(|| Path::new("/"));
@@ -1640,7 +1693,11 @@ fn macos_path_preserving_shell_command(
         limits.network.clone(),
         "--".to_string(),
     ];
-    push_agent_shell_command(&mut command, shell);
+    if persistent {
+        push_persistent_agent_shell_command(&mut command, view_root, shell);
+    } else {
+        push_agent_shell_command(&mut command, shell);
+    }
     command
 }
 
@@ -1673,6 +1730,60 @@ fn push_agent_shell_command(command: &mut Vec<String>, shell: String) {
     if is_zsh {
         command.push("-f".to_string());
     }
+}
+
+#[cfg(target_os = "macos")]
+fn push_persistent_agent_shell_command(
+    command: &mut Vec<String>,
+    rootfs_path: &Path,
+    shell: String,
+) {
+    command.push("/bin/sh".to_string());
+    command.push("-lc".to_string());
+    command.push(persistent_agent_shell_script(rootfs_path, &shell));
+}
+
+#[cfg(target_os = "macos")]
+fn persistent_agent_shell_script(rootfs_path: &Path, shell: &str) -> String {
+    let tmux_dir = rootfs_path.join(".agent-tmux");
+    let socket = tmux_dir.join("shell.sock");
+    let shell_command = persistent_shell_command(shell);
+    let fallback = shell_join(&persistent_shell_argv(shell));
+    format!(
+        "mkdir -p {tmux_dir}; \
+         if command -v tmux >/dev/null 2>&1; then \
+           exec tmux -S {socket} new-session -A -s shell {shell_command}; \
+         else \
+           printf '%s\\n' 'tmux not found; falling back to a non-persistent shell' >&2; \
+           exec {fallback}; \
+         fi",
+        tmux_dir = shell_quote(&tmux_dir.display().to_string()),
+        socket = shell_quote(&socket.display().to_string()),
+        shell_command = shell_quote(&format!("exec {shell_command}")),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn persistent_shell_command(shell: &str) -> String {
+    shell_join(&persistent_shell_argv(shell))
+}
+
+#[cfg(target_os = "macos")]
+fn persistent_shell_argv(shell: &str) -> Vec<String> {
+    let mut argv = vec![shell.to_string()];
+    if shell_is_zsh(shell) {
+        argv.push("-f".to_string());
+    }
+    argv
+}
+
+#[cfg(target_os = "macos")]
+fn shell_is_zsh(shell: &str) -> bool {
+    Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+        .contains("zsh")
 }
 
 #[cfg(target_os = "macos")]
@@ -1761,6 +1872,7 @@ fn platform_desktop_shell_command(
     env_id: &str,
     host_workspace: Option<&str>,
     limits: &Limits,
+    _persistent: bool,
 ) -> Vec<String> {
     if backend == RootfsBackend::WindowsMinifilterOverlay {
         return windows_minifilter_shell_command(
@@ -1820,6 +1932,7 @@ fn platform_desktop_shell_command(
     _env_id: &str,
     _host_workspace: Option<&str>,
     _limits: &Limits,
+    _persistent: bool,
 ) -> Vec<String> {
     Vec::new()
 }
@@ -2211,6 +2324,11 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_sessions_track_logs_and_state() {
+        #[cfg(target_os = "macos")]
+        if !macos_sandbox_exec_available() {
+            return;
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let service = DesktopService::new(AgentConfig::new(dir.path().join("agentfs")));
         service.init().await.unwrap();
@@ -2241,6 +2359,15 @@ mod tests {
         service.session_kill("codex-1", "dev").await.unwrap();
         let sessions = service.session_list("codex-1").await.unwrap();
         assert_eq!(sessions[0].state, crate::model::SessionState::Stopped);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_sandbox_exec_available() -> bool {
+        std::process::Command::new("sandbox-exec")
+            .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
     }
 
     #[test]
@@ -2306,6 +2433,7 @@ mod tests {
             "codex-1",
             None,
             &Limits::default(),
+            false,
         );
 
         assert!(command.is_empty());
@@ -2322,6 +2450,7 @@ mod tests {
             "codex-1",
             Some("/Users/mizuame/Desktop/project"),
             &Limits::default(),
+            false,
         );
 
         assert_eq!(command[0], "sandbox-exec");
@@ -2340,6 +2469,27 @@ mod tests {
             .any(|arg| arg.starts_with("PS1=\\[\\033[32m\\]codex-1"));
         assert!(has_zsh_prompt || has_bash_prompt);
         assert!(command.contains(&"HOST_WORKSPACE=/Users/mizuame/Desktop/project".to_string()));
+        assert!(!command.iter().any(|arg| arg.contains("tmux -S")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_persistent_desktop_shell_uses_tmux_socket() {
+        let rootfs = Path::new("/agentfs/envs/codex-1/rootfs");
+        let command = super::desktop_shell_command(
+            rootfs,
+            Path::new("/Users/mizuame/Desktop/project"),
+            RootfsBackend::ApfsClone,
+            "codex-1",
+            Some("/Users/mizuame/Desktop/project"),
+            &Limits::default(),
+            true,
+        );
+
+        let script = command.last().expect("shell wrapper script");
+        assert!(script.contains("tmux -S"));
+        assert!(script.contains("/agentfs/envs/codex-1/rootfs/.agent-tmux/shell.sock"));
+        assert!(script.contains("new-session -A -s shell"));
     }
 
     #[cfg(target_os = "macos")]
@@ -2355,6 +2505,7 @@ mod tests {
             "codex-1",
             None,
             &limits,
+            false,
         );
 
         assert!(command[2].contains("(deny network*)"));
@@ -2371,6 +2522,7 @@ mod tests {
             "codex-1",
             Some("/Users/mizuame/Desktop/script/example"),
             &Limits::default(),
+            false,
         );
 
         assert_eq!(command[0], "agent-viewd");
@@ -2396,6 +2548,18 @@ mod tests {
         super::push_agent_shell_command(&mut command, "/bin/bash".to_string());
 
         assert_eq!(command, vec!["/bin/zsh", "-f", "/bin/bash"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_persistent_shell_falls_back_without_tmux() {
+        let script = super::persistent_agent_shell_script(
+            Path::new("/agentfs/envs/codex-1/rootfs"),
+            "/bin/zsh",
+        );
+
+        assert!(script.contains("tmux not found"));
+        assert!(script.contains("exec /bin/zsh -f"));
     }
 
     async fn create_native_env_fixture(service: &DesktopService) {

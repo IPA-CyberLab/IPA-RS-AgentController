@@ -47,6 +47,6 @@ export async function openIde(
   });
 }
 
-export async function openShell(options: RuntimeOptions, envId: string) {
-  return invoke("open_shell", { options, input: { env_id: envId } });
+export async function openShell(options: RuntimeOptions, envId: string, persistent = false) {
+  return invoke("open_shell", { options, input: { env_id: envId, persistent } });
 }

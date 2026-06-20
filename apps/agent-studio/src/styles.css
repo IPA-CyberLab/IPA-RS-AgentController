@@ -428,7 +428,7 @@ pre {
 .launchButton {
   flex: 0 0 auto;
   height: 32px;
-  min-width: 112px;
+  min-width: 104px;
   min-height: 32px;
   justify-content: flex-start;
   gap: 7px;

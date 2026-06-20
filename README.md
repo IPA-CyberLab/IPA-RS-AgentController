@@ -265,10 +265,10 @@ agentctl env stop codex-1
 agentctl env destroy codex-1
 ```
 
-`agentctl new -t <env-id>` is the tmux-style entrypoint. It initializes
+`agentctl new -t <env-id>` is the bootstrap-and-enter entrypoint. It initializes
 `/agentfs`, creates `base-001` from `/` when that base does not exist, creates
-the target env when needed, starts it, and attaches the persistent `shell`
-session. Supplying a command after `--` performs the same bootstrap and then
+the target env when needed, starts it, and attaches a shell. Supplying a
+command after `--` performs the same bootstrap and then
 executes that command instead of attaching a shell.
 
 On native macOS and Windows, `agentctl new -t <env-id>` uses `$HOME/.agentfs`
@@ -295,8 +295,10 @@ daemon protocol as `agentctl new`, `agentctl ls`,
 agentctl studio --source "$PWD"
 ```
 
-`agentctl shell <env-id>` creates or reuses a persistent `shell` tmux session
-inside the child and attaches the current terminal to it. `agentctl diff`
+`agentctl shell <env-id>` opens a normal interactive shell for the env. On
+macOS native desktop envs, `agentctl shell --persistent <env-id>` attaches
+through a per-env tmux socket under the env rootfs when `tmux` is available,
+so closing Terminal.app detaches instead of stopping the shell. `agentctl diff`
 prints the `/workspace` Git patch when that directory is a Git repository, and
 `workspace-patch` also persists the patch artifact under the env's `exports`
 directory.

@@ -121,6 +121,8 @@ enum Command {
         command: EnvCommand,
     },
     Shell {
+        #[arg(long)]
+        persistent: bool,
         env_id: String,
     },
     Exec(ExecArgs),
@@ -502,8 +504,11 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
                 EnvCommand::Status { env_id } => push_env_id_command(args, "status", env_id),
             }
         }
-        Command::Shell { env_id } => {
+        Command::Shell { env_id, persistent } => {
             args.push("shell".to_string());
+            if *persistent {
+                args.push("--persistent".to_string());
+            }
             args.push(env_id.clone());
         }
         Command::Exec(exec) => {
@@ -694,9 +699,10 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             EnvCommand::List => Request::EnvList,
             EnvCommand::Status { env_id } => Request::EnvStatus { id: env_id.clone() },
         }),
-        Command::Shell { env_id } => Ok(Request::Shell {
+        Command::Shell { env_id, persistent } => Ok(Request::Shell {
             id: env_id.clone(),
             cwd: Some(host_current_dir()?),
+            persistent: *persistent,
         }),
         Command::Exec(args) => Ok(Request::Exec {
             id: args.env_id.clone(),
@@ -1467,14 +1473,33 @@ mod tests {
             remote: None,
             remote_agentctl: "agentctl".to_string(),
             command: Command::Shell {
+                persistent: false,
                 env_id: "codex-1".to_string(),
             },
         };
 
         match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
-            Request::Shell { id, cwd } => {
+            Request::Shell {
+                id,
+                cwd,
+                persistent,
+            } => {
                 assert_eq!(id, "codex-1");
                 assert_eq!(cwd.unwrap(), std::env::current_dir().unwrap());
+                assert!(!persistent);
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn persistent_shell_flag_maps_to_shell_request() {
+        let cli = Cli::parse_from(["agentctl", "shell", "--persistent", "codex-1"]);
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::Shell { id, persistent, .. } => {
+                assert_eq!(id, "codex-1");
+                assert!(persistent);
             }
             other => panic!("unexpected request {other:?}"),
         }
@@ -1870,6 +1895,7 @@ mod tests {
             command: Vec::new(),
         });
         let shell = Command::Shell {
+            persistent: false,
             env_id: "codex".to_string(),
         };
 
