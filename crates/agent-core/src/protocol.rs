@@ -52,6 +52,12 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<PathBuf>,
     },
+    Open {
+        env_id: String,
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<PathBuf>,
+    },
     Shell {
         id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,6 +194,7 @@ fn request_allowed_fields(message_type: &str) -> Option<&'static [&'static str]>
         "shell" => &["type", "id", "cwd", "persistent"],
         "env_list" | "ping" => &["type"],
         "exec" => &["type", "id", "command", "cwd"],
+        "open" => &["type", "env_id", "app", "path"],
         "session_create" => &["type", "env_id", "session_id", "command", "cwd"],
         "session_attach" | "session_detach" | "session_kill" | "session_logs" => {
             &["type", "env_id", "session_id"]
@@ -329,6 +336,11 @@ mod tests {
                 id: "codex-1".to_string(),
                 command: vec!["bash".to_string()],
                 cwd: Some("/workspace".into()),
+            },
+            Request::Open {
+                env_id: "codex-1".to_string(),
+                app: "code".to_string(),
+                path: Some("/workspace".into()),
             },
             Request::Shell {
                 id: "codex-1".to_string(),

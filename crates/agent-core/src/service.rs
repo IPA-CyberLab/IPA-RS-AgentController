@@ -123,6 +123,9 @@ impl AgentService {
                     stderr: output.stderr,
                 })
             }
+            Request::Open { .. } => Err(anyhow!(
+                "desktop app launching is supported only by the native desktop backend"
+            )),
             Request::Shell { id, .. } => {
                 let (machine_name, session_id) = self.shell_attach_target(&id).await?;
                 Ok(Response::Attach {

@@ -18,8 +18,8 @@ use crate::storage::{validate_id, write_text_file, Layout};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use std::collections::BTreeSet;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::ffi::{OsStr, OsString};
+use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
@@ -149,12 +149,17 @@ impl DesktopService {
                     stderr: output.stderr,
                 })
             }
+            Request::Open { env_id, app, path } => {
+                self.open_app(&env_id, &app, path.as_deref()).await?;
+                Ok(Response::Ok)
+            }
             Request::Shell {
                 id,
                 cwd,
                 persistent,
             } => {
                 let env = self.shell_target(&id).await?;
+                self.prepare_desktop_env_helpers(&env).await?;
                 let base = self.layout.read_base(&env.base_id).await?;
                 let preserved_cwd = path_preserving_cwd_for_backend(
                     env.backend.clone(),
@@ -251,6 +256,7 @@ impl DesktopService {
     ) -> Result<Response> {
         if command.is_empty() {
             let env = self.shell_target(target).await?;
+            self.prepare_desktop_env_helpers(&env).await?;
             let base = self.layout.read_base(&env.base_id).await?;
             let preserved_cwd =
                 path_preserving_cwd_for_backend(env.backend.clone(), &base.source, cwd);
@@ -521,6 +527,36 @@ impl DesktopService {
         env.last_active_at = Utc::now();
         self.layout.write_env(&env).await?;
         Ok(output)
+    }
+
+    pub async fn open_app(&self, env_id: &str, app: &str, path: Option<&Path>) -> Result<()> {
+        let mut env = self.layout.read_env(env_id).await?;
+        ensure_running_desktop_env(&env)?;
+        let target = env_open_target(&env.rootfs_path, path)?;
+        launch_known_desktop_app(app, &target)?;
+        env.last_active_at = Utc::now();
+        self.layout.write_env(&env).await
+    }
+
+    async fn prepare_desktop_env_helpers(&self, env: &Env) -> Result<()> {
+        if !matches!(
+            env.backend,
+            RootfsBackend::ApfsClone
+                | RootfsBackend::WindowsBlockClone
+                | RootfsBackend::PathPreservingOverlay
+                | RootfsBackend::WindowsMinifilterOverlay
+        ) {
+            return Ok(());
+        }
+        let bin_dir = env.rootfs_path.join(".agent-bin");
+        tokio::fs::create_dir_all(&bin_dir).await?;
+        write_text_file(
+            &bin_dir.join("code"),
+            &agent_open_helper_script(&self.config.agentfs, "code"),
+        )
+        .await?;
+        set_executable_if_supported(&bin_dir.join("code")).await?;
+        Ok(())
     }
 
     pub async fn session_create(
@@ -1630,6 +1666,7 @@ fn platform_desktop_shell_command(
         );
     }
     let tmpdir = rootfs_path.join(".tmp");
+    let helper_bin = rootfs_path.join(".agent-bin");
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut command = vec![
         "sandbox-exec".to_string(),
@@ -1639,6 +1676,11 @@ fn platform_desktop_shell_command(
         format!("HOME={}", rootfs_path.display()),
         format!("ZDOTDIR={}", rootfs_path.display()),
         format!("TMPDIR={}", tmpdir.display()),
+        format!(
+            "PATH={}:{}",
+            helper_bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
         format!("AGENT_ENV_ID={env_id}"),
         format!("AGENT_NETWORK={}", limits.network),
     ];
@@ -1655,6 +1697,189 @@ fn platform_desktop_shell_command(
         push_agent_shell_command(&mut command, shell);
     }
     command
+}
+
+fn env_open_target(rootfs_path: &Path, path: Option<&Path>) -> Result<PathBuf> {
+    let candidate = match path {
+        Some(path) if !path.as_os_str().is_empty() && path.is_absolute() => path.to_path_buf(),
+        Some(path) if !path.as_os_str().is_empty() => rootfs_path.join(path),
+        _ => rootfs_path.to_path_buf(),
+    };
+    let normalized = normalize_lexical(&candidate);
+    if !normalized.starts_with(rootfs_path) {
+        bail!(
+            "refusing to open path outside env rootfs: {}",
+            normalized.display()
+        );
+    }
+    Ok(normalized)
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
+fn launch_known_desktop_app(app: &str, path: &Path) -> Result<()> {
+    match app {
+        "code" => launch_vscode(path, false),
+        "code-insiders" => launch_vscode(path, true),
+        "cursor" => launch_named_desktop_app("Cursor", "cursor", path),
+        "zed" => launch_named_desktop_app("Zed", "zed", path),
+        "reveal" => reveal_desktop_path(path),
+        other => bail!("unknown app {other}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_vscode(path: &Path, insiders: bool) -> Result<()> {
+    let app_name = if insiders {
+        "Visual Studio Code - Insiders"
+    } else {
+        "Visual Studio Code"
+    };
+    spawn_detached_os(
+        "/usr/bin/open",
+        [OsStr::new("-a"), OsStr::new(app_name), path.as_os_str()],
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launch_vscode(path: &Path, insiders: bool) -> Result<()> {
+    let program = if insiders { "code-insiders" } else { "code" };
+    spawn_detached_os(program, [path.as_os_str()])
+}
+
+#[cfg(target_os = "macos")]
+fn launch_named_desktop_app(app_name: &str, _program: &str, path: &Path) -> Result<()> {
+    spawn_detached_os(
+        "/usr/bin/open",
+        [OsStr::new("-a"), OsStr::new(app_name), path.as_os_str()],
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launch_named_desktop_app(_app_name: &str, program: &str, path: &Path) -> Result<()> {
+    spawn_detached_os(program, [path.as_os_str()])
+}
+
+fn reveal_desktop_path(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        spawn_detached_os("/usr/bin/open", [path.as_os_str()])
+    }
+    #[cfg(windows)]
+    {
+        spawn_detached_os("explorer", [path.as_os_str()])
+    }
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
+    {
+        spawn_detached_os("xdg-open", [path.as_os_str()])
+    }
+}
+
+fn spawn_detached_os<I, S>(program: &str, args: I) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .with_context(|| format!("failed to launch {program}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn agent_open_helper_script(agentfs: &Path, app: &str) -> String {
+    let agentctl = shell_quote(&agentctl_launcher_path());
+    let agentfs = shell_quote(&agentfs.display().to_string());
+    let app = shell_quote(app);
+    format!(
+        r#"#!/bin/sh
+if [ "${{1:-}}" = "--version" ] || [ "${{1:-}}" = "-v" ] || [ "${{1:-}}" = "--help" ] || [ "${{1:-}}" = "-h" ]; then
+  for real in /usr/local/bin/code /opt/homebrew/bin/code; do
+    if [ -x "$real" ]; then
+      exec "$real" "$@"
+    fi
+  done
+fi
+if [ -z "${{AGENT_ENV_ID:-}}" ]; then
+  printf '%s\n' 'AGENT_ENV_ID is not set; cannot route GUI launch through agent-forkd' >&2
+  exit 1
+fi
+target=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --)
+      shift
+      if [ "$#" -gt 0 ]; then target=$1; fi
+      break
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      target=$1
+      break
+      ;;
+  esac
+done
+if [ -z "$target" ]; then
+  target=${{PWD:-.}}
+fi
+case "$target" in
+  /*) resolved=$target ;;
+  *) resolved=${{PWD:-.}}/$target ;;
+esac
+exec {agentctl} --agentfs {agentfs} open "$AGENT_ENV_ID" --app {app} --path "$resolved"
+"#
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn agent_open_helper_script(_agentfs: &Path, _app: &str) -> String {
+    String::new()
+}
+
+#[cfg(target_os = "macos")]
+fn agentctl_launcher_path() -> String {
+    if let Ok(path) = std::env::var("AGENTCTL_BIN") {
+        return path;
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let candidate = Path::new(&home).join(".local/bin/agentctl");
+        if candidate.is_file() {
+            return candidate.display().to_string();
+        }
+    }
+    "agentctl".to_string()
+}
+
+#[cfg(unix)]
+async fn set_executable_if_supported(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = tokio::fs::metadata(path).await?.permissions();
+    permissions.set_mode(0o755);
+    tokio::fs::set_permissions(path, permissions).await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn set_executable_if_supported(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -2459,6 +2684,9 @@ mod tests {
         assert!(command.contains(&"HOME=/agentfs/envs/codex-1/rootfs".to_string()));
         assert!(command.contains(&"ZDOTDIR=/agentfs/envs/codex-1/rootfs".to_string()));
         assert!(command.contains(&"TMPDIR=/agentfs/envs/codex-1/rootfs/.tmp".to_string()));
+        assert!(command
+            .iter()
+            .any(|arg| arg.starts_with("PATH=/agentfs/envs/codex-1/rootfs/.agent-bin:")));
         assert!(command.contains(&"AGENT_ENV_ID=codex-1".to_string()));
         assert!(command.contains(&"AGENT_NETWORK=host".to_string()));
         let has_zsh_prompt = command

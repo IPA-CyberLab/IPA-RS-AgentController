@@ -627,6 +627,7 @@ pub(crate) fn macos_sandbox_profile(rootfs: &Path, network: &str) -> String {
 (deny default)
 (allow process*)
 (allow sysctl-read)
+(allow mach-lookup)
 (allow file-read*)
 (allow file-ioctl)
 (allow file-write* (literal "/dev/null"))
@@ -1025,6 +1026,17 @@ mod tests {
         );
 
         assert!(profile.contains(r#"(allow file-write* (literal "/dev/null"))"#));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sandbox_profile_allows_launch_services_lookup() {
+        let profile = super::macos_sandbox_profile(
+            std::path::Path::new("/Users/me/.agentfs/envs/codex/rootfs"),
+            "host",
+        );
+
+        assert!(profile.contains("(allow mach-lookup)"));
     }
 
     #[tokio::test]

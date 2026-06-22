@@ -126,6 +126,7 @@ enum Command {
         env_id: String,
     },
     Exec(ExecArgs),
+    Open(OpenArgs),
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -292,6 +293,15 @@ struct ExecArgs {
     env_id: String,
     #[arg(last = true, required = true)]
     command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct OpenArgs {
+    env_id: String,
+    #[arg(long, default_value = "code")]
+    app: String,
+    #[arg(long)]
+    path: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -516,6 +526,13 @@ fn append_command_args(args: &mut Vec<String>, command: &Command) {
             args.push(exec.env_id.clone());
             push_trailing_command(args, &exec.command);
         }
+        Command::Open(open) => {
+            args.push("open".to_string());
+            args.push(open.env_id.clone());
+            args.push("--app".to_string());
+            args.push(open.app.clone());
+            push_path(args, "--path", open.path.as_ref());
+        }
         Command::Session { command } => {
             args.push("session".to_string());
             match command {
@@ -708,6 +725,14 @@ fn to_request(cli: &Cli, config: &AgentConfig) -> Result<Request> {
             id: args.env_id.clone(),
             command: args.command.clone(),
             cwd: Some(host_current_dir()?),
+        }),
+        Command::Open(args) => Ok(Request::Open {
+            env_id: args.env_id.clone(),
+            app: args.app.clone(),
+            path: Some(match &args.path {
+                Some(path) => path.clone(),
+                None => host_current_dir()?,
+            }),
         }),
         Command::Session { command } => Ok(match command {
             SessionCommand::Create(args) => Request::SessionCreate {
@@ -1129,7 +1154,7 @@ mod tests {
         machinectl_attach_args, needs_remote_tty, parse_response_line, remote_agentctl_args,
         remote_shell_command, session_state_label, shell_quote, tmux_attach_command, to_request,
         ApplyArgs, Cli, Command, DesktopBackendArg, EnvCommand, ExportArgs, ExportKind, InitArgs,
-        NewArgs, StdCommand,
+        NewArgs, OpenArgs, StdCommand,
     };
     use agent_core::config::{AgentConfig, Profile};
     use agent_core::model::{EnvState, RootfsBackend, SessionState};
@@ -1461,6 +1486,30 @@ mod tests {
 
         match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
             Request::EnvDestroy { id } => assert_eq!(id, "codex-1"),
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_command_maps_to_open_request() {
+        let cli = Cli {
+            agentfs: PathBuf::from("/agentfs"),
+            config: None,
+            remote: None,
+            remote_agentctl: "agentctl".to_string(),
+            command: Command::Open(OpenArgs {
+                env_id: "codex-1".to_string(),
+                app: "code".to_string(),
+                path: Some(PathBuf::from("/agentfs/envs/codex-1/rootfs")),
+            }),
+        };
+
+        match to_request(&cli, &AgentConfig::new(PathBuf::from("/agentfs"))).unwrap() {
+            Request::Open { env_id, app, path } => {
+                assert_eq!(env_id, "codex-1");
+                assert_eq!(app, "code");
+                assert_eq!(path, Some(PathBuf::from("/agentfs/envs/codex-1/rootfs")));
+            }
             other => panic!("unexpected request {other:?}"),
         }
     }
