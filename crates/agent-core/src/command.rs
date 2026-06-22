@@ -629,6 +629,7 @@ pub(crate) fn macos_sandbox_profile(rootfs: &Path, network: &str) -> String {
 (allow sysctl-read)
 (allow file-read*)
 (allow file-ioctl)
+(allow file-write* (literal "/dev/null"))
 (allow file-write* (subpath "{rootfs}"))
 {network_rule}
 "#
@@ -1013,6 +1014,17 @@ mod tests {
             shell_join(&["bash".into(), "-lc".into(), "".into()]),
             "bash -lc ''"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sandbox_profile_allows_dev_null_writes() {
+        let profile = super::macos_sandbox_profile(
+            std::path::Path::new("/Users/me/.agentfs/envs/codex/rootfs"),
+            "host",
+        );
+
+        assert!(profile.contains(r#"(allow file-write* (literal "/dev/null"))"#));
     }
 
     #[tokio::test]
